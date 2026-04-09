@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Demo: GTFS Shapes</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, sans-serif; background: #f5f5f5; }
+    .layout { display: flex; flex-direction: column; height: 100vh; }
+    .panel { background: #fff; padding: 16px; border-bottom: 1px solid #e0e0e0; }
+    .panel h2 { font-size: 15px; color: #333; margin-bottom: 4px; }
+    .panel p  { font-size: 13px; color: #666; line-height: 1.5; }
+    .recommendation { background: #f0f4ff; border-left: 3px solid #c60c30; padding: 12px 14px; margin: 12px 0 0; border-radius: 4px; font-size: 13px; color: #333; }
+    .legs { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 0 0; }
+    .pill { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; color: #fff; }
+    .pill-walk { background: #888; }
+    .pill-red  { background: #c60c30; }
+    #map { flex: 1; }
+    .label { font-size: 11px; background: transparent; border: none; box-shadow: none; color: #333; font-weight: 600; }
+  </style>
+</head>
+<body>
+<div class="layout">
+  <div class="panel">
+    <h2>DEMO B — GTFS Shapes &nbsp;<span style="color:#888;font-weight:400;font-size:13px">Wrigleyville → Loop</span></h2>
+    <div class="recommendation">
+      Take the Red Line from Addison toward 95th/Dan Ryan — it's your fastest option at ~22 min total. Board at Addison (4 min walk) and exit at Lake. No transfers needed.
+    </div>
+    <div class="legs">
+      <span class="pill pill-walk">🚶 4 min walk</span>
+      <span style="color:#999;align-self:center">→</span>
+      <span class="pill pill-red">Red · Addison → Lake · 18 min</span>
+      <span style="color:#999;align-self:center">→</span>
+      <span class="pill pill-walk">🚶 2 min walk</span>
+    </div>
+  </div>
+  <div id="map"></div>
+</div>
+
+<script>
+  const map = L.map('map').setView([41.960, -87.660], 13);
+
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap contributors',
+    maxZoom: 18,
+  }).addTo(map);
+
+  // Key points
+  const origin      = [41.9557, -87.6716]; // Wrigleyville (user location)
+  const destination = [41.8827, -87.6320]; // destination in Loop
+
+  // Red Line shape from Addison → Lake
+  // Approximated from CTA GTFS shapes.txt — follows actual track geometry
+  const redLineShape = [
+    [41.9473, -87.6534], // Addison
+    [41.9463, -87.6532],
+    [41.9450, -87.6530],
+    [41.9430, -87.6524],
+    [41.9395, -87.6524], // Belmont
+    [41.9370, -87.6523],
+    [41.9340, -87.6522],
+    [41.9310, -87.6521],
+    [41.9280, -87.6521],
+    [41.9255, -87.6520], // Fullerton
+    [41.9220, -87.6516],
+    [41.9180, -87.6508],
+    [41.9140, -87.6497],
+    [41.9102, -87.6480], // North/Clybourn
+    [41.9075, -87.6445],
+    [41.9055, -87.6395],
+    [41.9041, -87.6311], // Clark/Division
+    [41.9020, -87.6311],
+    [41.8995, -87.6311],
+    [41.8966, -87.6311], // Chicago
+    [41.8940, -87.6296],
+    [41.8914, -87.6286], // Grand
+    [41.8890, -87.6280],
+    [41.8860, -87.6278],
+    [41.8846, -87.6278], // Lake
+  ];
+
+  // Walk origin → boarding (dashed)
+  L.polyline([origin, redLineShape[0]], {
+    color: '#888', weight: 3, dashArray: '6 6', opacity: 0.9
+  }).addTo(map);
+
+  // Transit: actual track shape (solid red)
+  L.polyline(redLineShape, {
+    color: '#c60c30', weight: 5, opacity: 1
+  }).addTo(map);
+
+  // Walk alighting → destination (dashed)
+  L.polyline([redLineShape[redLineShape.length - 1], destination], {
+    color: '#888', weight: 3, dashArray: '6 6', opacity: 0.9
+  }).addTo(map);
+
+  // Intermediate station dots (small)
+  const stops = [
+    { name: 'Belmont',       latlng: [41.9395, -87.6524] },
+    { name: 'Fullerton',     latlng: [41.9255, -87.6520] },
+    { name: 'North/Clybourn',latlng: [41.9102, -87.6480] },
+    { name: 'Clark/Division',latlng: [41.9041, -87.6311] },
+    { name: 'Chicago',       latlng: [41.8966, -87.6311] },
+    { name: 'Grand',         latlng: [41.8914, -87.6286] },
+  ];
+  stops.forEach(s => {
+    L.circleMarker(s.latlng, {
+      radius: 4, color: '#c60c30', fillColor: '#fff', fillOpacity: 1, weight: 2
+    }).addTo(map).bindTooltip(s.name, { direction: 'right', className: 'label' });
+  });
+
+  // Key markers
+  const iconOpts = (bg) => L.divIcon({
+    className: '',
+    html: `<div style="width:13px;height:13px;border-radius:50%;background:${bg};border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4)"></div>`,
+    iconAnchor: [6, 6],
+  });
+
+  L.marker(origin,                               { icon: iconOpts('#4a9eff') }).addTo(map).bindTooltip('Your location',  { permanent: true, direction: 'right', className: 'label' });
+  L.marker(redLineShape[0],                      { icon: iconOpts('#c60c30') }).addTo(map).bindTooltip('Addison (board)',{ permanent: true, direction: 'right', className: 'label' });
+  L.marker(redLineShape[redLineShape.length - 1],{ icon: iconOpts('#c60c30') }).addTo(map).bindTooltip('Lake (exit)',    { permanent: true, direction: 'right', className: 'label' });
+  L.marker(destination,                          { icon: iconOpts('#222')    }).addTo(map).bindTooltip('Destination',    { permanent: true, direction: 'right', className: 'label' });
+
+  // Legend
+  const legend = L.control({ position: 'bottomleft' });
+  legend.onAdd = () => {
+    const d = L.DomUtil.create('div');
+    d.style.cssText = 'background:#fff;padding:10px 12px;border-radius:8px;box-shadow:0 1px 6px rgba(0,0,0,.2);font-size:12px;line-height:2';
+    d.innerHTML = '<b style="display:block;margin-bottom:4px">Legend</b>'
+      + '<span style="color:#c60c30;font-weight:700">——</span> Red Line (GTFS track shape)<br>'
+      + '<span style="color:#888">- - -</span> Walking<br>'
+      + '<span style="color:#c60c30">●</span> Intermediate stops';
+    return d;
+  };
+  legend.addTo(map);
+</script>
+</body>
+</html>

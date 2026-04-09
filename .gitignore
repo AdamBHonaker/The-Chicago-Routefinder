@@ -1,0 +1,40 @@
+# Environment variables — never commit API keys
+.env
+.env.local
+backend/.env
+frontend/.env.local
+
+# CTA GTFS data — large files, re-downloaded via fetch_gtfs.py
+backend/gtfs_data/
+
+# OSMnx street graph cache — re-downloaded via fetch_street_graph.py
+backend/street_graph.graphml
+
+# Persistent geocode cache — built up at runtime from Nominatim lookups
+backend/geocode_cache.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Node / React
+node_modules/
+dist/
+frontend/dist/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code tooling
+.claude/
+
+# PDF documentation (large, available externally)
+*.pdf
+
+# Overpass/OSM API cache — re-built at runtime
+backend/cache/

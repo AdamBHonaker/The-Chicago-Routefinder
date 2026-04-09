@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Demo: Carto Positron</title>
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, sans-serif; background: #f5f5f5; display: flex; flex-direction: column; height: 100vh; }
+    .panel { background: #fff; padding: 14px 16px; border-bottom: 1px solid #e0e0e0; flex-shrink: 0; }
+    .panel h2 { font-size: 15px; color: #333; margin-bottom: 6px; }
+    .style-note { font-size: 12px; color: #888; margin-bottom: 8px; }
+    .recommendation { background: #f0f4ff; border-left: 3px solid #c60c30; padding: 10px 13px; border-radius: 4px; font-size: 13px; color: #333; margin-bottom: 8px; }
+    .legs { display: flex; flex-wrap: wrap; gap: 6px; }
+    .pill { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; color: #fff; }
+    .walk { background: #888; }
+    .red  { background: #c60c30; }
+    .blue { background: #00a1de; }
+    #map { flex: 1; }
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <h2>Style: Carto Positron — Wrigleyville → Loop (Red Line) + Logan Square → River North (Blue Line)</h2>
+    <p class="style-note">Very minimal, light gray/white. Designed for data overlay — routes stand out clearly against the quiet background.</p>
+    <div class="recommendation">
+      Take the Red Line from Addison toward 95th — fastest at ~22 min. Board at Addison (4 min walk), exit at Lake.
+    </div>
+    <div class="legs">
+      <span class="pill walk">🚶 4 min</span>
+      <span class="pill red">Red · Addison → Lake · 18 min</span>
+      <span class="pill walk">🚶 2 min</span>
+    </div>
+  </div>
+  <div id="map"></div>
+
+  <script>
+    const map = new maplibregl.Map({
+      container: 'map',
+      style: 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json',
+      center: [-87.650, 41.920],
+      zoom: 12,
+    });
+
+    map.addControl(new maplibregl.NavigationControl(), 'top-right');
+
+    // GTFS-style shapes (approximated from real CTA geometry)
+    const redShape = [
+      [-87.6716, 41.9557], // user origin (Wrigleyville)
+      [-87.6534, 41.9473], // Addison — board (walk leg ends here)
+      [-87.6524, 41.9395], // Belmont
+      [-87.6520, 41.9255], // Fullerton
+      [-87.6480, 41.9102], // North/Clybourn
+      [-87.6311, 41.9041], // Clark/Division
+      [-87.6311, 41.8966], // Chicago
+      [-87.6286, 41.8914], // Grand
+      [-87.6278, 41.8846], // Lake — exit
+      [-87.6320, 41.8827], // destination (Loop)
+    ];
+
+    const blueShape = [
+      [-87.7035, 41.9290], // user origin (Logan Square)
+      [-87.7073, 41.9218], // Logan Square — board
+      [-87.6969, 41.9119], // California
+      [-87.6824, 41.8990], // Western
+      [-87.6699, 41.8918], // Damen
+      [-87.6571, 41.8852], // Division
+      [-87.6394, 41.8855], // Chicago
+      [-87.6296, 41.8858], // Grand
+      [-87.6278, 41.8859], // Clark/Lake — exit
+      [-87.6235, 41.8905], // destination (River North)
+    ];
+
+    map.on('load', () => {
+      // ── Red Line route ──────────────────────────────────────────────────────
+      // Walk to station
+      map.addSource('red-walk-start', { type: 'geojson', data: {
+        type: 'Feature', geometry: { type: 'LineString',
+          coordinates: [redShape[0], redShape[1]] }
+      }});
+      map.addLayer({ id: 'red-walk-start', type: 'line', source: 'red-walk-start',
+        paint: { 'line-color': '#888', 'line-width': 3, 'line-dasharray': [2, 2] } });
+
+      // Transit leg
+      map.addSource('red-transit', { type: 'geojson', data: {
+        type: 'Feature', geometry: { type: 'LineString',
+          coordinates: redShape.slice(1, 9) }
+      }});
+      map.addLayer({ id: 'red-transit', type: 'line', source: 'red-transit',
+        paint: { 'line-color': '#c60c30', 'line-width': 5 } });
+
+      // Walk to destination
+      map.addSource('red-walk-end', { type: 'geojson', data: {
+        type: 'Feature', geometry: { type: 'LineString',
+          coordinates: [redShape[8], redShape[9]] }
+      }});
+      map.addLayer({ id: 'red-walk-end', type: 'line', source: 'red-walk-end',
+        paint: { 'line-color': '#888', 'line-width': 3, 'line-dasharray': [2, 2] } });
+
+      // ── Blue Line route (second example) ────────────────────────────────────
+      map.addSource('blue-walk-start', { type: 'geojson', data: {
+        type: 'Feature', geometry: { type: 'LineString',
+          coordinates: [blueShape[0], blueShape[1]] }
+      }});
+      map.addLayer({ id: 'blue-walk-start', type: 'line', source: 'blue-walk-start',
+        paint: { 'line-color': '#888', 'line-width': 3, 'line-dasharray': [2, 2] } });
+
+      map.addSource('blue-transit', { type: 'geojson', data: {
+        type: 'Feature', geometry: { type: 'LineString',
+          coordinates: blueShape.slice(1, 9) }
+      }});
+      map.addLayer({ id: 'blue-transit', type: 'line', source: 'blue-transit',
+        paint: { 'line-color': '#00a1de', 'line-width': 5 } });
+
+      map.addSource('blue-walk-end', { type: 'geojson', data: {
+        type: 'Feature', geometry: { type: 'LineString',
+          coordinates: [blueShape[8], blueShape[9]] }
+      }});
+      map.addLayer({ id: 'blue-walk-end', type: 'line', source: 'blue-walk-end',
+        paint: { 'line-color': '#888', 'line-width': 3, 'line-dasharray': [2, 2] } });
+
+      // ── Markers ─────────────────────────────────────────────────────────────
+      const dot = (coords, color, label, anchor = 'right') => {
+        const el = document.createElement('div');
+        el.style.cssText = `width:13px;height:13px;border-radius:50%;background:${color};border:2.5px solid #fff;box-shadow:0 1px 5px rgba(0,0,0,.35)`;
+        new maplibregl.Marker({ element: el })
+          .setLngLat(coords)
+          .setPopup(new maplibregl.Popup({ offset: 10 }).setText(label))
+          .addTo(map);
+      };
+
+      dot(redShape[0], '#4a9eff', 'Your location (Wrigleyville)');
+      dot(redShape[1], '#c60c30', 'Addison — board Red Line');
+      dot(redShape[8], '#c60c30', 'Lake — exit Red Line');
+      dot(redShape[9], '#222',    'Your destination (Loop)');
+
+      dot(blueShape[0], '#4a9eff', 'Your location (Logan Square)');
+      dot(blueShape[1], '#00a1de', 'Logan Square — board Blue Line');
+      dot(blueShape[8], '#00a1de', 'Clark/Lake — exit Blue Line');
+      dot(blueShape[9], '#222',    'Your destination (River North)');
+    });
+  </script>
+</body>
+</html>
