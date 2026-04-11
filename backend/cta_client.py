@@ -77,7 +77,11 @@ async def _fetch_station_arrivals(
             arr_str = eta["arrT"]
             # Format is either "20240101 14:32:00" or "2024-01-01T14:32:00"
             if "T" in arr_str:
-                arr_dt = datetime.fromisoformat(arr_str).replace(tzinfo=CHICAGO_TZ)
+                arr_dt = datetime.fromisoformat(arr_str)
+                if arr_dt.tzinfo is not None:
+                    arr_dt = arr_dt.astimezone(CHICAGO_TZ)
+                else:
+                    arr_dt = arr_dt.replace(tzinfo=CHICAGO_TZ)
             else:
                 arr_dt = datetime.strptime(arr_str, "%Y%m%d %H:%M:%S").replace(tzinfo=CHICAGO_TZ)
 
@@ -173,7 +177,13 @@ async def _fetch_bus_chunk(
     for prd in prd_list:
         try:
             prdctdn = prd.get("prdctdn", "")
-            minutes = 0 if prdctdn == "DUE" else int(prdctdn)
+            # "DUE" and "APPROACHING" both mean ≤0 minutes; any other
+            # non-numeric value (unexpected API change) is also treated as 0
+            # rather than raising ValueError and silently dropping the arrival.
+            if prdctdn.lstrip("-").isdigit():
+                minutes = int(prdctdn)
+            else:
+                minutes = 0
             raw_psgld = prd.get("psgld", "")
             if raw_psgld and raw_psgld not in _psgld_seen:
                 _psgld_seen.add(raw_psgld)

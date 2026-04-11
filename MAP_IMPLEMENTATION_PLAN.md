@@ -1,5 +1,7 @@
 # Map Implementation Plan
 
+> **STATUS: COMPLETE** — All 10 chunks implemented 2026-04-09. Phase 5.6 is done.
+
 Decisions finalized 2026-04-09. All chunks below are designed to be worked on and completed independently, in the order listed. Do not start a chunk until all previous chunks are complete.
 
 ---
@@ -242,16 +244,16 @@ Decisions finalized 2026-04-09. All chunks below are designed to be worked on an
 ## Implementation order summary
 
 ```
-Chunk 1  → Pre-compute GTFS shapes (backend, startup)
-Chunk 2  → Shape clipping per leg (backend, request-time)
-Chunk 3  → OSMnx walk path geometry (backend)
-Chunk 4  → Thread geometry into API response (backend)
+Chunk 1  → Pre-compute GTFS shapes (backend, startup)          ✅ done
+Chunk 2  → Shape clipping per leg (backend, request-time)       ✅ done
+Chunk 3  → OSMnx walk path geometry (backend)                   ✅ done
+Chunk 4  → Thread geometry into API response (backend)          ✅ done
 --- backend complete ---
-Chunk 5  → Install MapLibre + layout restructure (frontend)
-Chunk 6  → Transit photo loading state (frontend)
-Chunk 7  → MapView component init (frontend)
-Chunk 8  → Route rendering: shapes, dots, labels (frontend)
-Chunk 9  → Route card ↔ map interaction (frontend)
+Chunk 5  → Install MapLibre + layout restructure (frontend)     ✅ done
+Chunk 6  → Transit photo loading state (frontend)               ✅ done
+Chunk 7  → MapView component init (frontend)                    ✅ done
+Chunk 8  → Route rendering: shapes, dots, labels (frontend)     ✅ done
+Chunk 9  → Route card ↔ map interaction (frontend)              ✅ done
 --- map feature complete ---
-Chunk 10 → Delete demo files (cleanup)
+Chunk 10 → Delete demo files (cleanup)                          ✅ done
 ```

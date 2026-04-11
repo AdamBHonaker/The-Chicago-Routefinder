@@ -14,25 +14,18 @@ Stops are loaded once at startup and cached in memory (~1.2 MB).
 Geocoding strategy:
   1. Exact match against NEIGHBORHOOD_COORDS (instant, no network)
   2. Fuzzy match against NEIGHBORHOOD_COORDS (instant, no network)
-  3. OSM Nominatim geocoding (free, ~200ms, biased to Chicago bounding box)
+  3. Google Maps Geocoding API (~100ms, biased to Chicago bounding box)
 
 Geographic scope: Howard St (north) to 50th St (south), lakefront (east) to
-Pulaski Rd (west). The Nominatim bounding box still covers the full city so
-any Chicago address geocodes, but walk times outside this rectangle fall back
-to Haversine estimates and no CTA stops will be found beyond the boundary.
-
-Future: Replace Nominatim (Option A) with Google Maps Geocoding API (Option B)
-for higher accuracy on ambiguous/partial addresses and better coverage of new
-construction. Google's geocoding API is free up to ~40,000 calls/month then
-$5/1,000. Swap out the geocode_nominatim() function in this file and set
-GOOGLE_MAPS_API_KEY in backend/.env. No other changes needed.
+Pulaski Rd (west). Walk times outside this rectangle fall back to Haversine
+estimates and no CTA stops will be found beyond the boundary.
 """
 
 import csv
 import json
 import math
+import os
 import threading
-import time
 from difflib import SequenceMatcher
 from functools import lru_cache
 from pathlib import Path
@@ -43,13 +36,70 @@ from walking import walk_minutes
 
 GTFS_DIR = Path(__file__).parent / "gtfs_data"
 
-# Nominatim bounding box for Chicago (west, south, east, north)
-_CHICAGO_BBOX = "-87.94,41.64,-87.52,42.02"
-_NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
-_NOMINATIM_USER_AGENT = "CTA-Transit-PWA/1.0"
+# Google Maps Geocoding API
+_GOOGLE_MAPS_GEOCODE_URL = "https://maps.googleapis.com/maps/api/geocode/json"
+_GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
+# Chicago bounding box for geocoding bias (SW lat,lon | NE lat,lon)
+_CHICAGO_BOUNDS = "41.64,-87.94|42.02,-87.52"
 
 # Persistent geocode cache — survives server restarts
 _GEOCODE_CACHE_PATH = Path(__file__).parent / "geocode_cache.json"
+
+# ---------------------------------------------------------------------------
+# TEMPORARY pre-deployment rate limit — remove after go-live
+# Caps Google Geocoding API calls at 9,500/month to prevent accidental cost
+# during development and testing. The free tier is ~40,000 calls/month, so
+# this leaves a 30,500-call buffer before any charges would occur.
+# TODO: Remove this guard (and _GEOCODE_CALL_LIMIT, _geocode_call_counter,
+#       _load_geocode_counter, _save_geocode_counter, and the check inside
+#       geocode_google) once the app is in production and call volume is known.
+# ---------------------------------------------------------------------------
+_GEOCODE_CALL_LIMIT = 9_500
+_GEOCODE_COUNTER_PATH = Path(__file__).parent / "geocode_counter.json"
+
+
+def _load_geocode_counter() -> dict:
+    """Load the monthly geocode call counter from disk."""
+    if _GEOCODE_COUNTER_PATH.exists():
+        try:
+            return json.loads(_GEOCODE_COUNTER_PATH.read_text(encoding="utf-8"))
+        except Exception as exc:
+            print(f"[gtfs_loader] Could not load geocode counter: {exc}")
+    return {}
+
+
+def _save_geocode_counter(counter: dict) -> None:
+    """Persist the monthly geocode call counter to disk."""
+    try:
+        _GEOCODE_COUNTER_PATH.write_text(
+            json.dumps(counter, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        print(f"[gtfs_loader] Could not save geocode counter: {exc}")
+
+
+def _geocode_call_count() -> int:
+    """Return the number of Google geocoding API calls made this calendar month."""
+    import datetime
+    month_key = datetime.date.today().strftime("%Y-%m")
+    return _geocode_call_counter.get(month_key, 0)
+
+
+def _increment_geocode_call_count() -> None:
+    """Record one Google geocoding API call for the current calendar month."""
+    import datetime
+    month_key = datetime.date.today().strftime("%Y-%m")
+    _geocode_call_counter[month_key] = _geocode_call_counter.get(month_key, 0) + 1
+    _save_geocode_counter(_geocode_call_counter)
+
+
+# Loaded once at import time; new entries are written through immediately
+_geocode_call_counter: dict = _load_geocode_counter()
+
+# Lock that serialises Google API calls so concurrent requests for the same
+# uncached query don't each fire a network call and double-count the quota.
+_geocode_lock = threading.Lock()
 
 
 def _load_geocode_cache() -> dict[str, tuple[float, float] | None]:
@@ -77,10 +127,6 @@ def _save_geocode_cache(cache: dict) -> None:
 
 # Loaded once at import time; new entries are written through immediately
 _geocode_cache: dict[str, tuple[float, float] | None] = _load_geocode_cache()
-
-# Nominatim ToS: max 1 request per second from a single client
-_nominatim_lock = threading.Lock()
-_nominatim_last_call: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -362,66 +408,69 @@ def _haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> floa
 
 
 # ---------------------------------------------------------------------------
-# Nominatim geocoding (Option A)
-# Future: swap this function for Google Maps Geocoding API (Option B)
+# Google Maps geocoding
 # ---------------------------------------------------------------------------
 
-def geocode_nominatim(query: str) -> tuple[float, float] | None:
+def geocode_google(query: str) -> tuple[float, float] | None:
     """
     Geocode a free-text address, building name, or intersection to (lat, lon)
-    using OSM Nominatim. Results are biased to the Chicago bounding box.
+    using the Google Maps Geocoding API. Results are biased to Chicago.
 
-    Returns None on any failure (network error, no result, timeout).
-
-    Rate limit: 1 req/sec per Nominatim ToS. Acceptable for our usage pattern
-    since geocoding only fires on cache miss (most inputs hit the fast dict).
-
-    Future replacement (Option B): Google Maps Geocoding API
-      - Higher accuracy for ambiguous/partial addresses and new construction
-      - Free up to ~40,000 calls/month, then $5/1,000
-      - Set GOOGLE_MAPS_API_KEY in backend/.env
-      - Replace this function body; signature stays the same
+    Returns None on any failure (network error, no result, missing key).
+    Requires GOOGLE_MAPS_API_KEY in the environment.
     """
+    # Fast path: already cached (no lock needed — dict reads are thread-safe)
     if query in _geocode_cache:
         return _geocode_cache[query]
 
-    global _nominatim_last_call
-    with _nominatim_lock:
-        # Re-check cache inside the lock — another thread may have just resolved it
+    # Slow path: acquire lock so two concurrent requests for the same uncached
+    # query don't each fire a Google API call and double-count the quota.
+    with _geocode_lock:
+        # Re-check inside the lock — another thread may have just populated it
         if query in _geocode_cache:
             return _geocode_cache[query]
 
-        # Enforce 1 req/sec per Nominatim ToS
-        elapsed = time.monotonic() - _nominatim_last_call
-        if elapsed < 1.0:
-            time.sleep(1.0 - elapsed)
-        _nominatim_last_call = time.monotonic()
+        if not _GOOGLE_MAPS_API_KEY:
+            print("[gtfs_loader] GOOGLE_MAPS_API_KEY not set — geocoding unavailable")
+            return None
+
+        # TEMPORARY: pre-deployment call cap — see TODO note near _GEOCODE_CALL_LIMIT
+        current_count = _geocode_call_count()
+        if current_count >= _GEOCODE_CALL_LIMIT:
+            print(
+                f"[gtfs_loader] Monthly geocoding limit reached "
+                f"({current_count}/{_GEOCODE_CALL_LIMIT}) — skipping API call for '{query}'"
+            )
+            return None
 
         try:
             resp = requests.get(
-                _NOMINATIM_URL,
+                _GOOGLE_MAPS_GEOCODE_URL,
                 params={
-                    "q": query + ", Chicago, IL",
-                    "format": "json",
-                    "limit": 1,
-                    "countrycodes": "us",
-                    "viewbox": _CHICAGO_BBOX,
-                    "bounded": "1",
+                    "address": query + ", Chicago, IL",
+                    "key": _GOOGLE_MAPS_API_KEY,
+                    "components": "country:US",
+                    "bounds": _CHICAGO_BOUNDS,
                 },
-                headers={"User-Agent": _NOMINATIM_USER_AGENT},
                 timeout=5,
             )
-            results = resp.json()
-            if results:
-                coords: tuple[float, float] = (float(results[0]["lat"]), float(results[0]["lon"]))
+            data = resp.json()
+            if data.get("status") == "OK" and data.get("results"):
+                loc = data["results"][0]["geometry"]["location"]
+                coords: tuple[float, float] = (float(loc["lat"]), float(loc["lng"]))
                 _geocode_cache[query] = coords
                 _save_geocode_cache(_geocode_cache)
-                print(f"[gtfs_loader] Geocoded and cached '{query}' -> {coords}")
+                _increment_geocode_call_count()
+                print(
+                    f"[gtfs_loader] Geocoded and cached '{query}' -> {coords} "
+                    f"(monthly calls: {_geocode_call_count()}/{_GEOCODE_CALL_LIMIT})"
+                )
                 return coords
+            print(f"[gtfs_loader] Google geocoding returned status '{data.get('status')}' for '{query}'")
         except Exception as exc:
-            print(f"[gtfs_loader] Nominatim geocoding failed for '{query}': {exc}")
+            print(f"[gtfs_loader] Google geocoding failed for '{query}': {exc}")
 
-        # Cache the miss too — avoids hammering Nominatim for queries that never resolve
+        # Cache the miss too — avoids hammering the API for queries that never resolve
         _geocode_cache[query] = None
         _save_geocode_cache(_geocode_cache)
         return None
@@ -491,10 +540,16 @@ def find_nearest_train_stations(
     lon: float,
     max_distance_miles: float = 0.5,
     max_results: int = 3,
+    walk_to_station: bool = True,
 ) -> list[dict]:
     """
     Return the closest train parent stations within walking distance,
     each annotated with real street-network walk_minutes.
+
+    walk_to_station=True  (default): walk_minutes computed from (lat,lon) → station.
+                                     Use for origin: user walks TO the station.
+    walk_to_station=False:           walk_minutes computed from station → (lat,lon).
+                                     Use for destination: user walks FROM the station.
     """
     train_stations, _ = _load_stops()
 
@@ -507,7 +562,10 @@ def find_nearest_train_stations(
     candidates = candidates[:max_results]
 
     for s in candidates:
-        s["walk_minutes"] = walk_minutes(lat, lon, s["lat"], s["lon"])
+        if walk_to_station:
+            s["walk_minutes"] = walk_minutes(lat, lon, s["lat"], s["lon"])
+        else:
+            s["walk_minutes"] = walk_minutes(s["lat"], s["lon"], lat, lon)
         del s["distance_miles"]
 
     return sorted(candidates, key=lambda s: s["walk_minutes"])
@@ -540,6 +598,41 @@ def find_nearest_bus_stops(
     return sorted(candidates, key=lambda s: s["walk_minutes"])
 
 
+_FUZZY_STOP_WORDS: frozenset[str] = frozenset(
+    {"the", "of", "a", "an", "and", "at", "in", "on", "chicago"}
+)
+
+
+def fuzzy_match_neighborhood(query: str) -> tuple[tuple[float, float] | None, str | None]:
+    """
+    Fuzzy-match a lowercased, stripped query against NEIGHBORHOOD_COORDS.
+
+    Requires both a similarity score ≥ 0.95 AND at least one meaningful word
+    in common (multi-word queries only) so that "chicago art museum" never
+    matches "chicago history museum" on structural words alone.
+
+    Returns (coords, matched_key) if a match is found, else (None, None).
+    This is a shared helper used by both resolve_location() (here) and
+    _coords_for_location() in main.py so the threshold and stop-word list
+    stay in sync automatically.
+    """
+    q_words = set(query.split()) - _FUZZY_STOP_WORDS
+    best_score, best_key = 0.0, None
+    for key in NEIGHBORHOOD_COORDS:
+        score = SequenceMatcher(None, query, key).ratio()
+        if score <= best_score:
+            continue
+        if len(q_words) > 1:
+            key_words = set(key.split()) - _FUZZY_STOP_WORDS
+            if not q_words & key_words:
+                continue
+        best_score = score
+        best_key = key
+    if best_score >= 0.95 and best_key:
+        return NEIGHBORHOOD_COORDS[best_key], best_key
+    return None, None
+
+
 def resolve_location(query: str) -> tuple[list[dict], list[dict], str | None]:
     """
     Convert a free-text location query to nearby train stations and bus stops.
@@ -547,7 +640,7 @@ def resolve_location(query: str) -> tuple[list[dict], list[dict], str | None]:
     Resolution order:
       1. Exact match against NEIGHBORHOOD_COORDS
       2. Fuzzy match against NEIGHBORHOOD_COORDS (threshold: 0.95 similarity)
-      3. OSM Nominatim geocoding (network call, ~200ms, biased to Chicago)
+      3. Google Maps Geocoding API (network call, ~100ms, biased to Chicago)
 
     Returns:
         (train_stations, bus_stops, matched_name)
@@ -559,39 +652,15 @@ def resolve_location(query: str) -> tuple[list[dict], list[dict], str | None]:
     coords = NEIGHBORHOOD_COORDS.get(q)
     matched_name = q if coords else None
 
-    # 2. Fuzzy match — requires both a high similarity score AND at least one
-    #    meaningful word in common. This prevents "chicago art museum" from
-    #    fuzzy-matching to "chicago history museum" just because both share
-    #    the structural words "chicago" and "museum".
-    _STOP_WORDS = {"the", "of", "a", "an", "and", "at", "in", "on", "chicago"}
-    q_words = set(q.split()) - _STOP_WORDS
-
+    # 2. Fuzzy match via shared helper (0.95 threshold + meaningful-word guard)
     if coords is None:
-        best_score = 0.0
-        best_key: str | None = None
-        for key in NEIGHBORHOOD_COORDS:
-            score = SequenceMatcher(None, q, key).ratio()
-            if score <= best_score:
-                continue
-            # For multi-word queries, require at least one meaningful word in
-            # common. Single-word queries (typos like "wriglevile") skip this
-            # check since there's no word to overlap with.
-            if len(q_words) > 1:
-                key_words = set(key.split()) - _STOP_WORDS
-                if not q_words & key_words:
-                    continue
-            best_score = score
-            best_key = key
-        if best_score >= 0.95 and best_key:
-            coords = NEIGHBORHOOD_COORDS[best_key]
-            matched_name = best_key
+        coords, matched_name = fuzzy_match_neighborhood(q)
 
-    # 3. Nominatim geocoding fallback
+    # 3. Google Maps geocoding fallback
     if coords is None:
-        coords = geocode_nominatim(query)
+        coords = geocode_google(query)
         if coords:
             matched_name = query
-            print(f"[gtfs_loader] Geocoded '{query}' -> {coords}")
 
     if coords is None:
         return [], [], None

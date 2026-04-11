@@ -22,14 +22,8 @@ Claude cannot do these. Check them off as you go.
 - [x] **CTA Train Tracker API key** ✅
 - [x] **CTA Bus Tracker API key** ✅
 - [x] **Anthropic API key** ✅
-- [ ] **Google Maps API key** ← required before deployment
-  - Go to console.cloud.google.com → create or select a project
-  - Enable the **Geocoding API** (not Places API — just Geocoding)
-  - Create an API key under "Credentials"
-  - Add to `backend/.env` as `GOOGLE_MAPS_API_KEY=your_key_here`
+- [x] **Google Maps API key** ✅
   - Also add to Railway dashboard env vars (Settings → Variables) before deploying
-  - Free tier: ~40,000 geocoding calls/month — well within expected usage
-  - Once you have the key, tell Claude and the implementation will be done immediately (single function swap in `gtfs_loader.py`)
 
 ---
 
@@ -71,6 +65,12 @@ Claude cannot do these. Check them off as you go.
 - [ ] Research and select an ad network (Google AdSense is the standard starting point for a utility app)
 - [ ] Apply for AdSense account at adsense.google.com — requires a live public URL, so do this after Phase 6
 - [ ] Share AdSense publisher ID with Claude to wire up ad placements in the frontend
+
+---
+
+## Post-Deployment Cleanup
+
+- [ ] **Remove geocoding rate limit** — `backend/gtfs_loader.py` has a temporary 9,500 calls/month cap (`_GEOCODE_CALL_LIMIT`) to prevent accidental charges during testing. Once the app is live and call volume is understood, remove the cap: delete `_GEOCODE_CALL_LIMIT`, `_GEOCODE_COUNTER_PATH`, `_geocode_call_counter`, `_load_geocode_counter`, `_save_geocode_counter`, `_geocode_call_count`, `_increment_geocode_call_count`, and the guard block inside `geocode_google`. The large comment block above `_GEOCODE_CALL_LIMIT` marks all of these.
 
 ---
 

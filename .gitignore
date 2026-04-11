@@ -10,8 +10,11 @@ backend/gtfs_data/
 # OSMnx street graph cache — re-downloaded via fetch_street_graph.py
 backend/street_graph.graphml
 
-# Persistent geocode cache — built up at runtime from Nominatim lookups
+# Persistent geocode cache — built up at runtime from Google Maps API lookups
 backend/geocode_cache.json
+
+# Monthly Google Maps API call counter — temporary pre-deployment rate limiter
+backend/geocode_counter.json
 
 # Python
 __pycache__/

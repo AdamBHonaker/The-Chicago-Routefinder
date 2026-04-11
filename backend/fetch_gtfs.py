@@ -76,7 +76,8 @@ def validate_and_report() -> None:
     for filename in EXPECTED_FILES:
         path = GTFS_DIR / filename
         if path.exists():
-            rows = sum(1 for _ in open(path, encoding="utf-8")) - 1  # subtract header
+            with open(path, encoding="utf-8-sig") as fh:
+                rows = sum(1 for _ in fh) - 1  # subtract header
             size_kb = path.stat().st_size / 1024
             print(f"  ✓  {filename:<25} {rows:>7,} rows   ({size_kb:,.0f} KB)")
         else:

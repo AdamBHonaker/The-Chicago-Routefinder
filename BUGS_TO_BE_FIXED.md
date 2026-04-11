@@ -4,15 +4,180 @@ Known issues catalogued for future fixing. Severity: 🔴 High · 🟡 Medium ·
 
 ---
 
-## 🟡 Arrival lookup ignores train direction — FIX PRE-DEPLOYMENT
+## ✅ `load_dotenv()` called after local module imports — FIXED
 
-**File:** `backend/main.py` — `_build_arrival_lookup()` (line ~104); `_rank_routes()` (line ~114)
+**Fixed in:** `backend/main.py` — `load_dotenv()` moved to before the `from gtfs_loader import ...` line.
 
-**What happens:** `_build_arrival_lookup` keys arrivals on `(line_code, station_mapid)`. The CTA Train Tracker API returns arrivals for all platforms at a station — both directions of the same line. When `_rank_routes` looks up wait time for the first boarding station, it gets the earliest arrival at that station regardless of direction. If a northbound Red Line train is due in 1 minute but you need southbound (due in 8 minutes), the route card shows a 1-minute wait and ranks the route accordingly — both wrong.
+`gtfs_loader.py` reads `GOOGLE_MAPS_API_KEY = os.getenv(...)` at module level (import time). When Python processes `from gtfs_loader import ...` in `main.py`, it immediately executes all of `gtfs_loader.py`. `load_dotenv()` was previously called after those imports, so the `.env` file had not yet been loaded into `os.environ` when `_GOOGLE_MAPS_API_KEY` was captured — causing it to always be `""` regardless of what was in `.env`. Moving `load_dotenv()` before the local imports ensures the environment is populated before any module reads from it.
 
-**Effect:** Wait times shown in route cards can be inaccurate when a line serves a station in both directions. Routes may be ranked by the wrong train's wait time, potentially surfacing a slower option as "best."
+---
 
-**Fix:** The CTA Train Tracker API returns `destNm` (destination name) for each arrival — e.g., "Howard" vs "95th/Dan Ryan" for Red Line. Use the route's final destination station to infer which direction is relevant and filter arrivals to only matching-direction trains before building the lookup. This requires threading destination information through from `find_routes()` into the ranking step.
+## ✅ `line-cap` and `line-join` placed in MapLibre `paint` instead of `layout` — FIXED
+
+**File:** `frontend/src/MapView.jsx` lines 101–108
+
+**What happens:** In MapLibre GL JS, `line-cap` and `line-join` are **layout** properties, not paint properties. Placing them in the `paint` object silently ignores them. Transit route polylines render with sharp square ends and miter joins instead of the intended rounded style.
+
+**Current (wrong):**
+```js
+paint: { "line-color": color, "line-width": 5, "line-cap": "round", "line-join": "round" },
+```
+
+**Fix:**
+```js
+layout: { "line-cap": "round", "line-join": "round" },
+paint:  { "line-color": color, "line-width": 5 },
+```
+
+---
+
+## ✅ `wait_minutes === 0` ("Due") shows no indicator in RouteCard — FIXED
+
+**File:** `frontend/src/App.jsx` line 141
+
+**What happens:** `const waitNote = route.wait_minutes > 0 ? ...` evaluates to `""` for both `null` (no live data) and `0` (train/bus Due right now). A rider whose train is arriving immediately sees no indication of that in the route card header, even though the Claude recommendation text says "Due." The backend already distinguishes these three cases correctly — the frontend card just doesn't match.
+
+**Fix:**
+```js
+const waitNote =
+  route.wait_minutes === null ? ""
+  : route.wait_minutes === 0  ? " · Due now"
+  : ` · ${route.wait_minutes} min wait`;
+```
+
+---
+
+## ✅ No `AbortController` — stale results if user re-submits during a pending search — FIXED
+
+**File:** `frontend/src/App.jsx` lines 215–260
+
+**What happens:** If the user corrects their destination and presses "Get Route" while the previous fetch is still in-flight, both requests run concurrently. Whichever finishes last wins and calls `setResult()`. If the older search finishes after the newer one, the user sees stale results with no indication anything went wrong.
+
+**Fix:** Add an `AbortController` ref, cancel the in-flight request at the start of each `handleSubmit`, and pass `signal: abortRef.current.signal` to `fetch`. In the catch block, ignore `AbortError` so a cancelled search doesn't surface as an error message.
+
+```js
+const abortRef = useRef(null);
+
+// At the top of handleSubmit:
+if (abortRef.current) abortRef.current.abort();
+abortRef.current = new AbortController();
+
+// In the fetch call:
+const res = await fetch(`${BACKEND_URL}/recommend`, {
+  ...,
+  signal: abortRef.current.signal,
+});
+
+// In the catch block:
+} catch (err) {
+  if (err.name === "AbortError") return;
+  setError(err.message || "Something went wrong. Please try again.");
+}
+```
+
+---
+
+## ✅ PWA service worker pre-caches all PNGs including transit photos — FIXED
+
+**Fixed in:** `frontend/vite.config.js` — `globPatterns` now explicitly lists `icon-*.png` and `apple-touch-icon.png` instead of `**/*.png`, so only icon PNGs are pre-cached. A `StaleWhileRevalidate` runtime cache entry for `/transit-photos/` was added so photos load from cache when available and update in the background.
+
+---
+
+## ✅ `renderMarkdown` strips `**bold**` but not `*italic*` — FIXED
+
+**File:** `frontend/src/App.jsx` lines 51–56
+
+**What happens:** The `renderMarkdown` function strips `## headers` and `**bold**` but does not handle `*italic*` or `_italic_`. Claude's prompt instructs plain English but may occasionally italicize route names or times, leaving literal `*asterisks*` or `_underscores_` visible to riders in the recommendation text.
+
+**Fix:** Add `.replace(/\*([^*]+)\*/g, "$1").replace(/_([^_]+)_/g, "$1")` to the chain.
+
+---
+
+## ✅ `_load_weekday_service_ids()` only checks Monday + Tuesday + Wednesday — FIXED
+
+**File:** `backend/transit_graph.py` lines 175–178
+
+**What happens:** The condition requires `monday == 1 AND tuesday == 1 AND wednesday == 1` but does not check Thursday or Friday. A GTFS service active only on Thursday–Friday would be excluded from the "weekday" representative trip pool, potentially selecting an off-peak or weekend schedule for that route instead.
+
+**Fix:** Add `and row.get("thursday", "0").strip() == "1" and row.get("friday", "0").strip() == "1"` to the condition (or use `any` across all five weekday columns).
+
+---
+
+## ✅ Train arrival datetime: `.replace(tzinfo)` wrong for ISO strings with UTC offset — FIXED
+
+**File:** `backend/cta_client.py` line 80
+
+**What happens:** The `"T" in arr_str` branch calls `datetime.fromisoformat(arr_str).replace(tzinfo=CHICAGO_TZ)`. If the CTA API ever returns an ISO string with a timezone offset (e.g. `"2024-01-01T20:32:00+00:00"`), `fromisoformat` parses a UTC-aware datetime. `.replace(tzinfo=CHICAGO_TZ)` then re-labels the hours as Chicago time without converting them — making the arrival appear 5–6 hours off. CTA currently returns the space-separated format so this branch is rarely hit, but the bug exists as a latent time-bomb.
+
+**Fix:**
+```python
+arr_dt = datetime.fromisoformat(arr_str)
+if arr_dt.tzinfo is not None:
+    arr_dt = arr_dt.astimezone(CHICAGO_TZ)
+else:
+    arr_dt = arr_dt.replace(tzinfo=CHICAGO_TZ)
+```
+
+---
+
+## ✅ Destination walk times computed in wrong direction throughout — FIXED
+
+**Files:** `backend/transit_graph.py` lines 991–994, `backend/gtfs_loader.py` line 558, `backend/transit_graph.py` line 1127
+
+**What happens:** In three places, the walk time from a destination station/stop to the user's destination is computed with the arguments reversed — using `walk_minutes(dest_lat, dest_lon, station_lat, station_lon)` (destination → station) instead of the direction the user actually walks: `walk_minutes(station_lat, station_lon, dest_lat, dest_lon)` (station → destination). The displayed walk path (`street_walk_path`) is computed in the correct direction in all cases. On Chicago's largely bidirectional grid this produces the same result, but on one-way street segments the displayed walk time and the drawn path can diverge.
+
+**Fix:** Swap the argument order in the three affected `walk_minutes()` calls so origin and destination match the direction of travel.
+
+---
+
+## ✅ `validate_and_report()` uses `encoding="utf-8"` instead of `"utf-8-sig"` — FIXED
+
+**File:** `backend/fetch_gtfs.py` line 79
+
+**What happens:** All GTFS file readers in `transit_graph.py` and `gtfs_loader.py` use `encoding="utf-8-sig"` to strip a potential BOM header. `validate_and_report()` uses plain `"utf-8"`. If CTA's GTFS zip contains BOM-prefixed files, the reported row count will be off by one (the BOM is counted as content in the first line). Low severity since this function is display-only, but creates an inconsistency in the file opening pattern.
+
+**Fix:** Change `open(path, encoding="utf-8")` to `open(path, encoding="utf-8-sig")` in `validate_and_report()`.
+
+---
+
+## ✅ `G_base.copy()` called on every train routing request — FIXED
+
+**Fixed in:** `backend/transit_graph.py` — added `import threading` and a module-level `_thread_local: threading.local`. `find_routes()` now keeps a thread-local copy of `G_base` (`_thread_local.G`) keyed by `id(G_base)`. The copy is created once per executor thread (FastAPI's thread pool is typically 4–16 workers) and reused for all subsequent requests on that thread. `__ORIGIN__` and `__DEST__` virtual nodes are added before routing and removed in a `finally` block to leave the thread-local graph clean for the next request.
+
+---
+
+## ✅ `_coords_for_location()` duplicates fuzzy-match logic from `resolve_location()` — FIXED
+
+**Fixed in:** `backend/gtfs_loader.py` — added `_FUZZY_STOP_WORDS` (frozenset) and `fuzzy_match_neighborhood(query)` as a public module-level helper. `resolve_location()` now calls `fuzzy_match_neighborhood()` instead of reimplementing the loop inline. `backend/main.py` — imports `fuzzy_match_neighborhood` from `gtfs_loader`; `_coords_for_location()` uses it for step 2 instead of its own copy of the logic. The `SequenceMatcher` import and the inline `_STOP_WORDS` dict were removed from `main.py`.
+
+---
+
+## ✅ Redundant `walk_minutes` recomputation for destination stations in `find_routes()` — FIXED
+
+**Fixed in:** `backend/transit_graph.py` `find_routes()` — the per-station `street_walk_minutes()` call and `dest_walk[mapid] = walk_min` overwrite inside the `dest_stations` loop were removed. `dest_walk` is now populated once from `dest_stations[*]["walk_minutes"]` (already computed by `find_nearest_train_stations(walk_to_station=False)` using the same function) and those values are used directly as edge weights when adding the station→DEST edges.
+
+---
+
+## ✅ `photoFadeTimer` ref not cleared on component unmount — FIXED
+
+**File:** `frontend/src/App.jsx` lines 195–261
+
+**What happens:** `photoFadeTimer.current = setTimeout(...)` sets a 1-second timer. There is no `useEffect` cleanup to cancel this timer if the `App` component unmounts while the timeout is pending. In React 18 StrictMode (active during development), components are intentionally mounted/unmounted/remounted to surface this class of bug. This triggers a state update on an unmounted instance, generating a console warning that can obscure real errors.
+
+**Fix:** Add a `useEffect` cleanup:
+```js
+useEffect(() => {
+  return () => { if (photoFadeTimer.current) clearTimeout(photoFadeTimer.current); };
+}, []);
+```
+
+---
+
+## 🟢 Missing validation for CTA_BUS_API_KEY when bus transit mode is requested
+
+**Fixed in:** `backend/main.py` + `backend/transit_graph.py`
+
+`_build_arrival_lookup` now returns `{(line_code, station_mapid): {destNm: earliest_minutes}}` — grouped by destination rather than taking the global earliest. `_rank_routes` now accepts `dest_lat`/`dest_lon` and uses a dot-product bearing test to select the correct direction: it computes the vector from the boarding station to the exit station, then for each available `destNm` computes the vector from the boarding station to that terminal (looked up via new `get_station_by_name()` in `transit_graph.py`), and picks the terminal whose direction most closely matches the route's direction of travel. Falls back to the earliest arrival if station coordinates are unavailable. Two new helpers added to `transit_graph.py`: `get_station_coords(mapid)` and `get_station_by_name(name)`, both backed by the already-cached `_build_graph()`.
 
 ---
 
@@ -44,7 +209,7 @@ Known issues catalogued for future fixing. Severity: 🔴 High · 🟡 Medium ·
 
 ---
 
-## 🟢 Missing validation for CTA_BUS_API_KEY when bus transit mode is requested
+## ✅ Missing validation for CTA_BUS_API_KEY when bus transit mode is requested — FIXED
 
 **File:** `backend/main.py` `/recommend` endpoint (lines ~280–285)
 
@@ -56,7 +221,7 @@ Known issues catalogued for future fixing. Severity: 🔴 High · 🟡 Medium ·
 
 ---
 
-## 🟢 Routing engine exception swallows traceback
+## ✅ Routing engine exception swallows traceback — FIXED
 
 **File:** `backend/main.py` lines 365–366
 
@@ -66,19 +231,13 @@ Known issues catalogued for future fixing. Severity: 🔴 High · 🟡 Medium ·
 
 ---
 
-## 🟢 Bus routing may use wrong direction sequence for stops served by multiple directions
+## ✅ Bus routing may use wrong direction sequence for stops served by multiple directions — FIXED
 
-**File:** `backend/transit_graph.py` — `find_bus_routes()` (around line 820); `get_bus_stop_sequences()` (around line 480)
-
-**What happens:** Bus stop sequences are keyed by `(route_short_name, direction_id)` where `direction_id` is "0" or "1" from GTFS. The `board_index` maps each `stop_id` to the last encountered `(short_name, direction_id, index)` when building from sequences. If a bus stop is served by both directions of the same route, `board_index` only keeps the entry for the last direction processed. When matching a live bus arrival (which has a direction string like "Northbound"), the code uses the sequence for the wrong direction if the arrival's direction doesn't match the kept `direction_id`.
-
-**Effect:** Bus routes may be calculated using the wrong stop sequence, leading to incorrect exit stop selection and in-vehicle times. The route may show boarding at the wrong position in the sequence or fail to find a valid route.
-
-**Fix:** Modify `get_bus_stop_sequences()` to key sequences by `(route_short_name, direction_string)` instead of `direction_id`, but GTFS doesn't have direction strings. Alternatively, map the API's direction strings to GTFS `direction_id` per route, or ensure `board_index` handles multiple directions properly (e.g., by making it a list or dict of possibilities). Since bus arrivals include the direction string, use it to select the correct sequence.
+**Fixed in:** `backend/transit_graph.py` `find_bus_routes()` — `board_index` type changed from `dict[str, tuple[str, str, int]]` to `dict[str, list[tuple[str, str, int]]]`; population now uses `setdefault(..., []).append(...)` instead of plain assignment so all direction entries for a stop are preserved rather than overwriting. In the arrival loop, candidates are filtered to entries matching the arrival's route number, then all valid direction candidates are tried: each is scanned forward to find the best exit stop, and the direction whose exit stop is closest to the destination wins. `seen_route_dirs` is still checked per-candidate to avoid duplicates. `stops = sequences[route_dir_key]` is now assigned from the winning candidate after the selection loop.
 
 ---
 
-## 🟢 PWA manifest `purpose: "any maskable"` on a single icon entry
+## ✅ PWA manifest `purpose: "any maskable"` on a single icon entry — FIXED
 
 **File:** `frontend/vite.config.js` line 31
 
@@ -92,7 +251,7 @@ Known issues catalogued for future fixing. Severity: 🔴 High · 🟡 Medium ·
 
 ---
 
-## 🟢 No validation when origin and destination resolve to the same location
+## ✅ No validation when origin and destination resolve to the same location — FIXED
 
 **File:** `backend/main.py` `/recommend` endpoint
 
@@ -108,7 +267,7 @@ Known issues catalogued for future fixing. Severity: 🔴 High · 🟡 Medium ·
 
 ---
 
-## 🟢 `max_tokens=750` misaligned with prompt instruction "3-4 sentences"
+## ✅ `max_tokens=750` misaligned with prompt instruction "3-4 sentences" — FIXED
 
 **File:** `backend/main.py` line 382 (token limit); line ~266 (prompt instruction)
 
@@ -118,75 +277,60 @@ Known issues catalogued for future fixing. Severity: 🔴 High · 🟡 Medium ·
 
 ---
 
-## 🟢 Intermodal routing not supported (train + bus in one trip)
-
-**Scope:** `backend/transit_graph.py`, `backend/main.py`
-
-**What happens:** Train and bus routes are computed independently. A combined trip like "walk → Red Line → transfer to bus 36 → destination" is never surfaced as a structured route option. Claude may suggest such a combination in its text recommendation, but it won't appear as a route card with leg-by-leg breakdown and accurate timing.
-
-**Why deferred:** The majority of Chicago trips are served by train-only or bus-only options. Claude can already suggest intermodal trips conversationally. Implementing true intermodal routing requires integrating bus stops and bus route edges into the NetworkX train graph — a significant architectural addition best done post-launch with real trip data to validate against.
-
-**Future fix:** Add bus stop nodes and bus route edges to the NetworkX graph in `transit_graph.py`, along with transfer edges between train stations and nearby bus stops. The routing algorithm would then naturally find train+bus paths as part of `find_routes()`.
-
----
-
 ## ✅ Representative trip selection may use off-peak schedules — FIXED
 
 **Fixed in:** `backend/transit_graph.py` — `_load_weekday_service_ids()` added; `_load_representative_trips()` now loads all weekday candidate trips per direction; `_stream_stop_sequences()` selects the trip whose first-stop arrival is closest to noon (720 min) per line/direction. Single pass through `stop_times.txt`.
 
 ---
 
-## 🔴 No error handling around Claude API call — FIX PRE-DEPLOYMENT
+## ✅ No error handling around Claude API call — FIXED
 
-**File:** `backend/main.py` lines 412–420
-
-**What happens:** The `await _claude_client.messages.create(...)` call (line 412) has no try-except. Any network error, Anthropic rate limit, authentication failure, or API outage will propagate as an unhandled exception and return a generic 500 with no useful message. Additionally, `message.content[0].text` on line 420 is accessed without checking whether `message.content` is non-empty or whether the first element is a text block — a tool-use or error response from the API causes an IndexError or AttributeError.
-
-**Effect:** A transient Anthropic API error crashes the entire `/recommend` endpoint with an opaque 500. Users see "Internal Server Error" with no recovery guidance. The existing routing engine try-except blocks (lines 379, 398) correctly catch routing errors, but the Claude call has no equivalent.
-
-**Fix:**
-```python
-try:
-    message = await _claude_client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=750,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    text_block = next((c for c in message.content if hasattr(c, "text")), None)
-    if not text_block:
-        raise ValueError("No text block in Claude response")
-    recommendation = text_block.text
-except Exception as exc:
-    import traceback; traceback.print_exc()
-    raise HTTPException(status_code=502, detail=f"Claude API error: {exc}")
-```
+**Fixed in:** `backend/main.py` — `_claude_client.messages.create()` wrapped in try/except; response text extracted via `next((c for c in message.content if hasattr(c, "text")), None)` to safely handle non-text blocks; raises HTTP 502 with the error message on any failure; full traceback printed to server logs.
 
 ---
 
-## 🟡 Frontend `res.json()` crashes on non-JSON error responses — FIX PRE-DEPLOYMENT
+## ✅ Frontend `res.json()` crashes on non-JSON error responses — FIXED
 
-**File:** `frontend/src/App.jsx` lines 130–132
-
-**What happens:** When the backend returns a non-OK response, the code calls `await res.json()` unconditionally. If the server returns HTML (e.g., a Railway/nginx 502 or 504 gateway error), `res.json()` throws a `SyntaxError`. That error propagates to the `catch` block, which shows the raw `SyntaxError: Unexpected token '<'...` message to the user instead of a helpful error.
-
-**Effect:** Gateway errors (which will happen on Railway cold starts or deploy restarts) show a cryptic parse error to the user instead of "Service temporarily unavailable."
-
-**Fix:**
-```javascript
-if (!res.ok) {
-  let msg = `Error ${res.status}`;
-  try {
-    const data = await res.json();
-    msg = data.detail || msg;
-  } catch {
-    msg = `Service error (${res.status} ${res.statusText})`;
-  }
-  throw new Error(msg);
-}
-```
+**Fixed in:** `frontend/src/App.jsx` — non-OK responses now attempt `res.json()` inside a try/catch; if parsing fails (e.g. Railway/nginx 502 returning HTML), falls back to `"Service error (502 Bad Gateway)"`. Users always see a readable message instead of a cryptic `SyntaxError`.
 
 ---
 
 ## ✅ Bus stop IDs silently truncated to 10 — no batching — FIXED
 
 **Fixed in:** `backend/cta_client.py` — extracted `_fetch_bus_chunk()` helper; `get_bus_arrivals()` now splits stop IDs into chunks of 10 and fires all chunks concurrently via `asyncio.gather`. Results merged and sorted by arrival time.
+
+---
+
+## ✅ `prdctdn` value "APPROACHING" (and similar) silently drops bus arrival — FIXED
+
+**Fixed in:** `backend/cta_client.py` — replaced `int(prdctdn)` with an `isdigit()` guard: numeric strings are parsed as before; `"DUE"`, `"APPROACHING"`, and any other non-numeric value all map to `0` minutes instead of raising `ValueError` and silently dropping the arrival.
+
+---
+
+## ✅ `wait=0` conflates "no arrival data" with "train is Due now" — FIXED
+
+**Fixed in:** `backend/main.py` — `_rank_routes()` now initialises `wait: int | None = None` (no data) instead of `0`. The empty `dest_map` branch explicitly sets `wait = None`. `total` computation uses `wait if wait is not None else 0`. `_format_routes()` now has three branches: `wait is None` → no note, `wait == 0` → `"next train Due"` / `"next bus Due"`, `wait > 0` → `"next train in N min"` / `"next bus in N min"`.
+
+---
+
+## ✅ Bus shape lookup uses `route_short_name` instead of `route_id` — FIXED
+
+**Fixed in:** `backend/transit_graph.py` `_build_shape_lookup()` — after building the primary `(route_id, direction_id)` entries, the function now reads `routes.txt` once more to get each route's `route_short_name`. For any bus route where `route_short_name != route_id`, an alias entry `(route_short_name, direction_id)` is added to `_shape_lookup` via `setdefault` (so an existing `route_id` entry is never overwritten). `find_bus_routes()` already calls `get_shape(short_name, did)` — no change needed there.
+
+---
+
+## ✅ Transfer `WalkLeg` missing turn-by-turn directions — FIXED
+
+**Fixed in:** `backend/transit_graph.py` `_path_to_route()` — the inter-station transfer `WalkLeg` constructor now includes `directions=street_walk_directions(flat, flon, tlat, tlon)`, consistent with the origin and destination walk legs. Local variables `flat/flon/tlat/tlon` introduced to avoid duplicating the coordinate lookups.
+
+---
+
+## ✅ `geocode_google` not thread-safe under concurrent requests — FIXED
+
+**Fixed in:** `backend/gtfs_loader.py` — added module-level `_geocode_lock = threading.Lock()` (imported `threading`). `geocode_google()` now uses a double-checked locking pattern: fast path reads the cache without a lock; slow path acquires the lock, re-checks the cache (so a second thread that waited doesn't make a second API call), then performs the network call, cache write, and counter increment inside the lock. All mutation of `_geocode_cache` and `_geocode_call_counter` is serialised.
+
+---
+
+## ✅ Unclosed file handle in `fetch_gtfs.py` validation step — FIXED
+
+**Fixed in:** `backend/fetch_gtfs.py` `validate_and_report()` — bare `open(path, ...)` replaced with `with open(path, ...) as fh:` context manager. File handle is now released immediately after the row count, regardless of exceptions.

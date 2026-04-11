@@ -28,19 +28,42 @@ export default defineConfig({
             src: "icon-512.png",
             sizes: "512x512",
             type: "image/png",
-            purpose: "any maskable",
+            purpose: "any",
+          },
+          {
+            src: "icon-512.png",
+            sizes: "512x512",
+            type: "image/png",
+            purpose: "maskable",
           },
         ],
       },
       workbox: {
-        // Cache the app shell; API calls always go to the network
-        globPatterns: ["**/*.{js,css,html,ico,png,svg,woff2}"],
+        // Cache app shell assets. Restrict PNGs to icons only so high-res
+        // transit photos are NOT pre-cached (they would add 20–50 MB to the
+        // service worker manifest and risk hitting the ~50 MB storage quota
+        // on older Android WebViews). Transit photos are fetched lazily at
+        // runtime via StaleWhileRevalidate instead.
+        globPatterns: [
+          "**/*.{js,css,html,ico,svg,woff2}",
+          "icon-*.png",
+          "apple-touch-icon.png",
+        ],
         runtimeCaching: [
           {
             // Match /recommend and /health regardless of hostname (covers both
             // localhost dev and the production Railway URL)
             urlPattern: /\/(recommend|health)(\?.*)?$/i,
             handler: "NetworkOnly",
+          },
+          {
+            // Transit photos: serve from cache if available, update in background
+            urlPattern: /\/transit-photos\//i,
+            handler: "StaleWhileRevalidate",
+            options: {
+              cacheName: "transit-photos",
+              expiration: { maxEntries: 30, maxAgeSeconds: 60 * 60 * 24 * 30 },
+            },
           },
         ],
       },

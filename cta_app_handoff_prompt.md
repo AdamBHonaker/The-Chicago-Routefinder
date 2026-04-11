@@ -51,7 +51,7 @@ Accuracy is essential. The routing engine must:
 **Routing Engine (Python libraries)**
 - `networkx` — graph-based route calculation
 - `osmnx` — walking distance via real street network data
-- `requests` — CTA API HTTP calls + Nominatim geocoding
+- `requests` — CTA API HTTP calls + Google Maps geocoding
 - `aiohttp` — simultaneous async API calls for speed
 
 > Note: CTA GTFS data is parsed directly with Python's built-in `csv` module (streaming). `gtfs_kit`, `pandas`, and `shapely` were considered during planning but are not used — direct CSV parsing proved sufficient and keeps the dependency footprint small.
@@ -191,8 +191,8 @@ A "bring your own Anthropic API key" option has been identified as a potential p
 | 4 | Build routing engine (GTFS + NetworkX + OSMnx) | ✅ Complete |
 | 5 | Polish UI, PWA configuration, mobile optimization | ✅ Complete (verified locally) |
 | 5.5 | Bus routing — structured route cards | ✅ Complete (2026-04-09) |
-| 5.6 | Map feature — MapLibre GL JS + GTFS shapes + OSMnx walk geometry | ⬜ Next — see MAP_IMPLEMENTATION_PLAN.md |
-| 6 | Deploy publicly (Vercel + Railway + custom domain) | ⬜ Pending — awaiting Google Maps key + Railway/Vercel accounts |
+| 5.6 | Map feature — MapLibre GL JS + GTFS shapes + OSMnx walk geometry | ✅ Complete (2026-04-09) |
+| 6 | Deploy publicly (Vercel + Railway + custom domain) | ⬜ Pending — awaiting Railway/Vercel accounts |
 | 7 | Monetization (AdSense) | ⬜ Pending |
 
 ---
@@ -212,9 +212,10 @@ A "bring your own Anthropic API key" option has been identified as a potential p
 ## Known Pending Items
 
 - **CTA API limit:** 100,000 req/day (confirmed from Train Tracker docs). Plan caching strategy around 100k.
-- **Known bugs:** See `BUGS_TO_BE_FIXED.md` for a full list. Pre-deployment: 1 🔴 (Claude API error handling — no try-except around `_claude_client.messages.create()`), 1 🟡 (arrival direction lookup), 1 🟡 (frontend res.json crash on non-JSON error responses). Several 🟢 deferred post-launch. Intermodal routing documented as a post-launch enhancement.
-- **API keys:** CTA Train Tracker, CTA Bus Tracker, and Anthropic API keys are all obtained and configured. `GOOGLE_MAPS_API_KEY` not yet obtained — required before deployment (see Geocoding Strategy below).
-- **Geocoding:** Nominatim (current) returns wrong/missing results for specific landmarks and full street addresses. Google Maps Geocoding API upgrade implementation is ready — awaiting API key. Can be done in parallel with Phase 5.6 map chunks or immediately after.
+- **Known bugs:** See `BUGS_TO_BE_FIXED.md` for a full list. All 🔴/🟡 bugs are now fixed. All 🟢 bugs are now fixed (2026-04-11 batch 4 session). There are no remaining deferred bugs.
+- **Future enhancements:** See `FUTURE_ENHANCEMENTS.md` for the full list (train station exit guidance, intermodal routing, rate limiting, BYOK, response caching, Haiku for simple queries). Detailed chunked implementation plans for the first two are in `FEATURE_IMPLEMENTATION_PLANS.md` — Feature A (Train Station Exit Guidance, 5 chunks, not started) and Feature B (Intermodal Routing, 6 chunks, not started — do after Phase 6 deploy).
+- **API keys:** All four keys obtained and configured: CTA Train Tracker, CTA Bus Tracker, Anthropic, and Google Maps.
+- **Geocoding:** Google Maps Geocoding API implemented (`geocode_google()` in `gtfs_loader.py`). A temporary 9,500 calls/month cap is in place during testing — see HUMAN_TODO.md (Post-Deployment Cleanup) for removal instructions.
 
 ### Notable changes (session — 2026-04-06)
 Three bugs in `backend/main.py` were fixed before deployment:
@@ -226,8 +227,8 @@ Three bugs in `backend/main.py` were fixed before deployment:
 1. **Workbox production URL** — `vite.config.js` `runtimeCaching` pattern updated from `http://localhost:8000/.*` to `/\/(recommend|health)/` so the `NetworkOnly` rule applies to the Railway production URL, not just localhost.
 2. **Stale comment removed** — `cta_client.py` module docstring updated; old Phase 4 TODO comment about bus stop IDs removed (Phase 4 is complete).
 3. **Tech stack corrected** — Handoff tech stack section updated; `gtfs_kit`, `pandas`, `shapely` removed (not used — direct CSV parsing is used instead).
-4. **`max_tokens` raised to 750** — Was 300. Raised for testing to give Claude more room. Plan to tune down for production.
-5. **Frontend request timeout removed** — `App.jsx` no longer imposes a 15-second `AbortController` timeout. Requests run until the server responds. Removed for testing; can be re-added with a longer limit before launch if needed.
+4. **`max_tokens` raised to 750** — Was 300. Raised for testing to give Claude more room. *(Subsequently lowered to 400 to align with "3-4 sentences" prompt instruction — session 2026-04-10 bug fix batches.)*
+5. **Frontend request timeout removed** — `App.jsx` no longer imposes a 15-second `AbortController` timeout. Requests run until the server responds. *(An `AbortController` was subsequently re-added as a race condition guard — cancels in-flight request on re-submit, not a timeout — session 2026-04-10 bug fix batches.)*
 6. **Rate limiting deferred** — Noted in documentation; intentionally not implemented during testing phase. Must add before or shortly after public launch.
 
 ### Notable changes (session — 2026-04-09)
@@ -242,23 +243,137 @@ Three bugs in `backend/main.py` were fixed before deployment:
 9. **`psgld` normalization added; Bus Fullness filter hidden** — `cta_client.py`: raw `psgld` value normalized to `UPPER_SNAKE` at read time. Live API testing confirmed CTA does not currently populate `psgld` in any Bus Tracker v3 responses — Bus Fullness `<select>` commented out in `App.jsx` until CTA enables this data. Backend filter logic preserved intact.
 10. **Map feature designed** — MapLibre GL JS + OpenFreeMap Positron selected. Full design decisions and 10-chunk implementation plan documented in `MAP_IMPLEMENTATION_PLAN.md`. This is Phase 5.6 and the next coding work to begin.
 
+### Notable changes (session — 2026-04-09, walk directions + enhancements doc)
+1. **Street-level walk directions** — `walking.py`: new `walk_directions(origin_lat, origin_lon, dest_lat, dest_lon) -> list[dict]` (lru_cache 512). Uses OSMnx shortest path, reads edge `name` + `length`, groups consecutive same-street edges, computes cardinal bearing per group, returns `[{"street": "Broadway", "direction": "S", "minutes": 1.2}, ...]`. Falls back to a single unnamed step on error.
+2. **`WalkLeg.directions` field** — `transit_graph.py`: `WalkLeg` gains `directions: list` field. `walk_directions` (imported as `street_walk_directions`) called on all walk legs — origin→board station, board station→destination (both train and bus routes), and inter-station transfer legs. Import: `from walking import walk_directions as street_walk_directions`.
+3. **Directions serialized** — `main.py`: `"directions": leg.directions` added to walk leg in `/recommend` response.
+4. **Steps toggle in route cards** — `App.jsx`: walk legs now render as `WalkLegItem` component with a "Steps" toggle button. Only shown when `leg.directions.length > 1`. When open, shows a compact step list: arrow glyph + cardinal abbreviation + street name + duration. New CSS classes: `leg-walk-body`, `leg-steps-toggle`, `leg-steps`, `leg-step`, `leg-step-arrow`, `leg-step-text`, `leg-step-dir`, `leg-step-street`, `leg-step-time`.
+5. **`FUTURE_ENHANCEMENTS.md` created** — New file cataloguing post-launch feature ideas: train station exit guidance, intermodal routing, rate limiting, BYOK, response caching, Claude Haiku for simple queries.
+
+---
+
+### Notable changes (session — 2026-04-09, pre-deployment bug fixes)
+1. **Claude API error handling** — `backend/main.py`: `_claude_client.messages.create()` wrapped in try/except; response text extracted safely via `next(... if hasattr(c, "text"))` to handle non-text blocks; raises HTTP 502 on failure; full traceback printed to logs.
+2. **Train direction-aware arrival lookup** — `backend/main.py` + `backend/transit_graph.py`: `_build_arrival_lookup` now returns `{(line_code, mapid): {destNm: minutes}}`. `_rank_routes` uses a dot-product bearing test (boarding→exit vector vs boarding→terminal vector) to select the correct direction from live arrivals. Two new helpers in `transit_graph.py`: `get_station_coords(mapid)` and `get_station_by_name(name)`, backed by the already-cached graph. Falls back to earliest arrival if coordinates unavailable.
+3. **Frontend non-JSON error handling** — `frontend/src/App.jsx`: non-OK responses now attempt `res.json()` in a try/catch; HTML gateway errors (Railway 502s) fall back to `"Service error (502 Bad Gateway)"` instead of a cryptic SyntaxError.
+
+---
+
+### Notable changes (session — 2026-04-10, comprehensive bug audit)
+
+A full two-pass bug audit was performed across all backend and frontend files. One critical bug was fixed immediately; the rest are documented in `BUGS_TO_BE_FIXED.md`.
+
+**Fixed this session:**
+1. **`load_dotenv()` import-order bug** — `backend/main.py`: `load_dotenv()` was called on line 19, after `from gtfs_loader import ...` on line 12. Python executes `gtfs_loader.py` at import time, including `_GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")` — before `.env` was loaded. Google Maps API key was always `""` regardless of what was in `.env`. Fixed by moving `load_dotenv()` to before the local imports. This was the root cause of geocoding failures during testing.
+
+**Bugs catalogued this session (all subsequently fixed — see session 2026-04-10 bug fix batches):**
+
+*🟡 Medium (all fixed):*
+- ~~`line-cap`/`line-join` placed in MapLibre `paint` instead of `layout` in `MapView.jsx`~~ ✅
+- ~~`wait_minutes === 0` ("Due") shows no indicator in `RouteCard`~~ ✅
+- ~~No `AbortController` on the `/recommend` fetch — race condition on re-submit~~ ✅
+- PWA `globPatterns` includes all `*.png` files — deferred (no transit photos exist yet; no live risk)
+
+*🟢 Low (all fixed):*
+- ~~`renderMarkdown` strips `**bold**` but not `*italic*`~~ ✅
+- ~~`_load_weekday_service_ids()` only checks Mon + Tue + Wed~~ ✅
+- ~~Train arrival datetime `.replace(tzinfo=...)` wrong for ISO strings with UTC offset~~ ✅
+- ~~Destination walk times computed in wrong direction~~ ✅
+- ~~`validate_and_report()` uses `encoding="utf-8"` instead of `"utf-8-sig"`~~ ✅
+- ~~`photoFadeTimer` ref not cleared on `App` unmount~~ ✅
+- ~~Routing exceptions swallow traceback~~ ✅
+- ~~Missing `CTA_BUS_API_KEY` validation when bus mode requested~~ ✅
+- ~~`max_tokens=750` misaligned with "3-4 sentences" prompt~~ ✅
+- ~~PWA manifest combined `"any maskable"` icon entry~~ ✅
+- ~~No validation when origin and destination resolve to the same location~~ ✅
+- ~~`G_base.copy()` called on every train routing request~~ ✅
+- ~~`_coords_for_location()` duplicates fuzzy-match logic from `resolve_location()`~~ ✅
+- ~~Redundant `walk_minutes` recomputation for destination stations~~ ✅
+- ~~Bus routing wrong direction sequence for stops served by multiple directions~~ ✅
+
+**Pre-deployment bug status update:** All 🔴/🟡/🟢 bugs fixed. Zero deferred bugs remain.
+
+---
+
+### Notable changes (session — 2026-04-10, bug fix batches 1–3)
+
+All 🟡 and most 🟢 bugs from the 2026-04-10 audit were fixed across three batches.
+
+**Batch 1 — 🟡 Frontend correctness:**
+1. **`line-cap`/`line-join` moved to `layout`** — `MapView.jsx`: transit polylines now render with rounded caps and joins as intended.
+2. **`wait_minutes === 0` "Due now" indicator** — `App.jsx`: `RouteCard` now distinguishes `null` (no data), `0` ("Due now"), and `> 0` ("N min wait").
+3. **`AbortController` race condition** — `App.jsx`: in-flight `/recommend` fetch is cancelled on re-submit; `AbortError` silently discarded so cancelled searches don't show error messages.
+
+**Batch 2 — 🟢 Quick fixes (backend + frontend):**
+4. **`renderMarkdown` italic stripping** — `App.jsx`: `*italic*` and `_italic_` now stripped alongside `**bold**`.
+5. **`photoFadeTimer` unmount cleanup** — `App.jsx`: `useEffect` cleanup cancels pending fade timer; suppresses React StrictMode warning.
+6. **Routing exception tracebacks** — `main.py`: both train and bus routing `except` blocks now call `traceback.print_exc()`; `import traceback` moved to module level.
+7. **`CTA_BUS_API_KEY` validation** — `main.py`: raises HTTP 500 if bus key is missing when transit mode is Bus or All.
+8. **`validate_and_report()` encoding** — `fetch_gtfs.py`: changed `"utf-8"` → `"utf-8-sig"` to match all other GTFS readers.
+9. **`max_tokens` re-aligned** — `main.py`: lowered from 750 → 400 to match "3-4 sentences" prompt instruction.
+10. **PWA manifest icon split** — `vite.config.js`: 512px icon split into two entries (`purpose: "any"` and `purpose: "maskable"`) per PWA spec.
+11. **Origin = destination guard** — `main.py`: returns HTTP 400 if resolved coords are within ~100m of each other.
+
+**Batch 3 — 🟢 Backend correctness:**
+12. **`_load_weekday_service_ids()` full Mon–Fri check** — `transit_graph.py`: condition now checks all five weekday columns via `all(...)`.
+13. **Train arrival datetime timezone handling** — `cta_client.py`: ISO strings with an existing `tzinfo` are now converted via `.astimezone()` instead of blindly re-labelled via `.replace()`.
+14. **Destination walk direction** — `gtfs_loader.py` + `transit_graph.py`: `find_nearest_train_stations` gained a `walk_to_station=False` parameter; destination call site updated; `street_walk_minutes` arg order fixed in `find_routes()` (lines 991–994) and `find_bus_routes()` (line 1127) so the walk is computed station→destination instead of destination→station.
+
+---
+
+### Notable changes (session — 2026-04-11, bug fix batch 4)
+
+All four remaining 🟢 deferred bugs fixed. No known bugs remain.
+
+**Batch 4 — 🟢 Performance, correctness, and maintainability:**
+1. **PWA `globPatterns` pre-cache fix** — `vite.config.js`: `globPatterns` now lists `icon-*.png` and `apple-touch-icon.png` explicitly instead of `**/*.png`, keeping transit photos out of the pre-cache manifest (prevents 20–50 MB service worker installs on older Android WebViews). A `StaleWhileRevalidate` runtime cache entry for `/transit-photos/` added so photos load lazily after install.
+2. **Thread-local graph copy** — `transit_graph.py`: added `import threading` and module-level `_thread_local: threading.local`. `find_routes()` now keeps a thread-local copy of `G_base` (keyed by `id(G_base)`) created once per executor thread instead of on every request. Virtual nodes `__ORIGIN__`/`__DEST__` are added before routing and removed in a `finally` block so the thread-local graph stays clean for the next request.
+3. **`fuzzy_match_neighborhood()` shared helper** — `gtfs_loader.py`: `_FUZZY_STOP_WORDS` (frozenset) and `fuzzy_match_neighborhood(query)` extracted as a public module-level helper; `resolve_location()` calls it instead of reimplementing the loop. `main.py`: imports `fuzzy_match_neighborhood` from `gtfs_loader`; `_coords_for_location()` step 2 replaced with a call to the shared helper. `SequenceMatcher` import and inline `_STOP_WORDS` dict removed from `main.py`. Threshold (0.95) and stop-word list now have a single source of truth.
+4. **Redundant `walk_minutes` recomputation removed** — `transit_graph.py` `find_routes()`: the per-station `street_walk_minutes()` call and `dest_walk[mapid]` overwrite inside the `dest_stations` loop were removed. `dest_walk` is populated once from values already computed by `find_nearest_train_stations(walk_to_station=False)`; those values are used directly as edge weights on station→DEST edges.
+5. **Bus routing multi-direction `board_index` fix** — `transit_graph.py` `find_bus_routes()`: `board_index` type changed from `dict[str, tuple]` to `dict[str, list[tuple]]`; population now uses `setdefault(..., []).append(...)` so both direction entries are stored when a stop appears in sequences for both directions of a route. In the arrival loop, all matching direction candidates are tried and the direction whose sequence leads the exit stop closest to the destination wins. `stops = sequences[route_dir_key]` now assigned from the winning candidate after selection.
+
+---
+
+### Notable changes (session — 2026-04-09, Google Maps geocoding)
+1. **Google Maps Geocoding API implemented** — `gtfs_loader.py`: `geocode_nominatim()` replaced with `geocode_google()`. Nominatim-specific rate-limit lock/timer removed (not needed for Google Maps). API call uses Chicago bounding box bias + `components=country:US`. Persistent disk cache unchanged.
+2. **Temporary monthly rate limiter added** — `_GEOCODE_CALL_LIMIT = 9_500` calls/month caps API spend during testing. Counter persisted to `geocode_counter.json`, resets automatically each calendar month. Only actual API hits count — cache hits are free. Full removal instructions (exact symbols to delete) in HUMAN_TODO.md under "Post-Deployment Cleanup."
+
+---
+
+### Notable changes (session — 2026-04-09, map feature — Phase 5.6 complete)
+
+All 10 chunks of MAP_IMPLEMENTATION_PLAN.md implemented. Full map feature is live.
+
+**Backend (Chunks 1–4):**
+1. **GTFS shape lookup** (`transit_graph.py`) — `_build_shape_lookup()` streams `shapes.txt` at startup (sorted by `shape_pt_sequence`), reads `trips.txt` to map `(route_id, direction_id) → shape_id`, builds module-level `_shape_lookup` dict. Called in `warm_up()`. Public API: `get_shape(route_id, direction_id) -> list[list[float]] | None`.
+2. **Shape clipping** (`transit_graph.py`) — `clip_shape(shape_points, board_lat, board_lon, exit_lat, exit_lon)` finds nearest shape points to each stop by squared Euclidean distance, returns the slice between them. Falls back to straight line if shape is None/empty.
+3. **Walk path geometry** (`walking.py`) — `walk_path(origin_lat, origin_lon, dest_lat, dest_lon)` uses `nx.shortest_path()` on the loaded OSMnx graph to return street-network path as `[[lat, lon], ...]`. Same `lru_cache(maxsize=512)` as `walk_minutes()`. Falls back to straight line.
+4. **Geometry in API response** (`transit_graph.py`, `main.py`) — `WalkLeg` gains `path_points`, `TransitLeg` gains `shape_points`. Transit edges now store `direction_id`. `_path_to_route()` calls `walk_path()` on every walk leg and `get_shape() + clip_shape()` on every transit leg. `find_bus_routes()` does the same. `/recommend` response now includes `shape`, `path`, `from_coords`, `to_coords` per leg and `origin_coords`, `dest_coords` at the top level.
+
+**Frontend (Chunks 5–10):**
+5. **MapLibre + layout** — `maplibre-gl` installed; CSS imported in `main.jsx`; `App.jsx` restructured into `.layout.layout--split` with `.panel-cards` (40%, scrollable) and `.panel-map` (60%, fixed). 800px breakpoint stacks vertically with 300px/350px min-heights.
+6. **TransitPhoto** — `PHOTOS` manifest (hardcoded `{src, caption}` array) in `App.jsx`. `TransitPhoto` component picks one photo randomly on mount. Photo shown while loading or when result has no routes. Fades out over 1s when routes arrive (CSS `opacity` transition), then removed from DOM. `key={photoKey}` forces new random photo on each search.
+7. **MapView init** — `MapView.jsx` created. MapLibre map initialized once in `useEffect([], [])`. All six interaction handlers disabled by default. "🔓 Unlock map" button (top-left, shown when visible and not yet unlocked) re-enables all handlers on click. Map is always in DOM (`opacity: 0` → `opacity: 1` CSS transition synced with photo fade-out).
+8. **Route rendering** — Two-pass rendering in `renderRoute()`: lines first (walk dashed gray, transit solid colored), then markers (board/exit dots, intermediate stop dots sampled from shape, origin blue dot, destination dark dot). All sources/layers prefixed `route-` for reliable clearing on route change. `fitBounds({ padding: 60, animate: false })` after every render.
+9. **Route card ↔ map** — `selectedRouteIndex` state in `App` (default 0, reset on new search). `RouteCard` gains `isSelected` + `onSelect` props. Clicking a card selects it (blue ring highlight) and snaps the map to that route instantly. `MapView` receives `routes[selectedRouteIndex]`.
+10. **Demo files deleted** — `demo-straight-lines.html`, `demo-gtfs-shapes.html`, `demo-carto-positron.html`, `demo-openfreemap-liberty.html`, `demo-openfreemap-positron.html` removed from repo root.
+
+---
+
 ## Geocoding Strategy
 
 Location resolution uses a three-step fallback (implemented in `gtfs_loader.py`):
 
 1. **Exact match** against `NEIGHBORHOOD_COORDS` dict (instant, no network)
 2. **Fuzzy match** against `NEIGHBORHOOD_COORDS` (instant, no network)
-3. **OSM Nominatim** (Option A) — free geocoding API, ~200ms, biased to Chicago bounding box
+3. **Google Maps Geocoding API** — ~100ms, biased to Chicago bounding box (`bounds=41.64,-87.94|42.02,-87.52`) with `components=country:US`
 
-**Upgrade required — Option B: Google Maps Geocoding API**
-- Nominatim confirmed insufficient: returns wrong/missing results for specific landmarks, newer places, and full street addresses. Users must be able to type any address or place name — this is load-bearing functionality.
-- Higher accuracy for ambiguous/partial addresses, building names, and new construction
-- Free up to ~40,000 calls/month, then $5/1,000 (Google Maps Platform)
-- Requires `GOOGLE_MAPS_API_KEY` in `backend/.env` AND in Railway environment variables
-- To implement: replace the `geocode_nominatim()` function body in `gtfs_loader.py`. The function signature `(query: str) -> tuple[float, float] | None` stays the same — no other files need changes.
-- Keep Nominatim as a fallback if Google returns no result.
-- **Status:** Implementation designed and ready. Awaiting `GOOGLE_MAPS_API_KEY` from user.
-- **How to get the key:** console.cloud.google.com → create project → enable Geocoding API → create API key. Add to `backend/.env` as `GOOGLE_MAPS_API_KEY=your_key`. Also add to Railway dashboard env vars before deploy.
+**Implementation notes:**
+- `geocode_google(query)` in `gtfs_loader.py` — signature `(query: str) -> tuple[float, float] | None`
+- Results persisted to `geocode_cache.json` (disk cache survives restarts; cache hits are free)
+- API call counter persisted to `geocode_counter.json` — resets each calendar month
+- Free tier: ~40,000 calls/month. A temporary 9,500/month cap is in place during testing. See HUMAN_TODO.md (Post-Deployment Cleanup) for what to remove before launch.
+- Requires `GOOGLE_MAPS_API_KEY` in `backend/.env` AND in Railway environment variables ✅
 
 ---
 
@@ -270,42 +385,53 @@ CTA-Transit-PWA/
 ├── cta_app_handoff_prompt.md           ← This file
 ├── HUMAN_TODO.md                       ← Tasks only a human can do (accounts, keys, deploy steps, UI checks)
 ├── BUGS_TO_BE_FIXED.md                 ← Known bugs catalogued by severity
-├── MAP_IMPLEMENTATION_PLAN.md          ← Map feature design decisions + 10 implementation chunks (Phase 5.6)
+├── FUTURE_ENHANCEMENTS.md              ← Post-launch feature ideas (train exit guidance, intermodal, rate limiting, etc.)
+├── FEATURE_IMPLEMENTATION_PLANS.md     ← Chunked build plans: Feature A (Train Station Exit Guidance, 5 chunks), Feature B (Intermodal Routing, 6 chunks; do after Phase 6)
+├── MAP_IMPLEMENTATION_PLAN.md          ← Map feature design + 10-chunk plan (all complete — Phase 5.6 done)
 ├── PYTHON_TERMINAL_TEST_STARTUP_INSTRUCTIONS.md  ← How to run backend + frontend locally
 ├── backend/
 │   ├── .env                            ← API keys (never commit)
-│   ├── main.py                         ← FastAPI server, /recommend + /health endpoints
-│   ├── gtfs_loader.py                  ← 3-step location resolver + Nominatim geocoding + persistent cache
-│   ├── transit_graph.py                ← NetworkX transit graph, find_routes(), find_bus_routes(), get_bus_stop_sequences(), Route/WalkLeg/TransitLeg
-│   ├── walking.py                      ← OSMnx street-network walking time calculator (import osmnx at module level)
+│   ├── main.py                         ← FastAPI server, /recommend + /health; serializes shape/path/coords into response
+│   ├── gtfs_loader.py                  ← 3-step location resolver + fuzzy_match_neighborhood() shared helper +
+│   │                                      Google Maps geocoding + persistent cache + monthly call counter (temporary)
+│   ├── transit_graph.py                ← NetworkX transit graph; thread-local G_base copy per executor thread;
+│   │                                      find_routes(); find_bus_routes() (multi-direction board_index);
+│   │                                      get_bus_stop_sequences(); _build_shape_lookup(); get_shape(); clip_shape();
+│   │                                      WalkLeg.path_points; TransitLeg.shape_points
+│   ├── walking.py                      ← OSMnx walking: walk_minutes() (time) + walk_path() (street geometry) + walk_directions() (step-by-step)
 │   ├── cta_client.py                   ← Async Train Tracker + Bus Tracker API clients; batched bus stop fetching; psgld normalization
 │   ├── fetch_gtfs.py                   ← Script to download/update CTA GTFS data
 │   ├── fetch_street_graph.py           ← Script to download/cache OSMnx street graph
 │   ├── railway.toml                    ← Railway deployment config (start command, restart policy)
 │   ├── nixpacks.toml                   ← Railway build config (Python 3.12, gdal, proj)
 │   ├── requirements.txt
-│   ├── geocode_cache.json              ← Persistent Nominatim results cache (gitignored, built at runtime)
+│   ├── geocode_cache.json              ← Persistent geocoding results cache (gitignored, built at runtime)
+│   ├── geocode_counter.json            ← Monthly Google Maps API call counter (gitignored; temporary — remove post-deployment)
 │   ├── gtfs_data/                      ← Downloaded GTFS files (gitignored, re-downloaded on deploy)
 │   └── street_graph.graphml            ← Cached OSMnx street graph (gitignored, re-downloaded on deploy)
 └── frontend/
     ├── index.html                      ← PWA meta tags, theme color, apple-touch-icon
-    ├── package.json
+    ├── package.json                    ← includes maplibre-gl dependency
     ├── vite.config.js                  ← VitePWA plugin config, manifest, service worker
     ├── .env.local                      ← Local dev env vars (gitignored)
     ├── .env.production                 ← Production env vars — update VITE_BACKEND_URL before deploy
     ├── src/
-    │   ├── main.jsx
+    │   ├── main.jsx                    ← imports maplibre-gl/dist/maplibre-gl.css
     │   ├── index.css
-    │   ├── App.jsx                     ← RouteCard, RouteLegs, LoadingSkeleton, BUS_DIRECTION_COLORS, markdown cleanup
-    │   └── App.css
+    │   ├── App.jsx                     ← split layout (panel-cards 40% / panel-map 60%); TransitPhoto; MapView wired;
+    │   │                                  selectedRouteIndex state; RouteCard selection; photo fade lifecycle
+    │   ├── App.css                     ← layout--split, panel-cards, panel-map, transit-photo, map-view styles;
+    │   │                                  800px mobile breakpoint (stacked, 300px/350px min-heights)
+    │   └── MapView.jsx                 ← MapLibre GL JS map; locked by default; unlock button; route rendering:
+    │                                      walk dashes, transit polylines, board/exit/origin/dest markers,
+    │                                      intermediate stop dots; fitBounds on route change (animate: false)
     └── public/
         ├── icon-192.png
         ├── icon-512.png
         ├── apple-touch-icon.png
-        └── transit-photos/             ← (pending) Transit location photos for map loading state; see HUMAN_TODO.md
+        └── transit-photos/             ← PENDING: place ≥10 transit photos here; update PHOTOS array in App.jsx
+                                           See HUMAN_TODO.md for sourcing guidance
 ```
-
-> **Note:** Five `demo-*.html` files exist in the repo root from map style comparisons. These are temporary and will be deleted in Chunk 10 of `MAP_IMPLEMENTATION_PLAN.md`.
 
 ## Phase 6 Deployment — Step-by-Step
 
@@ -342,9 +468,12 @@ CTA-Transit-PWA/
 
 ## Where to Resume
 
-**Next coding task: Phase 5.6 — Map feature, Chunk 1** — Pre-compute GTFS shape lookup in `transit_graph.py`. Full plan in `MAP_IMPLEMENTATION_PLAN.md`. Work through all 10 chunks in order before moving to Phase 6 deployment.
+**Next task: Phase 6 — Deployment.** The app is feature-complete. Before deploying:
+1. Create Railway and Vercel accounts (see HUMAN_TODO.md)
+2. Source ≥10 transit photos for the map loading panel (see HUMAN_TODO.md)
+3. Run pre-deployment checks: confirm 40/60 panel ratio on desktop, 300px/350px min-heights on mobile
 
-**Parallel / prerequisite:** Google Maps Geocoding API upgrade — Nominatim returns wrong/missing results for specific landmarks and addresses. Fix is designed (Option B in `gtfs_loader.py`). Awaiting `GOOGLE_MAPS_API_KEY` from user. Can be done in parallel with map chunks or immediately after.
+**Pre-deployment bugs:** All 🔴/🟡/🟢 bugs fixed. Zero deferred bugs remain. See `BUGS_TO_BE_FIXED.md` for full history.
 
 ---
 
