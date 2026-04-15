@@ -1,11 +1,13 @@
 import asyncio
+import collections
 import os
+import time
 import traceback
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from dotenv import load_dotenv
 import anthropic
 
@@ -20,12 +22,90 @@ from gtfs_loader import (
 )
 from cta_client import get_train_arrivals, get_bus_arrivals
 from transit_graph import (
-    find_routes, find_bus_routes, warm_up, get_bus_stop_sequences,
+    find_routes, find_bus_routes, find_bus_transfer_routes, warm_up, get_bus_stop_sequences,
     WalkLeg, TransitLeg, get_station_coords, get_station_by_name,
 )
 
 # Anthropic client — created once at startup, reused across all requests
 _claude_client = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
+
+# ---------------------------------------------------------------------------
+# Response cache
+# ---------------------------------------------------------------------------
+# key → (expires_at: float via time.monotonic(), response: dict)
+_response_cache: dict[str, tuple[float, dict]] = {}
+_CACHE_TTL_SECONDS = 45
+_CACHE_MAX_SIZE    = 500
+
+
+def _cache_key(origin: str, destination: str, transit_mode: str, bus_fullness: str) -> str:
+    return "|".join([
+        origin.lower().strip(),
+        destination.lower().strip(),
+        transit_mode,
+        bus_fullness,
+    ])
+
+# ---------------------------------------------------------------------------
+# Rate limiting (disabled by default — set RATE_LIMIT_ENABLED=true to activate)
+# ---------------------------------------------------------------------------
+# To enable: add RATE_LIMIT_ENABLED=true to backend/.env (or Railway env vars).
+# Tune the caps with RATE_LIMIT_RPM (per minute) and RATE_LIMIT_RPH (per hour).
+# Both limits must pass on every request — the stricter one wins.
+# BYOK requests count against per-IP limits just like shared-quota requests.
+_RATE_LIMIT_ENABLED = os.getenv("RATE_LIMIT_ENABLED", "false").lower() == "true"
+_RATE_LIMIT_RPM     = int(os.getenv("RATE_LIMIT_RPM", "10"))   # max requests per minute per IP
+_RATE_LIMIT_RPH     = int(os.getenv("RATE_LIMIT_RPH", "50"))   # max requests per hour per IP
+
+# ip → deque of monotonic timestamps for this IP's recent requests
+_rate_store: dict[str, collections.deque] = {}
+
+
+def _client_ip(http_request: Request) -> str:
+    """Extract client IP, honoring X-Forwarded-For when behind Railway/Vercel proxy."""
+    forwarded = http_request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return http_request.client.host if http_request.client else "unknown"
+
+
+def _check_rate_limit(ip: str) -> bool:
+    """
+    Return True (request allowed) or False (rate-limited).
+    Always returns True when _RATE_LIMIT_ENABLED is False.
+
+    Sliding-window approach: per-minute AND per-hour caps must both pass.
+    No locking needed — FastAPI runs on a single asyncio event loop and
+    _check_rate_limit is called outside any await point, so no concurrent
+    mutation can occur between the deque reads and the append.
+    """
+    if not _RATE_LIMIT_ENABLED:
+        return True
+    now = time.monotonic()
+    window = _rate_store.setdefault(ip, collections.deque())
+    # Evict timestamps older than one hour to bound memory growth
+    while window and now - window[0] > 3600:
+        window.popleft()
+    # Per-hour check
+    if len(window) >= _RATE_LIMIT_RPH:
+        return False
+    # Per-minute check (count entries in the last 60 s)
+    recent = sum(1 for t in window if now - t <= 60)
+    if recent >= _RATE_LIMIT_RPM:
+        return False
+    window.append(now)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# BYOK — Bring Your Own API Key (disabled by default — set BYOK_ENABLED=true)
+# ---------------------------------------------------------------------------
+# To enable: add BYOK_ENABLED=true to backend/.env (or Railway env vars), then
+# also set VITE_BYOK_ENABLED=true in frontend/.env so the settings panel appears.
+# Users who supply their own Anthropic API key bypass the app's shared Claude
+# quota; their usage is billed to their own account. Per-IP rate limits still
+# apply (same _check_rate_limit call as shared-quota requests).
+_BYOK_ENABLED = os.getenv("BYOK_ENABLED", "false").lower() == "true"
 
 # Bus Tracker fullness field values → normalized psgld value mapping.
 # psgld is normalized in cta_client.py (_fetch_bus_chunk) to UPPER_SNAKE before
@@ -64,11 +144,46 @@ app.add_middleware(
 )
 
 
+_VALID_TRANSIT_MODES  = {"All", "Train", "Bus"}
+_VALID_BUS_FULLNESS   = {"All", "Empty", "Half-Full", "Full"}
+
+
 class RouteRequest(BaseModel):
     origin: str
     destination: str
     transit_mode: str = "All"   # "All" | "Train" | "Bus"
     bus_fullness: str = "All"   # "All" | "Empty" | "Half-Full" | "Full"
+    # BYOK — only honoured when BYOK_ENABLED=true in backend/.env.
+    # When BYOK is disabled, this field is accepted but silently ignored so the
+    # frontend does not need to know whether BYOK is active on the server.
+    anthropic_api_key: str | None = None
+
+    @field_validator("transit_mode")
+    @classmethod
+    def validate_transit_mode(cls, v: str) -> str:
+        if v not in _VALID_TRANSIT_MODES:
+            raise ValueError(f"transit_mode must be one of {sorted(_VALID_TRANSIT_MODES)}")
+        return v
+
+    @field_validator("bus_fullness")
+    @classmethod
+    def validate_bus_fullness(cls, v: str) -> str:
+        if v not in _VALID_BUS_FULLNESS:
+            raise ValueError(f"bus_fullness must be one of {sorted(_VALID_BUS_FULLNESS)}")
+        return v
+
+    @field_validator("anthropic_api_key")
+    @classmethod
+    def validate_anthropic_key(cls, v: str | None) -> str | None:
+        if v is not None:
+            v = v.strip()
+            if not v:
+                return None
+            if not v.startswith("sk-ant-"):
+                raise ValueError(
+                    "anthropic_api_key does not look like a valid Anthropic API key"
+                )
+        return v
 
 
 # ---------------------------------------------------------------------------
@@ -175,19 +290,25 @@ def _rank_routes(
                     dlat = to_coords[0] - from_coords[0]
                     dlon = to_coords[1] - from_coords[1]
 
-                    best_score = float("-inf")
-                    for dest_name, minutes in dest_map.items():
-                        term = get_station_by_name(dest_name)
-                        if term is None:
-                            continue
-                        # Vector from boarding station to this terminal
-                        tlat = term[0] - from_coords[0]
-                        tlon = term[1] - from_coords[1]
-                        # Dot product > 0 means terminal is ahead of us
-                        score = dlat * tlat + dlon * tlon
-                        if score > best_score:
-                            best_score = score
-                            best_wait  = minutes
+                    if dlat == 0.0 and dlon == 0.0:
+                        # Degenerate: boarding and alighting station share coordinates
+                        print(f"[_rank_routes] degenerate bearing for leg "
+                              f"{first_transit.from_mapid}→{first_transit.to_mapid}; "
+                              f"falling back to min wait")
+                    else:
+                        best_score = float("-inf")
+                        for dest_name, minutes in dest_map.items():
+                            term = get_station_by_name(dest_name)
+                            if term is None:
+                                continue
+                            # Vector from boarding station to this terminal
+                            tlat = term[0] - from_coords[0]
+                            tlon = term[1] - from_coords[1]
+                            # Dot product > 0 means terminal is ahead of us
+                            score = dlat * tlat + dlon * tlon
+                            if score > best_score:
+                                best_score = score
+                                best_wait  = minutes
 
                 # Fall back to earliest arrival if bearing test failed
                 wait = best_wait if best_wait is not None else min(dest_map.values())
@@ -350,17 +471,45 @@ async def health():
 
 
 @app.post("/recommend")
-async def recommend(request: RouteRequest):
+async def recommend(request: RouteRequest, http_request: Request):
+    # ── Rate limiting ──────────────────────────────────────────────────────────
+    ip = _client_ip(http_request)
+    if not _check_rate_limit(ip):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many requests. Please wait a minute before trying again.",
+        )
+
+    # ── BYOK — select Anthropic client for this request ────────────────────────
+    # If BYOK is enabled and the user supplied a valid key, create a throwaway
+    # client scoped to this request. Otherwise fall back to the shared singleton.
+    # A new AsyncAnthropic() is cheap — it holds no persistent connection.
+    byok_key = request.anthropic_api_key if _BYOK_ENABLED else None
+    claude_client = (
+        anthropic.AsyncAnthropic(api_key=byok_key)
+        if byok_key
+        else _claude_client
+    )
+
     train_key = os.getenv("CTA_TRAIN_API_KEY", "")
     bus_key   = os.getenv("CTA_BUS_API_KEY", "")
     anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
 
     if not train_key:
         raise HTTPException(status_code=500, detail="CTA_TRAIN_API_KEY not configured in backend/.env")
-    if not anthropic_key or anthropic_key == "your_api_key_here":
+    if not byok_key and (not anthropic_key or anthropic_key == "your_api_key_here"):
         raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not configured in backend/.env")
     if request.transit_mode in ("Bus", "All") and not bus_key:
         raise HTTPException(status_code=500, detail="CTA_BUS_API_KEY not configured in backend/.env")
+
+    # ── Cache check (before any I/O) ──────────────────────────────────────────
+    key = _cache_key(request.origin, request.destination, request.transit_mode, request.bus_fullness)
+    cached = _response_cache.get(key)
+    if cached and time.monotonic() < cached[0]:
+        return {**cached[1], "cache_hit": True}
+    # Evict stale entry if present so we don't carry dead keys
+    if cached:
+        del _response_cache[key]
 
     loop = asyncio.get_running_loop()
     origin_stations, origin_bus_stops, origin_match = await loop.run_in_executor(
@@ -465,6 +614,20 @@ async def recommend(request: RouteRequest):
                     origin_bus_stops=origin_bus_stops,
                     n_routes=3,
                 )
+                # If no direct bus routes found, try bus+bus transfer routing
+                if not bus_ranked:
+                    try:
+                        bus_ranked = find_bus_transfer_routes(
+                            origin_lat=origin_coords[0],
+                            origin_lon=origin_coords[1],
+                            dest_lat=dest_coords[0],
+                            dest_lon=dest_coords[1],
+                            bus_arrivals=bus_arrivals,
+                            origin_bus_stops=origin_bus_stops,
+                            n_routes=3,
+                        )
+                    except Exception:
+                        traceback.print_exc()
                 ranked_routes = sorted(
                     ranked_routes + bus_ranked,
                     key=lambda x: x[0],
@@ -484,7 +647,7 @@ async def recommend(request: RouteRequest):
     )
 
     try:
-        message = await _claude_client.messages.create(
+        message = await claude_client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=400,
             messages=[{"role": "user", "content": prompt}],
@@ -498,7 +661,7 @@ async def recommend(request: RouteRequest):
         raise HTTPException(status_code=502, detail=f"Claude API error: {exc}")
 
     # ── Response ──────────────────────────────────────────────────────────────
-    return {
+    response = {
         "recommendation": recommendation,
         "origin_coords": list(origin_coords) if origin_coords else None,
         "dest_coords":   list(dest_coords)   if dest_coords   else None,
@@ -525,7 +688,7 @@ async def recommend(request: RouteRequest):
                                 "to_coords":   leg.shape_points[-1] if leg.shape_points else None,
                             }
                             if isinstance(leg, TransitLeg)
-                            else {"path": leg.path_points, "directions": leg.directions}
+                            else {"path": leg.path_points, "directions": leg.directions, "exit_label": leg.exit_label}
                         ),
                     }
                     for leg in route.legs
@@ -534,3 +697,11 @@ async def recommend(request: RouteRequest):
             for total, wait, route in ranked_routes
         ],
     }
+
+    # ── Cache write ───────────────────────────────────────────────────────────
+    _response_cache[key] = (time.monotonic() + _CACHE_TTL_SECONDS, response)
+    if len(_response_cache) > _CACHE_MAX_SIZE:
+        oldest = min(_response_cache, key=lambda k: _response_cache[k][0])
+        del _response_cache[oldest]
+
+    return response

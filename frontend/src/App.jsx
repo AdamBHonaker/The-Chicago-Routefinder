@@ -2,7 +2,14 @@ import { useState, useRef, useEffect } from "react";
 import "./App.css";
 import MapView from "./MapView.jsx";
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
+const BACKEND_URL  = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
+
+// ---------------------------------------------------------------------------
+// BYOK feature flag — set VITE_BYOK_ENABLED=true in frontend/.env to show
+// the settings panel and include the user's key in requests.
+// The backend must also have BYOK_ENABLED=true to honour the key.
+// ---------------------------------------------------------------------------
+const BYOK_ENABLED = import.meta.env.VITE_BYOK_ENABLED === "true";
 
 const LINE_COLORS = {
   "Red Line":    "#c60c30",
@@ -41,25 +48,35 @@ function TransitPhoto({ fading }) {
 
   return (
     <div className={`transit-photo${fading ? " transit-photo--fading" : ""}`}>
-      <img src={photo.src} alt={photo.caption} className="transit-photo-img" />
+      <img
+        src={photo.src}
+        alt={photo.caption}
+        className="transit-photo-img"
+        onError={(e) => { e.currentTarget.style.display = "none"; }}
+      />
       <p className="transit-photo-caption">{photo.caption}</p>
     </div>
   );
 }
 
 function renderMarkdown(text) {
-  // Strip markdown headers, bold, and italic
+  // Strip common markdown so plain text reaches the rider
   return text
     .replace(/^#{1,3}\s+/gm, "")
     .replace(/\*\*(.*?)\*\*/g, "$1")
     .replace(/\*([^*]+)\*/g, "$1")
     .replace(/_([^_]+)_/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/^[-*>]\s+/gm, "")
     .trim();
 }
 
-const DIRECTION_ARROWS = {
-  N: "↑", NE: "↗", E: "→", SE: "↘", S: "↓", SW: "↙", W: "←", NW: "↖",
-};
+function formatBlocks(b, blockType) {
+  if (!blockType) return b === 1 ? "1 block" : `${b} blocks`;
+  const label = blockType === "long" ? "long block" : "short block";
+  return `${b} ${b === 1 ? label : label + "s"}`;
+}
 
 function WalkLegItem({ leg, index }) {
   const [stepsOpen, setStepsOpen] = useState(false);
@@ -72,11 +89,16 @@ function WalkLegItem({ leg, index }) {
       ? `Walk ${leg.minutes} min to your destination`
       : `Transfer — walk ${leg.minutes} min`;
 
+  const showExit = leg.exit_label && leg.to === "Your destination";
+
   return (
     <li key={index} className="leg leg-walk">
       <span className="leg-icon">🚶</span>
       <span className="leg-walk-body">
         <span className="leg-text">{label}</span>
+        {showExit && (
+          <span className="leg-exit-label">Exit: {leg.exit_label}</span>
+        )}
         {hasSteps && (
           <button
             className="leg-steps-toggle"
@@ -90,15 +112,14 @@ function WalkLegItem({ leg, index }) {
           <ol className="leg-steps">
             {leg.directions.map((step, si) => (
               <li key={si} className="leg-step">
-                <span className="leg-step-arrow">
-                  {DIRECTION_ARROWS[step.direction] || "·"}
-                </span>
                 <span className="leg-step-text">
-                  {step.direction && <span className="leg-step-dir">{step.direction}</span>}
-                  {" on "}
+                  {si === 0 ? "Walk" : "Head"}
+                  {step.direction_full ? ` ${step.direction_full}` : ""}
+                  {" along "}
                   <span className="leg-step-street">{step.street}</span>
+                  {" for "}
+                  {formatBlocks(step.blocks ?? 1, step.block_type)}
                 </span>
-                <span className="leg-step-time">{step.minutes} min</span>
               </li>
             ))}
           </ol>
@@ -170,6 +191,62 @@ function RouteCard({ route, index, isFirst, isSelected, onSelect }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// BYOK Settings Panel
+// Only rendered when BYOK_ENABLED === true and the user opens the panel.
+// ---------------------------------------------------------------------------
+
+function SettingsPanel({ apiKey, onSave, onClose }) {
+  const [draft, setDraft] = useState(apiKey);
+  const isValid = !draft.trim() || draft.trim().startsWith("sk-ant-");
+
+  return (
+    <div className="settings-panel" role="dialog" aria-label="Settings">
+      <div className="settings-header">
+        <h2 className="settings-title">Settings</h2>
+        <button className="settings-close" onClick={onClose} aria-label="Close settings">
+          ✕
+        </button>
+      </div>
+      <label className="settings-label">
+        <span className="settings-label-text">Your Anthropic API Key</span>
+        <span className="settings-hint">
+          Provide your own key and your usage won't count against the app's shared quota.
+        </span>
+        <input
+          type="password"
+          className={`settings-input${!isValid ? " settings-input--error" : ""}`}
+          placeholder="sk-ant-…"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          autoComplete="off"
+          spellCheck={false}
+        />
+        {!isValid && (
+          <span className="settings-error">Key must start with "sk-ant-"</span>
+        )}
+      </label>
+      <div className="settings-actions">
+        <button
+          className="settings-save"
+          onClick={() => { onSave(draft.trim()); onClose(); }}
+          disabled={!isValid}
+        >
+          Save
+        </button>
+        {apiKey && (
+          <button
+            className="settings-clear"
+            onClick={() => { onSave(""); onClose(); }}
+          >
+            Remove key
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function LoadingSkeleton() {
   return (
     <div className="skeleton-wrapper" aria-busy="true" aria-label="Finding your route">
@@ -193,6 +270,21 @@ export default function App() {
 
   const [selectedRouteIndex, setSelectedRouteIndex] = useState(0);
 
+  // BYOK state — key persisted to localStorage; settings panel shown/hidden via flag
+  const [byokKey, setByokKey] = useState(() =>
+    BYOK_ENABLED ? (localStorage.getItem("byok_api_key") || "") : ""
+  );
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  function handleSaveByokKey(key) {
+    setByokKey(key);
+    if (key) {
+      localStorage.setItem("byok_api_key", key);
+    } else {
+      localStorage.removeItem("byok_api_key");
+    }
+  }
+
   // Photo state — managed entirely within handleSubmit via photoFadeTimer ref
   const [photoMounted, setPhotoMounted] = useState(false);
   const [photoFading, setPhotoFading] = useState(false);
@@ -201,7 +293,10 @@ export default function App() {
   const abortRef = useRef(null);
 
   useEffect(() => {
-    return () => { if (photoFadeTimer.current) clearTimeout(photoFadeTimer.current); };
+    return () => {
+      if (photoFadeTimer.current) clearTimeout(photoFadeTimer.current);
+      if (abortRef.current) abortRef.current.abort();
+    };
   }, []);
 
   async function handleSubmit(e) {
@@ -230,10 +325,11 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          origin,
-          destination,
+          origin:       origin.trim(),
+          destination:  destination.trim(),
           transit_mode: transitMode,
           bus_fullness: busFullness,
+          ...(BYOK_ENABLED && byokKey ? { anthropic_api_key: byokKey } : {}),
         }),
         signal: abortRef.current.signal,
       });
@@ -259,19 +355,22 @@ export default function App() {
         destCoords:   data.dest_coords,
       });
 
-      // Routes available — fade photo out, then remove it from DOM
-      if (routes.length > 0) {
-        setPhotoFading(true);
-        photoFadeTimer.current = setTimeout(() => {
-          setPhotoMounted(false);
-          setPhotoFading(false);
-        }, 1000);
-      }
-      // No routes — photo stays visible (loading state replaced by no-routes state)
+      // Fade photo out once loading completes, regardless of result
+      setPhotoFading(true);
+      photoFadeTimer.current = setTimeout(() => {
+        setPhotoMounted(false);
+        setPhotoFading(false);
+      }, 1000);
 
     } catch (err) {
       if (err.name === "AbortError") return;
       setError(err.message || "Something went wrong. Please try again.");
+      // Also fade photo on errors so it doesn't block map interaction
+      setPhotoFading(true);
+      photoFadeTimer.current = setTimeout(() => {
+        setPhotoMounted(false);
+        setPhotoFading(false);
+      }, 1000);
     } finally {
       setLoading(false);
     }
@@ -285,6 +384,16 @@ export default function App() {
             <div className="header-top">
               <h1>CTA Transit</h1>
               <div className="filters">
+                {BYOK_ENABLED && (
+                  <button
+                    className={`settings-trigger${byokKey ? " settings-trigger--active" : ""}`}
+                    onClick={() => setSettingsOpen((v) => !v)}
+                    aria-label={byokKey ? "Settings (using your API key)" : "Settings"}
+                    title={byokKey ? "Using your own Anthropic API key" : "Settings"}
+                  >
+                    ⚙
+                  </button>
+                )}
                 <select
                   value={transitMode}
                   onChange={(e) => setTransitMode(e.target.value)}
@@ -312,6 +421,14 @@ export default function App() {
             </div>
             <p className="tagline">Stop thinking about how to get there. Just go.</p>
           </header>
+
+          {BYOK_ENABLED && settingsOpen && (
+            <SettingsPanel
+              apiKey={byokKey}
+              onSave={handleSaveByokKey}
+              onClose={() => setSettingsOpen(false)}
+            />
+          )}
 
           <main className="main">
             <form className="form" onSubmit={handleSubmit}>
@@ -390,7 +507,8 @@ export default function App() {
           )}
           <MapView
             route={result?.routes?.[selectedRouteIndex] ?? null}
-            visible={!!(result && result.routes.length > 0)}
+            originCoords={result?.originCoords ?? null}
+            destCoords={result?.destCoords ?? null}
           />
         </div>
       </div>

@@ -25,6 +25,7 @@ import csv
 import json
 import math
 import os
+import re
 import threading
 from difflib import SequenceMatcher
 from functools import lru_cache
@@ -59,10 +60,14 @@ _GEOCODE_COUNTER_PATH = Path(__file__).parent / "geocode_counter.json"
 
 
 def _load_geocode_counter() -> dict:
-    """Load the monthly geocode call counter from disk."""
+    """Load the monthly geocode call counter from disk, keeping only the current month."""
+    import datetime
+    month_key = datetime.date.today().strftime("%Y-%m")
     if _GEOCODE_COUNTER_PATH.exists():
         try:
-            return json.loads(_GEOCODE_COUNTER_PATH.read_text(encoding="utf-8"))
+            raw = json.loads(_GEOCODE_COUNTER_PATH.read_text(encoding="utf-8"))
+            # Prune stale month entries; only current month is relevant
+            return {month_key: raw[month_key]} if month_key in raw else {}
         except Exception as exc:
             print(f"[gtfs_loader] Could not load geocode counter: {exc}")
     return {}
@@ -115,14 +120,20 @@ def _load_geocode_cache() -> dict[str, tuple[float, float] | None]:
 
 
 def _save_geocode_cache(cache: dict) -> None:
-    """Persist the geocode cache to disk."""
+    """Persist the geocode cache to disk using an atomic rename to prevent corruption."""
+    tmp = _GEOCODE_CACHE_PATH.with_suffix(".tmp")
     try:
-        _GEOCODE_CACHE_PATH.write_text(
+        tmp.write_text(
             json.dumps(cache, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+        tmp.replace(_GEOCODE_CACHE_PATH)
     except Exception as exc:
         print(f"[gtfs_loader] Could not save geocode cache: {exc}")
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 # Loaded once at import time; new entries are written through immediately
@@ -578,16 +589,25 @@ def find_nearest_bus_stops(
     max_results: int = 5,
 ) -> list[dict]:
     """
-    Return the closest bus stops within a quarter-mile radius,
-    each annotated with real street-network walk_minutes.
+    Return the closest bus stops within reach, each annotated with real
+    street-network walk_minutes.  Expands search radius progressively
+    (0.25 → 0.5 → 0.75 → 1.0 miles) until at least one stop is found,
+    matching the pattern used for train stations.
     """
     _, bus_stops = _load_stops()
 
-    candidates = [
+    # Build distance table once
+    with_dist = [
         {**s, "distance_miles": _haversine_miles(lat, lon, s["lat"], s["lon"])}
         for s in bus_stops
-        if _haversine_miles(lat, lon, s["lat"], s["lon"]) <= max_distance_miles
     ]
+
+    candidates: list[dict] = []
+    for radius in (0.25, 0.5, 0.75, 1.0):
+        candidates = [s for s in with_dist if s["distance_miles"] <= radius]
+        if candidates:
+            break
+
     candidates.sort(key=lambda s: s["distance_miles"])
     candidates = candidates[:max_results]
 
@@ -633,6 +653,49 @@ def fuzzy_match_neighborhood(query: str) -> tuple[tuple[float, float] | None, st
     return None, None
 
 
+# ---------------------------------------------------------------------------
+# Street abbreviation normalization
+# ---------------------------------------------------------------------------
+
+_ABBR_MAP: dict[str, str] = {
+    "blvd":  "boulevard",
+    "pkwy":  "parkway",
+    "expy":  "expressway",
+    "terr":  "terrace",
+    "ter":   "terrace",
+    "hwy":   "highway",
+    "ave":   "avenue",
+    "cir":   "circle",
+    "st":    "street",
+    "dr":    "drive",
+    "ln":    "lane",
+    "ct":    "court",
+    "rd":    "road",
+    "pl":    "place",
+    "sq":    "square",
+}
+# Sort longest-first so longer patterns are tried before shorter ones
+_sorted_abbrs = sorted(_ABBR_MAP, key=len, reverse=True)
+_STREET_ABBR_RE = re.compile(
+    r"\b(" + "|".join(re.escape(a) + r"\.?" for a in _sorted_abbrs) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _normalize_street_abbr(query: str) -> str:
+    """
+    Expand USPS street suffix abbreviations (e.g. "Ave" → "avenue",
+    "Blvd." → "boulevard") in a lowercased address string.
+
+    Directional prefixes (N/S/E/W) are intentionally not expanded.
+    """
+    def _replace(m: re.Match) -> str:
+        token = m.group(0).lower().rstrip(".")
+        return _ABBR_MAP.get(token, m.group(0))
+
+    return _STREET_ABBR_RE.sub(_replace, query)
+
+
 def resolve_location(query: str) -> tuple[list[dict], list[dict], str | None]:
     """
     Convert a free-text location query to nearby train stations and bus stops.
@@ -647,6 +710,7 @@ def resolve_location(query: str) -> tuple[list[dict], list[dict], str | None]:
         matched_name is the dict key or the original query if geocoded.
     """
     q = query.lower().strip()
+    q = _normalize_street_abbr(q)          # expand "Ave" → "avenue", etc.
 
     # 1. Exact match
     coords = NEIGHBORHOOD_COORDS.get(q)
@@ -658,9 +722,9 @@ def resolve_location(query: str) -> tuple[list[dict], list[dict], str | None]:
 
     # 3. Google Maps geocoding fallback
     if coords is None:
-        coords = geocode_google(query)
+        coords = geocode_google(q)
         if coords:
-            matched_name = query
+            matched_name = q
 
     if coords is None:
         return [], [], None

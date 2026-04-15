@@ -1,0 +1,550 @@
+# Bugs Fixed History
+
+A log of bugs that have been identified and resolved. Entries are moved here from `BUGS_TO_BE_FIXED.md` when fixed.
+
+Severity: 🔴 High · 🟡 Medium · 🟢 Low.
+
+---
+
+# 2026-04-12 Audit Pass — Fixed 2026-04-13
+
+---
+
+## ✅ `find_bus_routes` locks in the first arrival's boarding stop per route+direction — FIXED
+
+**File:** `backend/transit_graph.py` `find_bus_routes()`
+
+**Fixed in:** Removed `seen_route_dirs` skip logic. All arrivals for a route+direction are now evaluated, and the candidate with the lowest composite score (`board_walk_min + wait_min + exit_dist * 20`) is kept via `pass1` dict update, so a closer boarding stop discovered later in the arrivals list can replace a worse earlier candidate.
+
+---
+
+## ✅ `get_station_by_name` contains-match fallback returns the first iteration match — FIXED
+
+**File:** `backend/transit_graph.py` lines 568–572
+
+**Fixed in:** Contains-match fallback now ranks all substring matches by `SequenceMatcher.ratio()` and returns the highest-similarity result, preventing wrong-line matches like `"Harlem"` → Harlem-Lake when Harlem/Forest Park is the correct terminal.
+
+---
+
+## ✅ `walk_path` geometry reversal heuristic compares longitude only — FIXED
+
+**File:** `backend/walking.py` line 194
+
+**Fixed in:** Reversal check now computes squared 2-D Euclidean distance from node `u` to each geometry endpoint (`du_start`/`du_end`) and reverses only when `du_start > du_end`, correctly handling north–south edges where longitude differences are negligible.
+
+---
+
+## ✅ MapView `styleError` latches `true` on any map error and never resets — FIXED
+
+**File:** `frontend/src/MapView.jsx` lines 288–294
+
+**Fixed in:** Error handler now only latches when the source is the openmaptiles style document (`e.sourceId === "openmaptiles"`) combined with a 4xx/5xx status, ignoring per-tile transient failures. A `map.on("data")` listener resets `styleError` to `false` on any successful source load, allowing the banner to clear after the map recovers.
+
+---
+
+## ✅ MapView origin/destination dots depend on the first and last leg being walks — FIXED
+
+**File:** `frontend/src/MapView.jsx` lines 179–218
+
+**Fixed in:** `renderRoute` now accepts `originCoords`/`destCoords` parameters; `MapView` exposes them as props and passes them from `App.jsx` (`result.originCoords`/`result.destCoords`). Dot placement uses the explicit coords first, falling back to leg path inference only when props are null.
+
+---
+
+## ✅ `_save_geocode_cache` rewrites the full cache on every geocode miss or hit — FIXED
+
+**File:** `backend/gtfs_loader.py`
+
+**Fixed in:** `_save_geocode_cache` now writes to a `.tmp` file and atomically renames it over the real file via `Path.replace()`, eliminating the risk of a partial write corrupting `geocode_cache.json`.
+
+---
+
+## ✅ `_geocode_call_counter` never purges old month entries — FIXED
+
+**File:** `backend/gtfs_loader.py`
+
+**Fixed in:** `_load_geocode_counter` now prunes on load, retaining only the current `YYYY-MM` key. This naturally resets the count each month without any explicit rollover logic.
+
+---
+
+## ✅ `walk_path` returns a single-point list when origin and destination snap to the same OSM node — FIXED
+
+**File:** `backend/walking.py` lines 178–180
+
+**Fixed in:** When `len(node_ids) < 2`, `walk_path` now returns `[[origin_lat, origin_lon], [dest_lat, dest_lon]]` — a valid 2-point polyline — instead of a single-point list that MapView silently drops.
+
+---
+
+## ✅ Same-station line-change WalkLeg has a single-point `path_points` list — FIXED
+
+**File:** `backend/transit_graph.py` `_path_to_route()` lines 908–918
+
+**Fixed in:** Transfer `WalkLeg` now uses `path_points=[[blat, blon], [blat, blon]]` (two identical points) so MapView's `coords.length < 2` guard doesn't suppress it, and includes `directions=[{"street": "Change trains", "direction": "", "minutes": _TRANSFER_MINUTES}]` so the RouteCard "Steps" button appears.
+
+---
+
+## ✅ `bus_fullness` filter with unknown values silently matches empty `psgld` — FIXED
+
+**File:** `backend/main.py` lines 408–414
+
+**Fixed in:** `RouteRequest` now includes a `@field_validator` for both `bus_fullness` and `transit_mode` that raises `ValueError` (→ HTTP 422) for values outside the allowed sets. Unknown values can no longer silently pass through.
+
+---
+
+## ✅ `cta_client._fetch_bus_chunk` accepts negative `prdctdn` values — FIXED
+
+**File:** `backend/cta_client.py` lines 183–186
+
+**Fixed in:** Guard changed from `prdctdn.lstrip("-").isdigit()` to `prdctdn.isdigit()`, so only non-negative integers are accepted; `"-5"` now falls through to `minutes = 0`.
+
+---
+
+## ✅ `cta_client._fetch_bus_chunk` delay parsing is case-sensitive — FIXED
+
+**File:** `backend/cta_client.py` line 203
+
+**Fixed in:** `is_delayed` now uses `str(prd.get("dly", "")).lower() in ("true", "1", "yes")`, accepting any casing or common truthy string the CTA API might send.
+
+---
+
+## ✅ `find_nearest_bus_stops` uses a hard 0.25-mile radius with no progressive expansion — FIXED
+
+**File:** `backend/gtfs_loader.py` lines 574–598
+
+**Fixed in:** `find_nearest_bus_stops` now iterates radii `(0.25, 0.5, 0.75, 1.0)` miles and breaks at the first non-empty result, matching the progressive-expansion pattern used for train stations.
+
+---
+
+## ✅ `renderMarkdown` doesn't strip backticks, links, or list markers — FIXED
+
+**File:** `frontend/src/App.jsx` lines 50–58
+
+**Fixed in:** Chain extended with backtick stripping (`` `code` `` → `code`), link stripping (`[text](url)` → `text`), and list/blockquote marker stripping (`- item` → `item`).
+
+---
+
+## ✅ `App.jsx handleSubmit` doesn't trim inputs before POST — FIXED
+
+**File:** `frontend/src/App.jsx` lines 232–237
+
+**Fixed in:** POST body now sends `origin: origin.trim()` and `destination: destination.trim()`, ensuring no leading/trailing whitespace reaches the backend or Claude prompt.
+
+---
+
+## ✅ `TransitPhoto` has no `onError` fallback for missing images — FIXED
+
+**File:** `frontend/src/App.jsx` lines 37–48
+
+**Fixed in:** `<img>` now has `onError={(e) => { e.currentTarget.style.display = "none"; }}` so broken images hide instead of showing the browser's broken-image icon.
+
+---
+
+## ✅ `App.jsx` in-flight fetch isn't aborted on component unmount — FIXED
+
+**File:** `frontend/src/App.jsx` lines 203–278
+
+**Fixed in:** The existing mount `useEffect` cleanup now also calls `abortRef.current.abort()` on unmount alongside the photo timer cancel, preventing stale state updates on unmounted components.
+
+---
+
+## ✅ `_load_weekday_service_ids` ignores `calendar_dates.txt` exceptions — FIXED
+
+**File:** `backend/transit_graph.py` lines 175–186
+
+**Fixed in:** `_load_weekday_service_ids` now also reads `calendar_dates.txt` and augments the weekday set with any `service_id` that has ≥3 `exception_type=1` (add-date) entries on Mon–Fri, catching services defined purely through add-exceptions.
+
+---
+
+## ✅ `_path_to_route` inner transit-grouping loop treats DEST as an implicit break but reads the edge anyway — FIXED
+
+**File:** `backend/transit_graph.py` lines 897–904
+
+**Fixed in:** Loop condition tightened to `while look < len(path) - 1 and path[look] != DEST and path[look + 1] != DEST:`, preventing any future code inside the loop from reading attributes of the DEST-adjacent walk edge before the type guard fires.
+
+---
+
+## ✅ `_rank_routes` assumes bearing test won't degenerate when `from_coords == to_coords` — FIXED
+
+**File:** `backend/main.py` lines 173–190
+
+**Fixed in:** Explicit guard added: when `dlat == 0.0 and dlon == 0.0`, a warning is logged and the code falls through directly to `min(dest_map.values())` instead of silently computing zero dot-products for every terminal.
+
+---
+
+## ✅ TransitPhoto remains over the map after an error or zero-route result, blocking map interaction — FIXED
+
+**Files:** `frontend/src/App.jsx` lines 262–270, 272–277
+
+**Fixed in:** Photo fade-out is now triggered unconditionally in both the success branch (regardless of `routes.length`) and the `catch` block, so the photo always clears after any search completes — whether successful, empty, or errored.
+
+---
+
+## ✅ Railway GTFS re-download on every deploy — FIXED
+
+**File:** `backend/fetch_gtfs.py` lines 99–114
+
+**Fixed in:** `force` flag is now exclusively driven by `--force` in `sys.argv`. Non-interactive environments (Railway, CI) detected via env vars no longer trigger a re-download; instead they skip the interactive prompt and exit early with existing data intact. Pass `--force` explicitly to force a re-download in CI/CD.
+
+---
+
+## ✅ `load_dotenv()` called after module-level imports that read env vars — FIXED
+
+**File:** `backend/main.py`
+
+**Fixed in:** `load_dotenv()` moved to before the `from gtfs_loader import ...` line.
+
+`gtfs_loader.py` reads `GOOGLE_MAPS_API_KEY = os.getenv(...)` at module level (import time). When Python processes `from gtfs_loader import ...` in `main.py`, it immediately executes all of `gtfs_loader.py`. `load_dotenv()` was previously called after those imports, so the `.env` file had not yet been loaded into `os.environ` when `_GOOGLE_MAPS_API_KEY` was captured — causing it to always be `""` regardless of what was in `.env`. Moving `load_dotenv()` before the local imports ensures the environment is populated before any module reads from it.
+
+---
+
+## ✅ `line-cap` and `line-join` placed in MapLibre `paint` instead of `layout` — FIXED
+
+**File:** `frontend/src/MapView.jsx` lines 101–108
+
+**Fixed in:** In MapLibre GL JS, `line-cap` and `line-join` are **layout** properties, not paint properties. Placing them in the `paint` object silently ignores them. Moved to a `layout` object:
+```js
+layout: { "line-cap": "round", "line-join": "round" },
+paint:  { "line-color": color, "line-width": 5 },
+```
+
+---
+
+## ✅ `wait_minutes === 0` ("Due") shows no indicator in RouteCard — FIXED
+
+**File:** `frontend/src/App.jsx` line 141
+
+**Fixed in:** Updated `waitNote` logic to explicitly handle the `0` case:
+```js
+const waitNote =
+  route.wait_minutes === null ? ""
+  : route.wait_minutes === 0  ? " · Due now"
+  : ` · ${route.wait_minutes} min wait`;
+```
+
+---
+
+## ✅ No `AbortController` — stale results if user re-submits during a pending search — FIXED
+
+**File:** `frontend/src/App.jsx` lines 215–260
+
+**Fixed in:** Added an `AbortController` ref; the in-flight request is cancelled at the start of each `handleSubmit` and `signal: abortRef.current.signal` is passed to `fetch`. `AbortError` is ignored in the catch block so a cancelled search doesn't surface as an error message.
+
+---
+
+## ✅ PWA service worker pre-caches all PNGs including transit photos — FIXED
+
+**File:** `frontend/vite.config.js`
+
+**Fixed in:** `globPatterns` now explicitly lists `icon-*.png` and `apple-touch-icon.png` instead of `**/*.png`, so only icon PNGs are pre-cached. A `StaleWhileRevalidate` runtime cache entry for `/transit-photos/` was added so photos load from cache when available and update in the background.
+
+---
+
+## ✅ `renderMarkdown` strips `**bold**` but not `*italic*` — FIXED
+
+**File:** `frontend/src/App.jsx` lines 51–56
+
+**Fixed in:** Added `.replace(/\*([^*]+)\*/g, "$1").replace(/_([^_]+)_/g, "$1")` to the chain.
+
+---
+
+## ✅ `_load_weekday_service_ids()` only checks Monday + Tuesday + Wednesday — FIXED
+
+**File:** `backend/transit_graph.py` lines 175–178
+
+**Fixed in:** Added `and row.get("thursday", "0").strip() == "1" and row.get("friday", "0").strip() == "1"` to the condition so all five weekday columns are required.
+
+---
+
+## ✅ Train arrival datetime: `.replace(tzinfo)` wrong for ISO strings with UTC offset — FIXED
+
+**File:** `backend/cta_client.py` line 80
+
+**Fixed in:**
+```python
+arr_dt = datetime.fromisoformat(arr_str)
+if arr_dt.tzinfo is not None:
+    arr_dt = arr_dt.astimezone(CHICAGO_TZ)
+else:
+    arr_dt = arr_dt.replace(tzinfo=CHICAGO_TZ)
+```
+
+---
+
+## ✅ Destination walk times computed in wrong direction throughout — FIXED
+
+**Files:** `backend/transit_graph.py` lines 991–994, `backend/gtfs_loader.py` line 558, `backend/transit_graph.py` line 1127
+
+**Fixed in:** Swapped the argument order in the three affected `walk_minutes()` calls so origin and destination match the direction of travel (`station → destination` instead of `destination → station`).
+
+---
+
+## ✅ `validate_and_report()` uses `encoding="utf-8"` instead of `"utf-8-sig"` — FIXED
+
+**File:** `backend/fetch_gtfs.py` line 79
+
+**Fixed in:** Changed `open(path, encoding="utf-8")` to `open(path, encoding="utf-8-sig")` in `validate_and_report()`, consistent with all other GTFS file readers.
+
+---
+
+## ✅ `G_base.copy()` called on every train routing request — FIXED
+
+**Fixed in:** `backend/transit_graph.py` — added `import threading` and a module-level `_thread_local: threading.local`. `find_routes()` now keeps a thread-local copy of `G_base` (`_thread_local.G`) keyed by `id(G_base)`. The copy is created once per executor thread and reused for all subsequent requests on that thread. `__ORIGIN__` and `__DEST__` virtual nodes are added before routing and removed in a `finally` block to leave the thread-local graph clean for the next request.
+
+---
+
+## ✅ `_coords_for_location()` duplicates fuzzy-match logic from `resolve_location()` — FIXED
+
+**Fixed in:** `backend/gtfs_loader.py` — added `_FUZZY_STOP_WORDS` (frozenset) and `fuzzy_match_neighborhood(query)` as a public module-level helper. `resolve_location()` now calls `fuzzy_match_neighborhood()` instead of reimplementing the loop inline. `backend/main.py` — imports `fuzzy_match_neighborhood` from `gtfs_loader`; `_coords_for_location()` uses it for step 2 instead of its own copy of the logic.
+
+---
+
+## ✅ Redundant `walk_minutes` recomputation for destination stations in `find_routes()` — FIXED
+
+**Fixed in:** `backend/transit_graph.py` `find_routes()` — the per-station `street_walk_minutes()` call and `dest_walk[mapid] = walk_min` overwrite inside the `dest_stations` loop were removed. `dest_walk` is now populated once from `dest_stations[*]["walk_minutes"]` and those values are used directly as edge weights when adding the station→DEST edges.
+
+---
+
+## ✅ `photoFadeTimer` ref not cleared on component unmount — FIXED
+
+**File:** `frontend/src/App.jsx` lines 195–261
+
+**Fixed in:** Added a `useEffect` cleanup:
+```js
+useEffect(() => {
+  return () => { if (photoFadeTimer.current) clearTimeout(photoFadeTimer.current); };
+}, []);
+```
+
+---
+
+## ✅ Synchronous blocking calls inside async request handler — FIXED
+
+**Fixed in:** `backend/main.py` — both `resolve_location` calls and `_coords_for_location` calls wrapped in `await loop.run_in_executor(...)`; Anthropic call switched to `AsyncAnthropic.messages.create()`.
+
+---
+
+## ✅ No user-facing message when location is outside coverage area — FIXED
+
+**Fixed in:** `backend/main.py` — added 400 check after `resolve_location(request.destination)` with explicit coverage area message.
+
+---
+
+## ✅ Anthropic client instantiated on every request — FIXED
+
+**Fixed in:** `backend/main.py` — `AsyncAnthropic` client now instantiated once at module level as `_claude_client`, reused across all requests.
+
+---
+
+## ✅ Bus fullness filter may silently return zero results — FIXED + VERIFIED
+
+**Fixed in:** `backend/cta_client.py` — `_fetch_bus_chunk()` now normalizes `psgld` at read time via `.replace(" ", "_").upper()` before storing it. `_FULLNESS_API_VALUES` in `main.py` already uses UPPER_SNAKE; a comment was added documenting the normalization contract.
+
+**Live API finding (2026-04-09):** After testing 30+ predictions across multiple high-traffic routes and stops (Michigan Ave, State St, Belmont), `psgld` is consistently empty (`""`) in all CTA Bus Tracker v3 API responses. CTA includes the field in the JSON but does not currently populate it with load data. The normalization fix is still correct for future-proofing if CTA enables this data.
+
+**UI action taken:** The Bus Fullness `<select>` in `frontend/src/App.jsx` is commented out but preserved in full. All backend filter logic (`_FULLNESS_API_VALUES`, the `bus_fullness` filter in `/recommend`, `psgld` normalization) is intact and ready. Re-enable the commented `<select>` block when CTA starts populating this field.
+
+---
+
+## ✅ Missing validation for CTA_BUS_API_KEY when bus transit mode is requested — FIXED
+
+**File:** `backend/main.py` `/recommend` endpoint (lines ~280–285)
+
+**Fixed in:** Added a check: `if not bus_key: raise HTTPException(status_code=500, detail="CTA_BUS_API_KEY not configured in backend/.env")` if `request.transit_mode in ("Bus", "All")`.
+
+---
+
+## ✅ Routing engine exception swallows traceback — FIXED
+
+**File:** `backend/main.py` lines 365–366
+
+**Fixed in:** Replaced with `import traceback; traceback.print_exc()` so the full stack trace appears in production logs.
+
+---
+
+## ✅ Bus routing may use wrong direction sequence for stops served by multiple directions — FIXED
+
+**Fixed in:** `backend/transit_graph.py` `find_bus_routes()` — `board_index` type changed from `dict[str, tuple[str, str, int]]` to `dict[str, list[tuple[str, str, int]]]`; population now uses `setdefault(..., []).append(...)` instead of plain assignment so all direction entries for a stop are preserved rather than overwriting. In the arrival loop, candidates are filtered to entries matching the arrival's route number, then all valid direction candidates are tried; the direction whose exit stop is closest to the destination wins.
+
+---
+
+## ✅ PWA manifest `purpose: "any maskable"` on a single icon entry — FIXED
+
+**File:** `frontend/vite.config.js` line 31
+
+**Fixed in:** Split into two icon entries:
+```js
+{ src: "icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
+{ src: "icon-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
+```
+
+---
+
+## ✅ No validation when origin and destination resolve to the same location — FIXED
+
+**File:** `backend/main.py` `/recommend` endpoint
+
+**Fixed in:** After resolving both locations, checks if the resolved coordinates are within ~100m of each other and returns a 400 with a message: "Your origin and destination appear to be the same location."
+
+---
+
+## ✅ `osmnx` import inside `try` block masks misconfigured deployments — FIXED
+
+**Fixed in:** `backend/walking.py` — `import osmnx as ox` moved to module level; removed from `_load_graph()` and from inside the `try` block in `walk_minutes()`. An import failure now raises immediately at startup rather than being silently caught and falling back to Haversine estimates.
+
+---
+
+## ✅ `max_tokens=750` misaligned with prompt instruction "3-4 sentences" — FIXED
+
+**File:** `backend/main.py` line 382 (token limit); line ~266 (prompt instruction)
+
+**Fixed in:** Re-aligned before public launch. Note: this was an intentional testing-phase setting, not a pre-launch bug. `max_tokens` lowered to ~350–400 and/or the prompt updated to match the intended response length.
+
+---
+
+## ✅ Representative trip selection may use off-peak schedules — FIXED
+
+**Fixed in:** `backend/transit_graph.py` — `_load_weekday_service_ids()` added; `_load_representative_trips()` now loads all weekday candidate trips per direction; `_stream_stop_sequences()` selects the trip whose first-stop arrival is closest to noon (720 min) per line/direction. Single pass through `stop_times.txt`.
+
+---
+
+## ✅ No error handling around Claude API call — FIXED
+
+**Fixed in:** `backend/main.py` — `_claude_client.messages.create()` wrapped in try/except; response text extracted via `next((c for c in message.content if hasattr(c, "text")), None)` to safely handle non-text blocks; raises HTTP 502 with the error message on any failure; full traceback printed to server logs.
+
+---
+
+## ✅ Frontend `res.json()` crashes on non-JSON error responses — FIXED
+
+**Fixed in:** `frontend/src/App.jsx` — non-OK responses now attempt `res.json()` inside a try/catch; if parsing fails (e.g. Railway/nginx 502 returning HTML), falls back to `"Service error (502 Bad Gateway)"`.
+
+---
+
+## ✅ Bus stop IDs silently truncated to 10 — no batching — FIXED
+
+**Fixed in:** `backend/cta_client.py` — extracted `_fetch_bus_chunk()` helper; `get_bus_arrivals()` now splits stop IDs into chunks of 10 and fires all chunks concurrently via `asyncio.gather`. Results merged and sorted by arrival time.
+
+---
+
+## ✅ `prdctdn` value "APPROACHING" (and similar) silently drops bus arrival — FIXED
+
+**Fixed in:** `backend/cta_client.py` — replaced `int(prdctdn)` with an `isdigit()` guard: numeric strings are parsed as before; `"DUE"`, `"APPROACHING"`, and any other non-numeric value all map to `0` minutes instead of raising `ValueError` and silently dropping the arrival.
+
+---
+
+## ✅ `wait=0` conflates "no arrival data" with "train is Due now" — FIXED
+
+**Fixed in:** `backend/main.py` — `_rank_routes()` now initialises `wait: int | None = None` (no data) instead of `0`. The empty `dest_map` branch explicitly sets `wait = None`. `total` computation uses `wait if wait is not None else 0`. `_format_routes()` now has three branches: `wait is None` → no note, `wait == 0` → `"next train Due"` / `"next bus Due"`, `wait > 0` → `"next train in N min"` / `"next bus in N min"`.
+
+---
+
+## ✅ Bus shape lookup uses `route_short_name` instead of `route_id` — FIXED
+
+**Fixed in:** `backend/transit_graph.py` `_build_shape_lookup()` — after building the primary `(route_id, direction_id)` entries, the function now reads `routes.txt` once more to get each route's `route_short_name`. For any bus route where `route_short_name != route_id`, an alias entry `(route_short_name, direction_id)` is added to `_shape_lookup` via `setdefault` (so an existing `route_id` entry is never overwritten).
+
+---
+
+## ✅ Transfer `WalkLeg` missing turn-by-turn directions — FIXED
+
+**Fixed in:** `backend/transit_graph.py` `_path_to_route()` — the inter-station transfer `WalkLeg` constructor now includes `directions=street_walk_directions(flat, flon, tlat, tlon)`, consistent with the origin and destination walk legs.
+
+---
+
+## ✅ `geocode_google` not thread-safe under concurrent requests — FIXED
+
+**Fixed in:** `backend/gtfs_loader.py` — added module-level `_geocode_lock = threading.Lock()`. `geocode_google()` now uses a double-checked locking pattern: fast path reads the cache without a lock; slow path acquires the lock, re-checks the cache, then performs the network call, cache write, and counter increment inside the lock. All mutation of `_geocode_cache` and `_geocode_call_counter` is serialised.
+
+---
+
+## ✅ MapLibre map renders as black screen on startup — FIXED (3 root causes)
+
+**Files:** `frontend/src/MapView.jsx`, `frontend/src/App.css`, `frontend/package.json`
+
+Three independent bugs combined to produce a black map panel:
+
+**Root cause 1 — React StrictMode double-invoke:**
+React 18 StrictMode intentionally mounts → unmounts → remounts every component. The original `useEffect` created a MapLibre map immediately; StrictMode's synchronous cleanup (`map.remove()`) destroyed it before it could render. The second mount had no container to attach to.
+**Fix:** Wrap map initialization in `setTimeout(0)`.
+
+**Root cause 2 — MapLibre CSS overrides container position:**
+MapLibre appends `.maplibregl-map { position: relative }` to the container element after initialization, overriding the component's `position: absolute; inset: 0` rule.
+**Fix:** `position: absolute !important` plus `width: 100%; height: 100%` on `.map-container`.
+
+**Root cause 3 — OpenFreeMap Positron style has expression errors in MapLibre v4/v5:**
+The Positron style uses expressions that return `null` where MapLibre expects a number.
+**Fix:** Switch tile style URL from `positron` to `liberty`. Also downgraded `maplibre-gl` from `^5.22.0` to `^4.7.1`.
+
+---
+
+## ✅ Map defaults to black panel before first route search — FIXED
+
+**File:** `frontend/src/MapView.jsx`
+
+**Fixed in:** Changed `DEFAULT_CENTER` to `[-87.654, 41.966]` (Uptown, Chicago) and `DEFAULT_ZOOM` to `13`. The map now renders the Uptown neighborhood on startup.
+
+---
+
+## ✅ Walking paths drawn as Haversine straight lines instead of following streets — FIXED
+
+**Files:** `backend/requirements.txt`, `backend/walking.py`
+
+**Fixed in:** Added `scikit-learn>=1.0` to `backend/requirements.txt`. `ox.nearest_nodes()` requires `scikit-learn` for spatial indexing on unprojected graphs; without it, every call raised `ImportError` — silently caught and falling back to straight-line Haversine paths.
+
+---
+
+## ✅ 4 high-severity npm vulnerabilities in `serialize-javascript` — FIXED
+
+**File:** `frontend/package.json`
+
+**Fixed in:** Added an npm `overrides` entry to force the patched version:
+```json
+"overrides": {
+  "serialize-javascript": "^7.0.5"
+}
+```
+
+---
+
+## ✅ Bus transit leg not drawn on map when `clip_shape` returns single-element list — FIXED
+
+**Files:** `backend/transit_graph.py`
+
+**Fixed in:** When `lo >= hi`, return a 2-point straight line between the actual stop coordinates rather than an unrenderable 1-element list:
+```python
+if lo >= hi:
+    return [[board_lat, board_lon], [exit_lat, exit_lon]]
+```
+
+---
+
+## ✅ Bus route shown as straight Haversine line — wrong shape selected (short-turn trip) — FIXED
+
+**File:** `backend/transit_graph.py` — `_build_shape_lookup()`
+
+**Fixed in:** Select the shape with the **most points** for each route/direction instead of the first encountered:
+```python
+n = len(shapes.get(shape_id, []))
+if n > route_dir_shape_len.get(key, -1):
+    route_dir_to_shape[key] = shape_id
+    route_dir_shape_len[key] = n
+```
+
+---
+
+## ✅ Unclosed file handle in `fetch_gtfs.py` validation step — FIXED
+
+**Fixed in:** `backend/fetch_gtfs.py` `validate_and_report()` — bare `open(path, ...)` replaced with `with open(path, ...) as fh:` context manager.
+
+---
+
+## ✅ Train routing returns no results for addresses >0.5 miles from nearest station — FIXED
+
+**File:** `backend/transit_graph.py` `find_routes()`
+
+**Fixed in:** Both the origin and destination station searches now use a progressive-expansion loop: 0.25 → 0.5 → 0.75 → 1.0 → 1.25 → 1.5 → 1.75 → 2.0 miles (+0.25 per step). The first radius that returns at least one station is used.
+
+---
+
+## ✅ Bus routing returns no results when best exit stop is marginally outside 0.5-mile cutoff — FIXED
+
+**File:** `backend/transit_graph.py` `find_bus_routes()`
+
+**Fixed in:** Replaced the hard 0.5-mile cutoff with a progressive-expansion threshold matching the train station fix (0.25 → 2.0 miles, +0.25 per step). Restructured into two passes: **Pass 1** finds the best exit stop per route+direction using haversine only. **Pass 2** builds Route objects — including OSMnx walk times, walk paths, and directions — only for candidates within the chosen threshold.

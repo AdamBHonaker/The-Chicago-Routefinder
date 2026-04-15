@@ -10,7 +10,7 @@ A user enters their origin and destination. The app:
 3. Fetches live CTA train and bus arrival times to compute real wait times
 4. Passes the ranked route options to Claude (Anthropic API) for a plain-English recommendation
 5. Displays structured route cards with leg-by-leg breakdowns
-6. Shows an interactive map with the route drawn on OpenFreeMap Positron tiles, including transit photos for featured stops
+6. Shows an interactive map with the route drawn on OpenFreeMap Liberty tiles, including transit photos for featured stops
 
 > **Design principle:** The AI layer handles explanation and reasoning — not raw routing. Routing is deterministic, calculated in code for accuracy. Claude's job is the last mile: turning correct, code-generated answers into helpful, conversational recommendations.
 
@@ -18,8 +18,8 @@ A user enters their origin and destination. The app:
 
 | Layer | Technologies |
 |-------|-------------|
-| **Frontend** | React (PWA), MapLibre GL JS, OpenFreeMap Positron tiles, Vite |
-| **Backend** | Python, FastAPI, NetworkX, OSMnx, aiohttp |
+| **Frontend** | React (PWA), MapLibre GL JS v4, OpenFreeMap Liberty tiles, Vite |
+| **Backend** | Python, FastAPI, NetworkX, OSMnx, scikit-learn, aiohttp |
 | **AI** | Claude (`claude-sonnet-4-6`) via Anthropic Python SDK |
 | **Data** | CTA GTFS (static schedules), CTA Bus & Train Tracker APIs (real-time) |
 | **Hosting** | Railway (backend) + Vercel (frontend) |
@@ -37,7 +37,7 @@ See [PYTHON_TERMINAL_TEST_STARTUP_INSTRUCTIONS.md](PYTHON_TERMINAL_TEST_STARTUP_
 - `GOOGLE_MAPS_API_KEY` — Google Maps Geocoding API key
 
 **Frontend** (`frontend/.env.local`):
-- `VITE_API_URL` — Backend URL (e.g. `http://localhost:8000` for local dev)
+- `VITE_BACKEND_URL` — Backend URL (e.g. `http://localhost:8000` for local dev)
 
 ### Quick start
 
@@ -55,12 +55,21 @@ npm install
 npm run dev
 ```
 
+## Utility scripts
+
+Standalone scripts in `backend/` that run independently of the server:
+
+| Script | Purpose |
+|--------|---------|
+| `fetch_gtfs.py` | Download/update CTA GTFS static data to `backend/gtfs_data/` |
+| `fetch_street_graph.py` | Download and cache the OSMnx Chicago street graph |
+| `active_routes.py` | **Print all active CTA bus routes and train lines right now.** Uses Bus Tracker `/getroutes` (returns only in-service routes) and Train Tracker `/ttpositions` (active = has live train positions). Useful for debugging, data exploration, or verifying API keys. Run with `python active_routes.py` from the `backend/` directory — requires `CTA_TRAIN_API_KEY` and `CTA_BUS_API_KEY` in `backend/.env`. |
+
 ## Project documentation
 
 - [cta_app_handoff_prompt.md](cta_app_handoff_prompt.md) — Full project brief, architecture, decisions, and phase history
 - [MAP_IMPLEMENTATION_PLAN.md](MAP_IMPLEMENTATION_PLAN.md) — Map feature design decisions and implementation plan
 - [WEATHER&CROWDEDNESS_FEATURE_HANDOFF.md](WEATHER&CROWDEDNESS_FEATURE_HANDOFF.md) — Weather and crowdedness feature design
-- [FEATURE_IMPLEMENTATION_PLANS.md](FEATURE_IMPLEMENTATION_PLANS.md) — Chunked implementation plans for major upcoming features
-- [FUTURE_ENHANCEMENTS.md](FUTURE_ENHANCEMENTS.md) — Post-launch feature ideas and enhancements
-- [BUGS_TO_BE_FIXED.md](BUGS_TO_BE_FIXED.md) — Known bugs catalogued by severity
+- [FEATURE_IMPLEMENTATION_PLANS.md](FEATURE_IMPLEMENTATION_PLANS.md) — Chunked implementation plans (Features A–F) and post-launch enhancement ideas
+- [BUGS_TO_BE_FIXED.md](BUGS_TO_BE_FIXED.md) — Open bugs (2 🟢 low-priority deferred); [BUGS_FIXED_HISTORY.md](BUGS_FIXED_HISTORY.md) — Log of all resolved bugs
 - [HUMAN_TODO.md](HUMAN_TODO.md) — Tasks requiring human action (accounts, API keys, deployment steps)

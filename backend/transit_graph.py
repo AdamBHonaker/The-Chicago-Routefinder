@@ -20,6 +20,7 @@ import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 from functools import lru_cache
 from pathlib import Path
 
@@ -79,7 +80,8 @@ class WalkLeg:
     minutes: float
     path_points: list = field(default_factory=list)   # [[lat, lon], ...] street path
     directions: list  = field(default_factory=list)   # [{"street", "direction", "minutes"}, ...]
-    leg_type: str = "walk"
+    exit_label: str   = ""                            # Feature A: named exit at alighting station
+    leg_type: str     = "walk"
 
 
 @dataclass
@@ -173,16 +175,40 @@ def _load_train_route_ids() -> set[str]:
 
 
 def _load_weekday_service_ids() -> set[str]:
-    """Returns service_ids active on weekdays (Mon–Fri) from calendar.txt."""
+    """Returns service_ids active on weekdays (Mon–Fri) from calendar.txt,
+    augmented with services defined purely via calendar_dates.txt add-exceptions."""
+    import datetime
     ids: set[str] = set()
     cal_file = GTFS_DIR / "calendar.txt"
-    if not cal_file.exists():
-        return ids
-    with open(cal_file, encoding="utf-8-sig") as f:
-        for row in csv.DictReader(f):
-            if all(row.get(d, "0").strip() == "1"
-                   for d in ("monday", "tuesday", "wednesday", "thursday", "friday")):
-                ids.add(row["service_id"].strip())
+    if cal_file.exists():
+        with open(cal_file, encoding="utf-8-sig") as f:
+            for row in csv.DictReader(f):
+                if all(row.get(d, "0").strip() == "1"
+                       for d in ("monday", "tuesday", "wednesday", "thursday", "friday")):
+                    ids.add(row["service_id"].strip())
+
+    # Also include services expressed purely through calendar_dates.txt
+    # (exception_type=1 add-dates on Mon–Fri). Require ≥3 such dates to avoid
+    # including one-off special services.
+    cal_dates_file = GTFS_DIR / "calendar_dates.txt"
+    if cal_dates_file.exists():
+        weekday_add_counts: dict[str, int] = {}
+        with open(cal_dates_file, encoding="utf-8-sig") as f:
+            for row in csv.DictReader(f):
+                if row.get("exception_type", "").strip() != "1":
+                    continue
+                sid = row.get("service_id", "").strip()
+                date_str = row.get("date", "").strip()
+                try:
+                    d = datetime.date(int(date_str[:4]), int(date_str[4:6]), int(date_str[6:8]))
+                    if d.weekday() < 5:   # 0=Mon … 4=Fri
+                        weekday_add_counts[sid] = weekday_add_counts.get(sid, 0) + 1
+                except (ValueError, IndexError):
+                    continue
+        for sid, count in weekday_add_counts.items():
+            if count >= 3:
+                ids.add(sid)
+
     return ids
 
 
@@ -437,6 +463,7 @@ def warm_up() -> None:
     """
     _build_graph()
     get_bus_stop_sequences()
+    _build_stop_to_routes()
     _build_shape_lookup()
 
 
@@ -493,7 +520,10 @@ def _build_shape_lookup() -> None:
     print(f"[transit_graph] Loaded {len(shapes)} shapes from shapes.txt")
 
     # --- Step 2: trips.txt → (route_id, direction_id) → shape_id ---
+    # Use the shape with the MOST points for each route/direction so we always
+    # get the full-length route shape rather than a short-turn variant.
     route_dir_to_shape: dict[tuple[str, str], str] = {}
+    route_dir_shape_len: dict[tuple[str, str], int] = {}
 
     with open(GTFS_DIR / "trips.txt", encoding="utf-8-sig") as f:
         for row in csv.DictReader(f):
@@ -503,8 +533,10 @@ def _build_shape_lookup() -> None:
             if not route_id or not shape_id:
                 continue
             key = (route_id, direction_id)
-            if key not in route_dir_to_shape:
+            n = len(shapes.get(shape_id, []))
+            if n > route_dir_shape_len.get(key, -1):
                 route_dir_to_shape[key] = shape_id
+                route_dir_shape_len[key] = n
 
     # --- Step 3: join ---
     # Also load route_short_name → route_id mapping so bus routes can be found
@@ -560,10 +592,19 @@ def get_station_by_name(name: str) -> tuple[float, float] | None:
     for s in stations.values():
         if s["name"].lower() == name_lower:
             return (s["lat"], s["lon"])
-    # Contains-match fallback (e.g. "O'Hare" vs "O'Hare Airport")
+    # Contains-match fallback — rank by similarity to avoid wrong-line matches
+    # (e.g. "Harlem" matches both Harlem-Lake and Harlem-Forest Park)
+    best_match = None
+    best_ratio = 0.0
     for s in stations.values():
-        if name_lower in s["name"].lower() or s["name"].lower() in name_lower:
-            return (s["lat"], s["lon"])
+        s_lower = s["name"].lower()
+        if name_lower in s_lower or s_lower in name_lower:
+            ratio = SequenceMatcher(None, name_lower, s_lower).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_match = s
+    if best_match:
+        return (best_match["lat"], best_match["lon"])
     return None
 
 
@@ -612,6 +653,13 @@ def clip_shape(
 
     lo = min(board_idx, exit_idx)
     hi = max(board_idx, exit_idx)
+
+    if lo >= hi:
+        # Both stops map to the same nearest shape point — happens on short trips
+        # where stop spacing exceeds shape point density.  Return a straight line
+        # between the actual stop coordinates so the caller always gets ≥ 2 points.
+        return [[board_lat, board_lon], [exit_lat, exit_lon]]
+
     return shape_points[lo : hi + 1]
 
 
@@ -843,12 +891,20 @@ def _path_to_route(
             walk_min  = dest_walk_lookup.get(from_node, weight)
             from_lat  = from_meta.get("lat", dest_lat)
             from_lon  = from_meta.get("lon", dest_lon)
+            # Feature A: use the best station exit if one is known
+            exit_info = best_exit(from_node, dest_lat, dest_lon)
+            if exit_info is not None:
+                from_lat  = exit_info["lat"]
+                from_lon  = exit_info["lon"]
+                walk_min  = exit_info["walk_minutes"]
+            label = exit_info["label"] if exit_info else ""
             legs.append(WalkLeg(
                 from_name=from_meta.get("name", from_node),
                 to_name="Your destination",
                 minutes=walk_min,
                 path_points=street_walk_path(from_lat, from_lon, dest_lat, dest_lon),
                 directions=street_walk_directions(from_lat, from_lon, dest_lat, dest_lon),
+                exit_label=label,
             ))
             walk_total += walk_min
             idx += 1
@@ -882,7 +938,7 @@ def _path_to_route(
         seg_minutes = weight
 
         look = idx + 1
-        while look < len(path) - 1 and path[look] != DEST:
+        while look < len(path) - 1 and path[look] != DEST and path[look + 1] != DEST:
             next_edge = G.edges[path[look], path[look + 1]]
             if (next_edge.get("route_id") != group_route
                     or next_edge.get("edge_type") != "transit"):
@@ -901,7 +957,8 @@ def _path_to_route(
                 from_name=board_meta.get("name", board_node),
                 to_name=board_meta.get("name", board_node),
                 minutes=_TRANSFER_MINUTES,
-                path_points=[[blat, blon]],
+                path_points=[[blat, blon], [blat, blon]],
+                directions=[{"street": "Change trains", "direction": "", "minutes": _TRANSFER_MINUTES}],
             ))
             walk_total += _TRANSFER_MINUTES
 
@@ -962,12 +1019,30 @@ def find_routes(
     """
     G_base, stations = _build_graph()
 
-    # Origin stations (nearest train stations with walk times already computed)
-    if origin_stations is None:
-        origin_stations = find_nearest_train_stations(origin_lat, origin_lon)
+    # Origin stations (nearest train stations with walk times already computed).
+    # If the caller passed an empty list (no stations within 0.5 miles per
+    # resolve_location), or passed None, search directly — expanding the
+    # radius in 0.25-mile increments up to 2.0 miles when needed (e.g. the
+    # user is in a neighbourhood that is more than 0.5 miles from the nearest
+    # station).
+    if not origin_stations:
+        for _r in (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0):
+            origin_stations = find_nearest_train_stations(
+                origin_lat, origin_lon, max_distance_miles=_r
+            )
+            if origin_stations:
+                break
 
-    # Destination stations (walk direction: station → destination)
-    dest_stations = find_nearest_train_stations(dest_lat, dest_lon, walk_to_station=False)
+    # Destination stations (walk direction: station → destination).
+    # Same progressive-expansion logic: prefer the closest station but don't
+    # fail just because the destination is slightly over 0.5 miles from the
+    # nearest platform.
+    for _r in (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0):
+        dest_stations = find_nearest_train_stations(
+            dest_lat, dest_lon, walk_to_station=False, max_distance_miles=_r
+        )
+        if dest_stations:
+            break
 
     if not origin_stations or not dest_stations:
         return []
@@ -1033,6 +1108,163 @@ def find_routes(
     return routes
 
 
+# ---------------------------------------------------------------------------
+# Bus stop spatial grid index (Chunk 1 — Feature C)
+# ---------------------------------------------------------------------------
+#
+# _bus_stop_grid: grid cell → list of stop_ids in that cell
+#   key = (int(lat / 0.005), int(lon / 0.005))
+#   0.005° ≈ 0.34 miles lat / 0.27 miles lon at Chicago's latitude
+#
+# _bus_stop_coords: stop_id → (lat, lon) for haversine post-filtering
+#
+# Both are populated once at module import via _build_bus_stop_grid().
+
+_bus_stop_grid:   dict[tuple[int, int], list[str]] = {}
+_bus_stop_coords: dict[str, tuple[float, float]]   = {}
+
+
+def _build_bus_stop_grid() -> None:
+    """Populate _bus_stop_grid and _bus_stop_coords from stops.txt at module load."""
+    global _bus_stop_grid, _bus_stop_coords
+    stops = _load_bus_stop_lookup()
+    grid: dict[tuple[int, int], list[str]] = {}
+    coords: dict[str, tuple[float, float]] = {}
+    for sid, meta in stops.items():
+        lat, lon = meta["lat"], meta["lon"]
+        coords[sid] = (lat, lon)
+        cell = (int(lat / 0.005), int(lon / 0.005))
+        grid.setdefault(cell, []).append(sid)
+    _bus_stop_grid   = grid
+    _bus_stop_coords = coords
+    print(f"[transit_graph] Bus stop grid built: {len(coords)} stops, {len(grid)} cells")
+
+
+_build_bus_stop_grid()
+
+
+# ---------------------------------------------------------------------------
+# Station exit data (Feature A)
+# ---------------------------------------------------------------------------
+#
+# _station_exits: mapid -> [{label, lat, lon}, ...]
+#
+# Loaded once at module import from station_exits.json.  Returns {} gracefully
+# if the file is absent so the server still starts without exit data.
+
+_station_exits: dict[str, list[dict]] = {}
+
+
+def _load_station_exits() -> dict[str, list[dict]]:
+    """
+    Read station_exits.json and return {mapid: [{label, lat, lon}, ...]}.
+    Returns {} if the file does not exist (server still starts without it).
+    """
+    import json as _json
+    exits_file = Path(__file__).parent / "station_exits.json"
+    if not exits_file.exists():
+        print("[transit_graph] station_exits.json not found -- exit guidance disabled")
+        return {}
+    try:
+        with open(exits_file, encoding="utf-8") as f:
+            data = _json.load(f)
+        total = sum(len(v) for v in data.values())
+        print(f"[transit_graph] Station exits loaded: {total} exits across {len(data)} stations")
+        return data
+    except Exception as exc:  # noqa: BLE001
+        print(f"[transit_graph] Warning: could not load station_exits.json: {exc}")
+        return {}
+
+
+_station_exits = _load_station_exits()
+
+
+def get_station_exits(mapid: str) -> list[dict]:
+    """Return the list of known exits for a train parent station, or [] if none."""
+    return _station_exits.get(mapid, [])
+
+
+def best_exit(mapid: str, dest_lat: float, dest_lon: float) -> dict | None:
+    """
+    Return the exit dict for *mapid* that minimises the street-network walk
+    time to (dest_lat, dest_lon), or None if no exits are known for the station.
+
+    The returned dict is a copy of the station_exits entry with an added
+    ``walk_minutes`` key.  ``street_walk_minutes`` is lru_cache'd, so repeated
+    calls with the same coords are free.
+    """
+    exits = get_station_exits(mapid)
+    if not exits:
+        return None
+    best: dict | None = None
+    best_minutes = float("inf")
+    for ex in exits:
+        minutes = street_walk_minutes(ex["lat"], ex["lon"], dest_lat, dest_lon)
+        if minutes < best_minutes:
+            best_minutes = minutes
+            best = ex
+    if best is None:
+        return None
+    return {**best, "walk_minutes": best_minutes}
+
+
+def _stops_near(lat: float, lon: float, radius_miles: float = 0.25) -> list[str]:
+    """
+    Return stop_ids within radius_miles of (lat, lon).
+
+    Uses the pre-built _bus_stop_grid for an initial bounding-box filter
+    (checking at most a 3×3 cell window for a 0.25-mile radius), then
+    post-filters with exact haversine distance.
+
+    Not cached — lat/lon float keys would produce unbounded cache growth.
+    """
+    lat_delta = radius_miles * 0.0145   # degrees per mile at Chicago latitude
+    lon_delta = radius_miles * 0.0175
+
+    lat_min = int((lat - lat_delta) / 0.005)
+    lat_max = int((lat + lat_delta) / 0.005)
+    lon_min = int((lon - lon_delta) / 0.005)
+    lon_max = int((lon + lon_delta) / 0.005)
+
+    candidates: list[str] = []
+    for clat in range(lat_min, lat_max + 1):
+        for clon in range(lon_min, lon_max + 1):
+            candidates.extend(_bus_stop_grid.get((clat, clon), []))
+
+    return [
+        sid for sid in candidates
+        if _haversine_miles(lat, lon, *_bus_stop_coords[sid]) <= radius_miles
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Stop-to-routes index (Chunk 2 — Feature C)
+# ---------------------------------------------------------------------------
+#
+# _stop_to_routes: stop_id → [(short_name, direction_id, idx_in_seq, arr_min), ...]
+#
+# Built once during warm_up() after get_bus_stop_sequences() is available.
+# Enables O(1) lookup of "which routes serve stop X?".
+
+_stop_to_routes: dict[str, list[tuple[str, str, int, float]]] = {}
+
+
+def _build_stop_to_routes() -> None:
+    """
+    Invert get_bus_stop_sequences() into _stop_to_routes.
+    Called from warm_up() after get_bus_stop_sequences().
+    """
+    global _stop_to_routes
+    index: dict[str, list[tuple[str, str, int, float]]] = {}
+    for (short_name, did), stops in get_bus_stop_sequences().items():
+        for idx, (stop_id, _name, _lat, _lon, arr_min) in enumerate(stops):
+            index.setdefault(stop_id, []).append((short_name, did, idx, arr_min))
+    _stop_to_routes = index
+    total_entries = sum(len(v) for v in index.values())
+    print(f"[transit_graph] Stop-to-routes index built: {total_entries} (stop, route) entries "
+          f"across {len(index)} stops")
+
+
 def find_bus_routes(
     origin_lat: float,
     origin_lon: float,
@@ -1085,8 +1317,20 @@ def find_bus_routes(
             if sid in boarding_stop_ids:
                 board_index.setdefault(sid, []).append((short_name, did, idx))
 
-    ranked: list[tuple[float, int, object]] = []
-    seen_route_dirs: set[tuple[str, str]] = set()   # one result per route+direction
+    # ── Pass 1: find the best exit stop per route+direction (haversine only) ──
+    #
+    # No Route objects are built here — just the cheapest possible per-candidate
+    # distance check.  Building a Route requires OSMnx street-network calls
+    # (walk_minutes, walk_path, walk_directions) which are expensive; we defer
+    # them to Pass 2 so we only pay that cost for candidates that survive the
+    # progressive distance threshold.
+    #
+    # {route_dir_key: (exit_dist_miles, stop_id, route_num, direction,
+    #                  wait_min, board_idx, exit_idx)}
+    # {route_dir_key: (score, exit_dist_miles, stop_id, route_num, direction,
+    #                  wait_min, board_idx, exit_idx)}
+    # score = board_walk_min + wait_min + exit_dist_miles*20 (proxy for exit walk)
+    pass1: dict[tuple[str, str], tuple] = {}
 
     for arrival in bus_arrivals:
         stop_id   = arrival.get("stop_id", "")
@@ -1100,42 +1344,62 @@ def find_bus_routes(
         # Filter entries to those matching this arrival's route number.
         # If the stop appears in both directions, try each and pick the direction
         # whose sequence leads closest to the destination.
-        candidates = [e for e in board_index[stop_id] if e[0] == route_num]
-        if not candidates:
+        cands = [e for e in board_index[stop_id] if e[0] == route_num]
+        if not cands:
             continue
 
-        best_exit_idx  = -1
-        best_exit_dist = float("inf")
-        best_cand: tuple[str, str, int] | None = None
+        board_walk_min = board_walk.get(stop_id, 0.0)
 
-        for short_name, did, board_idx in candidates:
+        for short_name, did, board_idx in cands:
             route_dir_key = (short_name, did)
-            if route_dir_key in seen_route_dirs:
-                continue   # already have a result for this route+direction
-
             seq = sequences[route_dir_key]
-            # Scan forward from the boarding stop
+
+            best_exit_idx  = -1
+            best_exit_dist = float("inf")
             for j in range(board_idx + 1, len(seq)):
                 _, _, slat, slon, _ = seq[j]
                 dist = _haversine_miles(dest_lat, dest_lon, slat, slon)
                 if dist < best_exit_dist:
                     best_exit_dist = dist
                     best_exit_idx  = j
-                    best_cand      = (short_name, did, board_idx)
 
-        if best_cand is None or best_exit_idx < 0:
-            continue   # boarding at terminus for all candidates, or all seen
+            if best_exit_idx < 0:
+                continue   # boarding at terminus
 
-        # Skip if the closest reachable stop is still far from the destination.
-        # 0.5 miles ~ 10 min walk; beyond that the bus isn't serving this trip.
-        if best_exit_dist > 0.5:
+            # Score = board walk + wait + proxy for exit walk (20 min/mile)
+            score = board_walk_min + wait_min + best_exit_dist * 20.0
+
+            existing = pass1.get(route_dir_key)
+            if existing is None or score < existing[0]:
+                pass1[route_dir_key] = (
+                    score, best_exit_dist, stop_id, route_num, direction,
+                    wait_min, board_idx, best_exit_idx,
+                )
+
+    if not pass1:
+        return []
+
+    # ── Progressive threshold ─────────────────────────────────────────────────
+    # Start at 0.25 miles, expand by 0.25-mile increments up to 2.0 miles.
+    # Use the tightest threshold that yields at least one result, so the exit
+    # walk is minimised rather than allowed to creep up without reason.
+    threshold = next(
+        (_r for _r in (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0)
+         if any(v[1] <= _r for v in pass1.values())),
+        None,
+    )
+    if threshold is None:
+        return []
+
+    # ── Pass 2: build Route objects only for candidates within the threshold ──
+    ranked: list[tuple[float, int, object]] = []
+
+    for (short_name, did), (_score, best_exit_dist, stop_id, route_num, direction,
+                             wait_min, board_idx, best_exit_idx) in pass1.items():
+        if best_exit_dist > threshold:
             continue
 
-        short_name, did, board_idx = best_cand
-        route_dir_key = (short_name, did)
-        seen_route_dirs.add(route_dir_key)
-
-        stops = sequences[route_dir_key]
+        stops = sequences[(short_name, did)]
         _, board_name, board_lat, board_lon, board_arr = stops[board_idx]
         exit_sid, exit_name, exit_lat, exit_lon, exit_arr = stops[best_exit_idx]
 
@@ -1148,8 +1412,21 @@ def find_bus_routes(
         if in_vehicle_min <= 0:
             continue
 
-        # Street-network walk time from exit stop to destination (OSMnx)
-        exit_walk_min = street_walk_minutes(exit_lat, exit_lon, dest_lat, dest_lon)
+        # Street-network walk time from exit stop to destination (OSMnx).
+        # Feature A: try to find a named station exit for the alighting stop.
+        # Bus stops are not train stations, so best_exit() returns None for
+        # them — behaviour is identical to before when no exit is found.
+        bus_exit_info = best_exit(exit_sid, dest_lat, dest_lon)
+        if bus_exit_info is not None:
+            walk_origin_lat = bus_exit_info["lat"]
+            walk_origin_lon = bus_exit_info["lon"]
+            exit_walk_min   = bus_exit_info["walk_minutes"]
+            bus_exit_label  = bus_exit_info["label"]
+        else:
+            walk_origin_lat = exit_lat
+            walk_origin_lon = exit_lon
+            exit_walk_min   = street_walk_minutes(exit_lat, exit_lon, dest_lat, dest_lon)
+            bus_exit_label  = ""
 
         legs = [
             WalkLeg(
@@ -1176,8 +1453,9 @@ def find_bus_routes(
                 from_name=exit_name,
                 to_name="Your destination",
                 minutes=round(exit_walk_min, 1),
-                path_points=street_walk_path(exit_lat, exit_lon, dest_lat, dest_lon),
-                directions=street_walk_directions(exit_lat, exit_lon, dest_lat, dest_lon),
+                path_points=street_walk_path(walk_origin_lat, walk_origin_lon, dest_lat, dest_lon),
+                directions=street_walk_directions(walk_origin_lat, walk_origin_lon, dest_lat, dest_lon),
+                exit_label=bus_exit_label,
             ),
         ]
 
@@ -1189,6 +1467,308 @@ def find_bus_routes(
         )
         total = route.total_minutes_no_wait + wait_min
         ranked.append((total, wait_min, route))
+
+    ranked.sort(key=lambda x: x[0])
+    return ranked[:n_routes]
+
+
+# ---------------------------------------------------------------------------
+# Bus-to-bus transfer routing (Chunk 3 — Feature C)
+# ---------------------------------------------------------------------------
+
+def find_bus_transfer_routes(
+    origin_lat: float,
+    origin_lon: float,
+    dest_lat: float,
+    dest_lon: float,
+    bus_arrivals: list[dict],      # from cta_client.get_bus_arrivals(); must include stop_id
+    origin_bus_stops: list[dict],  # from gtfs_loader.find_nearest_bus_stops(); includes walk_minutes
+    n_routes: int = 3,
+) -> list[tuple[float, int, object]]:
+    """
+    Find bus+bus transfer routes from origin to destination.
+
+    Only called when find_bus_routes() returns no direct bus results.
+    Builds 5-leg routes of the form:
+        WalkLeg  (origin → boarding_stop_A)
+        TransitLeg (route A: boarding_stop_A → transfer_stop_Sk)
+        WalkLeg  (Sk → transfer_boarding_stop_T)   ← minutes=0 if same stop
+        TransitLeg (route B: T → exit_stop_B)
+        WalkLeg  (exit_stop_B → destination)
+
+    Sorting key includes a fixed 7.5-min estimate for the leg-2 wait (half
+    of a typical 15-min CTA headway). This estimate is NOT added to
+    route.walk_minutes_total or route.transit_minutes — those fields retain
+    their strict definitions.
+
+    Returns:
+        list of (total_minutes, wait_minutes_A, Route) sorted by total_minutes.
+        wait_minutes_A is the live wait for route A (same convention as
+        find_bus_routes()). Empty list if no transfer routes are found.
+    """
+    sequences = get_bus_stop_sequences()
+    if not sequences or not bus_arrivals or not origin_bus_stops:
+        return []
+    if not _stop_to_routes:
+        return []
+
+    _LEG2_WAIT_ESTIMATE = 7.5   # fixed leg-2 wait estimate (minutes)
+    _MAX_TRIP_MINUTES   = 90.0
+    _MAX_EXIT_DIST      = 0.5   # miles — same threshold as find_bus_routes()
+    _MAX_TRANSFER_WALK  = 0.25  # miles
+    _FWD_PROGRESS_RATIO = 0.9   # Sk must reduce haversine-to-dest by ≥10%
+    _MAX_CANDIDATES_PER_ARRIVAL = 3
+
+    # Walk time from origin to each nearby boarding stop
+    board_walk: dict[str, float] = {
+        s["stop_id"]: s.get("walk_minutes", 0.0)
+        for s in origin_bus_stops
+    }
+    boarding_stop_ids = set(board_walk.keys())
+
+    # Build board_index: stop_id → [(short_name, did, idx_in_seq), ...]
+    # Limited to our actual boarding stops (cheap per request).
+    board_index: dict[str, list[tuple[str, str, int]]] = {}
+    for (short_name, did), stops in sequences.items():
+        for idx, entry in enumerate(stops):
+            sid = entry[0]
+            if sid in boarding_stop_ids:
+                board_index.setdefault(sid, []).append((short_name, did, idx))
+
+    # ── Pass 1: find candidate transfers (haversine only) ────────────────────
+    #
+    # For each live arrival, scan forward from the boarding stop on route A.
+    # At each stop Sk that shows forward progress toward the destination,
+    # check nearby stops T and the routes serving them.  If route B exits
+    # within 0.5 miles of the destination, record the candidate.
+    #
+    # Stored as: {(route_A_key, Sk_idx, T_stop_id, route_B_key, exit_B_idx):
+    #              (score, board_walk_min, wait_min_A, board_stop_id)}
+    #
+    # score = board_walk_min + wait_A + transfer_walk_haversine*20 + exit_B_haversine*20
+
+    # Use a dict keyed by the logical candidate identity to deduplicate
+    # (same route A + transfer stop + route B combination from different arrivals).
+    candidate_map: dict[tuple, tuple] = {}
+
+    for arrival in bus_arrivals:
+        stop_id   = arrival.get("stop_id", "")
+        route_num = arrival.get("route", "")
+        wait_min  = arrival.get("arrives_in_minutes", 0)
+
+        if not stop_id or stop_id not in board_index:
+            continue
+
+        cands_A = [e for e in board_index[stop_id] if e[0] == route_num]
+        if not cands_A:
+            continue
+
+        board_walk_min   = board_walk.get(stop_id, 0.0)
+        boarding_hav     = _haversine_miles(stop_id and _bus_stop_coords.get(stop_id, (origin_lat, origin_lon))[0] or origin_lat,
+                                            stop_id and _bus_stop_coords.get(stop_id, (origin_lat, origin_lon))[1] or origin_lon,
+                                            dest_lat, dest_lon)
+
+        for short_A, did_A, board_idx in cands_A:
+            seq_A = sequences[(short_A, did_A)]
+            route_A_key = (short_A, did_A)
+
+            # Per-arrival per-route-A candidate list for top-3 capping
+            arrival_candidates: list[tuple] = []
+
+            for sk_idx in range(board_idx + 1, len(seq_A)):
+                sk_sid, sk_name, sk_lat, sk_lon, _ = seq_A[sk_idx]
+
+                # Forward-progress filter: Sk must be ≥10% closer to dest than boarding
+                sk_hav = _haversine_miles(sk_lat, sk_lon, dest_lat, dest_lon)
+                if sk_hav >= boarding_hav * _FWD_PROGRESS_RATIO:
+                    continue
+
+                # Find bus stops near Sk within transfer-walk radius
+                nearby = _stops_near(sk_lat, sk_lon, _MAX_TRANSFER_WALK)
+                if not nearby:
+                    continue
+
+                for t_stop_id in nearby:
+                    # Don't transfer to a stop on the same route+direction
+                    routes_at_T = _stop_to_routes.get(t_stop_id, [])
+                    for short_B, did_B, t_idx, _ in routes_at_T:
+                        if (short_B, did_B) == route_A_key:
+                            continue   # same route — skip
+
+                        seq_B = sequences.get((short_B, did_B))
+                        if seq_B is None:
+                            continue
+
+                        # Scan forward from T on route B to find best exit stop
+                        best_exit_idx  = -1
+                        best_exit_dist = float("inf")
+                        for j in range(t_idx + 1, len(seq_B)):
+                            _, _, elat, elon, _ = seq_B[j]
+                            d = _haversine_miles(elat, elon, dest_lat, dest_lon)
+                            if d < best_exit_dist:
+                                best_exit_dist = d
+                                best_exit_idx  = j
+
+                        if best_exit_idx < 0 or best_exit_dist > _MAX_EXIT_DIST:
+                            continue
+
+                        transfer_hav = _haversine_miles(sk_lat, sk_lon,
+                                                        *_bus_stop_coords.get(t_stop_id, (sk_lat, sk_lon)))
+                        score = (board_walk_min + wait_min
+                                 + transfer_hav * 20.0
+                                 + best_exit_dist * 20.0)
+
+                        arrival_candidates.append((
+                            score,
+                            route_A_key, sk_idx, t_stop_id,
+                            (short_B, did_B), best_exit_idx,
+                            board_walk_min, wait_min, stop_id,
+                        ))
+
+            # Keep only top-3 candidates for this arrival+route-A combination
+            arrival_candidates.sort(key=lambda x: x[0])
+            for cand in arrival_candidates[:_MAX_CANDIDATES_PER_ARRIVAL]:
+                score, rA, sk_i, t_sid, rB, exit_i, bwm, wm, bsid = cand
+                key = (rA, sk_i, t_sid, rB, exit_i)
+                existing = candidate_map.get(key)
+                if existing is None or score < existing[0]:
+                    candidate_map[key] = (score, bwm, wm, bsid)
+
+    if not candidate_map:
+        return []
+
+    # ── Pass 2: build Route objects for surviving candidates (OSMnx calls) ───
+    ranked: list[tuple[float, int, object]] = []
+
+    for (route_A_key, sk_idx, t_stop_id, route_B_key, exit_B_idx), \
+        (score, board_walk_min, wait_min_A, board_stop_id) in candidate_map.items():
+
+        short_A, did_A = route_A_key
+        short_B, did_B = route_B_key
+        seq_A = sequences[(short_A, did_A)]
+        seq_B = sequences[(short_B, did_B)]
+
+        # Locate boarding stop index from the stored board_stop_id
+        board_idx = next(
+            (e[2] for e in board_index.get(board_stop_id, [])
+             if (e[0], e[1]) == route_A_key),
+            None,
+        )
+        if board_idx is None:
+            continue
+
+        board_sid, board_name, board_lat, board_lon, board_arr = seq_A[board_idx]
+        sk_sid,    sk_name,    sk_lat,    sk_lon,    sk_arr    = seq_A[sk_idx]
+        t_meta = _bus_stop_coords.get(t_stop_id)
+        if t_meta is None:
+            continue
+        t_lat, t_lon = t_meta
+
+        # Look up T's name from the sequence entry (index known from _stop_to_routes)
+        t_idx_in_seq = next(
+            (e[2] for e in _stop_to_routes.get(t_stop_id, [])
+             if (e[0], e[1]) == route_B_key),
+            None,
+        )
+        if t_idx_in_seq is None:
+            continue
+        t_sid_check, t_name, t_lat_s, t_lon_s, t_arr = seq_B[t_idx_in_seq]
+
+        exit_sid, exit_name, exit_lat, exit_lon, exit_arr = seq_B[exit_B_idx]
+
+        # In-vehicle times from GTFS scheduled arrival minutes
+        in_vehicle_A = sk_arr - board_arr
+        if in_vehicle_A < 0:
+            in_vehicle_A += 24 * 60
+        if in_vehicle_A <= 0:
+            continue
+
+        in_vehicle_B = exit_arr - t_arr
+        if in_vehicle_B < 0:
+            in_vehicle_B += 24 * 60
+        if in_vehicle_B <= 0:
+            continue
+
+        # Transfer walk time (OSMnx) — skip if Sk and T are the same stop
+        same_stop = (sk_sid == t_stop_id)
+        if same_stop:
+            transfer_walk_min = 0.0
+            transfer_path     = []
+            transfer_dirs     = []
+        else:
+            transfer_walk_min = street_walk_minutes(sk_lat, sk_lon, t_lat_s, t_lon_s)
+            transfer_path     = street_walk_path(sk_lat, sk_lon, t_lat_s, t_lon_s)
+            transfer_dirs     = street_walk_directions(sk_lat, sk_lon, t_lat_s, t_lon_s)
+
+        exit_walk_min = street_walk_minutes(exit_lat, exit_lon, dest_lat, dest_lon)
+
+        total_no_wait = (board_walk_min + in_vehicle_A + transfer_walk_min
+                         + in_vehicle_B + exit_walk_min)
+
+        if total_no_wait + wait_min_A + _LEG2_WAIT_ESTIMATE > _MAX_TRIP_MINUTES:
+            continue
+
+        # Look up direction strings for both transit legs
+        direction_A = next(
+            (a.get("direction", short_A)
+             for a in bus_arrivals
+             if a.get("stop_id") == board_stop_id and a.get("route") == short_A),
+            short_A,
+        )
+        direction_B = short_B   # no live arrival for leg B; use route number as fallback
+
+        legs = [
+            WalkLeg(
+                from_name="Your location",
+                to_name=board_name,
+                minutes=round(board_walk_min, 1),
+                path_points=street_walk_path(origin_lat, origin_lon, board_lat, board_lon),
+                directions=street_walk_directions(origin_lat, origin_lon, board_lat, board_lon),
+            ),
+            TransitLeg(
+                line=direction_A,
+                line_code=short_A,
+                from_station=board_name,
+                from_mapid=board_sid,
+                to_station=sk_name,
+                to_mapid=sk_sid,
+                minutes=round(in_vehicle_A, 1),
+                shape_points=clip_shape(get_shape(short_A, did_A), board_lat, board_lon, sk_lat, sk_lon),
+            ),
+            WalkLeg(
+                from_name=sk_name,
+                to_name=t_name,
+                minutes=round(transfer_walk_min, 1),
+                path_points=transfer_path,
+                directions=transfer_dirs,
+            ),
+            TransitLeg(
+                line=direction_B,
+                line_code=short_B,
+                from_station=t_name,
+                from_mapid=t_stop_id,
+                to_station=exit_name,
+                to_mapid=exit_sid,
+                minutes=round(in_vehicle_B, 1),
+                shape_points=clip_shape(get_shape(short_B, did_B), t_lat_s, t_lon_s, exit_lat, exit_lon),
+            ),
+            WalkLeg(
+                from_name=exit_name,
+                to_name="Your destination",
+                minutes=round(exit_walk_min, 1),
+                path_points=street_walk_path(exit_lat, exit_lon, dest_lat, dest_lon),
+                directions=street_walk_directions(exit_lat, exit_lon, dest_lat, dest_lon),
+            ),
+        ]
+
+        route = Route(
+            legs=legs,
+            transit_minutes=round(in_vehicle_A + in_vehicle_B, 1),
+            walk_minutes_total=round(board_walk_min + transfer_walk_min + exit_walk_min, 1),
+            transfers=1,
+        )
+        sort_key = total_no_wait + wait_min_A + _LEG2_WAIT_ESTIMATE
+        ranked.append((sort_key, wait_min_A, route))
 
     ranked.sort(key=lambda x: x[0])
     return ranked[:n_routes]

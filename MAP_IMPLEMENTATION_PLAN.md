@@ -10,8 +10,8 @@ Decisions finalized 2026-04-09. All chunks below are designed to be worked on an
 
 | Decision | Choice |
 |---|---|
-| Map library | MapLibre GL JS |
-| Tile style | OpenFreeMap Positron (`https://tiles.openfreemap.org/styles/positron`) |
+| Map library | MapLibre GL JS v4 (v5 had WebGL2 init issues in React StrictMode) |
+| Tile style | OpenFreeMap Liberty (`https://tiles.openfreemap.org/styles/liberty`) — Positron dropped; had null-typed expression errors in MapLibre v4/v5 |
 | Route geometry | GTFS shape data (pre-computed at startup) — both train and bus |
 | Walking leg geometry | OSMnx street network (already loaded) |
 | Layout | Split panel — route cards left (40%), map right (60%) |

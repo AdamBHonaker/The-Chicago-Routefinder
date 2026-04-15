@@ -22,6 +22,15 @@ GRAPH_PATH = Path(__file__).parent / "street_graph.graphml"
 
 WALKING_SPEED_MPS = 3.0 * 1609.34 / 3600  # 3 mph → metres per second ≈ 1.34 m/s
 
+_LONG_BLOCK_METERS    = 201.17   # 1/8 mile = 660 ft — N-S numbered-address axis
+_SHORT_BLOCK_METERS   = 100.58   # 1/16 mile = 330 ft — E-W cross streets
+_BLOCK_TYPE_THRESHOLD = 150.0    # midpoint; ≥ threshold → long block
+
+_DIRECTION_FULL = {
+    "N":  "North",     "NE": "Northeast", "E":  "East",      "SE": "Southeast",
+    "S":  "South",     "SW": "Southwest", "W":  "West",      "NW": "Northwest",
+}
+
 
 @lru_cache(maxsize=1)
 def _load_graph():
@@ -125,10 +134,12 @@ def walk_directions(
         while i < len(raw):
             name = raw[i][0]
             total_length = 0.0
+            edge_count   = 0
             start_node   = raw[i][2]
             end_node     = raw[i][3]
             while i < len(raw) and raw[i][0] == name:
                 total_length += raw[i][1]
+                edge_count   += 1
                 end_node = raw[i][3]
                 i += 1
             lat1 = G.nodes[start_node]["y"]
@@ -136,16 +147,30 @@ def walk_directions(
             lat2 = G.nodes[end_node]["y"]
             lon2 = G.nodes[end_node]["x"]
             minutes = round(total_length / WALKING_SPEED_MPS / 60, 1)
+            direction_abbrev = _cardinal(lat1, lon1, lat2, lon2)
+            avg_edge_m = total_length / edge_count
+            is_long    = avg_edge_m >= _BLOCK_TYPE_THRESHOLD
+            block_m    = _LONG_BLOCK_METERS if is_long else _SHORT_BLOCK_METERS
+            blocks     = max(0.5, round(total_length / block_m * 2) / 2)
+            block_type = "long" if is_long else "short"
             steps.append({
-                "street":    name,
-                "direction": _cardinal(lat1, lon1, lat2, lon2),
-                "minutes":   minutes,
+                "street":         name,
+                "direction":      direction_abbrev,
+                "direction_full": _DIRECTION_FULL.get(direction_abbrev, direction_abbrev),
+                "blocks":         blocks,
+                "block_type":     block_type,
+                "minutes":        minutes,
             })
         return steps
 
     except Exception:
         total_min = _haversine_walk_minutes(origin_lat, origin_lon, dest_lat, dest_lon)
-        return [{"street": "Walk", "direction": "", "minutes": total_min}]
+        fallback_meters = total_min * 60 * WALKING_SPEED_MPS
+        is_long_fb       = fallback_meters >= _BLOCK_TYPE_THRESHOLD
+        fallback_block_m = _LONG_BLOCK_METERS if is_long_fb else _SHORT_BLOCK_METERS
+        fallback_blocks  = max(0.5, round(fallback_meters / fallback_block_m * 2) / 2)
+        block_type_fb    = "long" if is_long_fb else "short"
+        return [{"street": "Walk", "direction": "", "direction_full": "", "blocks": fallback_blocks, "block_type": block_type_fb, "minutes": total_min}]
 
 
 @lru_cache(maxsize=512)
@@ -158,12 +183,14 @@ def walk_path(
     """
     Return the street-network path between two lat/lon points as [[lat, lon], ...].
 
-    Node coordinates are read from G.nodes[n]['y'] (lat) and G.nodes[n]['x'] (lon),
-    which is OSMnx's standard attribute naming.
+    For each edge in the shortest path, the edge's Shapely geometry is used when
+    present (curved / diagonal streets like Milwaukee Ave, Lake Shore Drive, etc.).
+    Straight city-grid segments fall back to start/end node coordinates.  This
+    ensures the drawn path follows actual street centrelines and never cuts through
+    buildings.
 
     Falls back to a straight line [[origin_lat, origin_lon], [dest_lat, dest_lon]]
-    if routing fails (e.g., a point falls outside the graph's bounding box) —
-    same fallback strategy as walk_minutes().
+    if routing fails (e.g., a point falls outside the graph's bounding box).
     """
     try:
         G = _load_graph()
@@ -172,9 +199,44 @@ def walk_path(
         dest_node   = ox.nearest_nodes(G, X=dest_lon,   Y=dest_lat)
 
         node_ids = nx.shortest_path(G, origin_node, dest_node, weight="length")
-        return [[G.nodes[n]["y"], G.nodes[n]["x"]] for n in node_ids]
 
-    except Exception:
+        if len(node_ids) < 2:
+            return [[origin_lat, origin_lon], [dest_lat, dest_lon]]
+
+        coords: list[list[float]] = []
+
+        for u, v in zip(node_ids, node_ids[1:]):
+            # MultiDiGraph — pick the shortest parallel edge
+            edge_data = min(G[u][v].values(), key=lambda d: d.get("length", 0))
+
+            if "geometry" in edge_data:
+                # Shapely stores coords as (lon, lat); convert to [lat, lon].
+                geom = list(edge_data["geometry"].coords)
+                # OSMnx geometry direction should match u→v, but verify and
+                # reverse if needed (compare first geom point to node u).
+                u_lon, u_lat = G.nodes[u]["x"], G.nodes[u]["y"]
+                if geom:
+                    du_start = (geom[0][0] - u_lon)**2 + (geom[0][1] - u_lat)**2
+                    du_end   = (geom[-1][0] - u_lon)**2 + (geom[-1][1] - u_lat)**2
+                    if du_start > du_end:
+                        geom = geom[::-1]
+                # Skip the first coord if it duplicates the last one we added.
+                start = 1 if coords and [geom[0][1], geom[0][0]] == coords[-1] else 0
+                for lon, lat in geom[start:]:
+                    coords.append([lat, lon])
+            else:
+                # Straight segment — just use the node endpoints.
+                if not coords:
+                    coords.append([G.nodes[u]["y"], G.nodes[u]["x"]])
+                coords.append([G.nodes[v]["y"], G.nodes[v]["x"]])
+
+        return coords
+
+    except Exception as e:
+        print(
+            f"[walk_path] routing failed "
+            f"({origin_lat:.5f},{origin_lon:.5f}) → ({dest_lat:.5f},{dest_lon:.5f}): {e!r}"
+        )
         return [[origin_lat, origin_lon], [dest_lat, dest_lon]]
 
 

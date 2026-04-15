@@ -5,9 +5,9 @@ import maplibregl from "maplibre-gl";
 // Map defaults — overridable via props for future view modes
 // ---------------------------------------------------------------------------
 
-const DEFAULT_STYLE  = "https://tiles.openfreemap.org/styles/positron";
-const DEFAULT_CENTER = [-87.65, 41.85]; // Chicago
-const DEFAULT_ZOOM   = 11;
+const DEFAULT_STYLE  = "https://tiles.openfreemap.org/styles/liberty";
+const DEFAULT_CENTER = [-87.654, 41.966]; // Uptown, Chicago
+const DEFAULT_ZOOM   = 13;
 
 // ---------------------------------------------------------------------------
 // Line color tables (mirrors App.jsx — used here for map layer paint)
@@ -59,7 +59,7 @@ function clearRouteLayers(map) {
 // Route rendering
 // ---------------------------------------------------------------------------
 
-function renderRoute(map, route) {
+function renderRoute(map, route, originCoords, destCoords) {
   const { legs } = route;
   if (!legs?.length) return;
 
@@ -175,13 +175,14 @@ function renderRoute(map, route) {
     }
   });
 
-  // Origin dot — first point of first leg's path
-  const firstPath = legs[0]?.path ?? [];
-  if (firstPath.length) {
-    const originCoord = toGeo(firstPath[0]);
+  // Origin dot — use explicit originCoords prop; fall back to first leg path
+  const originPt = originCoords
+    ? [originCoords[1], originCoords[0]]   // [lat,lon] → [lon,lat]
+    : (() => { const p = legs[0]?.path?.[0]; return p ? toGeo(p) : null; })();
+  if (originPt) {
     map.addSource("route-origin", {
       type: "geojson",
-      data: { type: "Feature", geometry: { type: "Point", coordinates: originCoord } },
+      data: { type: "Feature", geometry: { type: "Point", coordinates: originPt } },
     });
     map.addLayer({
       id:     "route-origin-circle",
@@ -196,13 +197,14 @@ function renderRoute(map, route) {
     });
   }
 
-  // Destination dot — last point of last leg's path
-  const lastPath = legs[legs.length - 1]?.path ?? [];
-  if (lastPath.length) {
-    const destCoord = toGeo(lastPath[lastPath.length - 1]);
+  // Destination dot — use explicit destCoords prop; fall back to last leg path
+  const destPt = destCoords
+    ? [destCoords[1], destCoords[0]]       // [lat,lon] → [lon,lat]
+    : (() => { const lp = legs[legs.length - 1]?.path; return lp?.length ? toGeo(lp[lp.length - 1]) : null; })();
+  if (destPt) {
     map.addSource("route-dest", {
       type: "geojson",
-      data: { type: "Feature", geometry: { type: "Point", coordinates: destCoord } },
+      data: { type: "Feature", geometry: { type: "Point", coordinates: destPt } },
     });
     map.addLayer({
       id:     "route-dest-circle",
@@ -235,40 +237,87 @@ function renderRoute(map, route) {
 // ---------------------------------------------------------------------------
 
 export default function MapView({
-  route   = null,
-  visible = false,
-  style   = DEFAULT_STYLE,
-  center  = DEFAULT_CENTER,
-  zoom    = DEFAULT_ZOOM,
+  route        = null,
+  originCoords = null,
+  destCoords   = null,
+  style        = DEFAULT_STYLE,
+  center       = DEFAULT_CENTER,
+  zoom         = DEFAULT_ZOOM,
 }) {
   const containerRef = useRef(null);
   const mapRef       = useRef(null);
   const [unlocked, setUnlocked] = useState(false);
+  const [styleError, setStyleError] = useState(false);
 
-  // Initialize map once after the container div mounts
+  // Initialize map once after the container div mounts.
+  //
+  // React 18 StrictMode (dev only) double-invokes effects: run → cleanup → run.
+  // MapLibre GL v5 uses WebGL2 and its context isn't fully released synchronously
+  // by map.remove(), so the immediate second init produces a silent black canvas.
+  //
+  // Fix: defer initialization with setTimeout(0). StrictMode's cleanup cancels
+  // the first timer before it fires; only the second effect's timer survives,
+  // by which point the previous WebGL context is fully torn down.
   useEffect(() => {
-    const map = new maplibregl.Map({
-      container: containerRef.current,
-      style,
-      center,
-      zoom,
-    });
+    let map = null;
 
-    // Lock all interactions by default
-    map.scrollZoom.disable();
-    map.dragPan.disable();
-    map.dragRotate.disable();
-    map.doubleClickZoom.disable();
-    map.touchZoomRotate.disable();
-    map.keyboard.disable();
+    const timerId = setTimeout(() => {
+      const container = containerRef.current;
+      if (!container) return;
 
-    mapRef.current = map;
+      map = new maplibregl.Map({
+        container,
+        style,
+        center,
+        zoom,
+        // Don't bail on software-rendered WebGL2 contexts (some Windows GPU drivers)
+        failIfMajorPerformanceCaveat: false,
+      });
+
+      // Lock all interactions by default
+      map.scrollZoom.disable();
+      map.dragPan.disable();
+      map.dragRotate.disable();
+      map.doubleClickZoom.disable();
+      map.touchZoomRotate.disable();
+      map.keyboard.disable();
+
+      // After style loads: resize + repaint so the WebGL framebuffer is presented
+      // correctly when the container starts at opacity:0.
+      map.once("load", () => {
+        map.resize();
+        map.triggerRepaint();
+      });
+
+      map.on("error", (e) => {
+        console.error("[MapView] map error:", e?.error ?? e);
+        // Only latch the error banner for style *document* failures — not
+        // transient per-tile 404s or network blips, which self-recover.
+        const status = e?.error?.status;
+        const isStyleSource = e?.sourceId === "openmaptiles" ||
+                              e?.error?.message?.toLowerCase().includes("style");
+        if (isStyleSource && (status === 0 || (status >= 400 && status < 600))) {
+          setStyleError(true);
+        }
+      });
+
+      // Clear the error banner once the map successfully loads or updates data
+      map.on("data", (e) => {
+        if (e.isSourceLoaded) {
+          setStyleError(false);
+        }
+      });
+
+      mapRef.current = map;
+    }, 0);
 
     return () => {
-      map.remove();
+      clearTimeout(timerId);
+      map?.remove();
       mapRef.current = null;
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
 
   // Re-render route layers whenever the route prop changes
   useEffect(() => {
@@ -277,7 +326,7 @@ export default function MapView({
 
     const render = () => {
       clearRouteLayers(map);
-      if (route) renderRoute(map, route);
+      if (route) renderRoute(map, route, originCoords, destCoords);
     };
 
     if (map.isStyleLoaded()) {
@@ -287,7 +336,7 @@ export default function MapView({
       map.once("load", render);
       return () => map.off("load", render);
     }
-  }, [route]);
+  }, [route, originCoords, destCoords]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleUnlock() {
     const map = mapRef.current;
@@ -302,9 +351,14 @@ export default function MapView({
   }
 
   return (
-    <div className={`map-view${visible ? " map-view--visible" : ""}`}>
+    <div className="map-view map-view--visible">
       <div ref={containerRef} className="map-container" />
-      {visible && !unlocked && (
+      {styleError && (
+        <div className="map-error">
+          Map tiles unavailable — check your connection or try again later.
+        </div>
+      )}
+      {route && !unlocked && !styleError && (
         <button className="map-unlock-btn" onClick={handleUnlock}>
           🔓 Unlock map
         </button>

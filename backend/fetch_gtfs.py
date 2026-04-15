@@ -97,21 +97,28 @@ def cleanup_zip() -> None:
 
 
 if __name__ == "__main__":
-    # If gtfs_data already has files, warn before overwriting.
-    # In non-interactive environments (Railway, CI), skip the prompt and always
-    # re-download so the deploy never hangs waiting for input.
-    force = "--force" in sys.argv or bool(os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("CI"))
+    # Determine whether to re-download existing GTFS data.
+    # --force always re-downloads.  Non-interactive environments (Railway, CI)
+    # skip the prompt but KEEP existing data unless --force is also passed,
+    # so deploys don't re-download unnecessarily on every push.
+    force       = "--force" in sys.argv
+    non_interactive = bool(os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("CI"))
     if GTFS_DIR.exists() and any(GTFS_DIR.glob("*.txt")):
         if force:
-            print(f"Existing GTFS data found in {GTFS_DIR}. Re-downloading (non-interactive mode).")
+            print(f"Existing GTFS data found in {GTFS_DIR}. Re-downloading (--force).")
+            shutil.rmtree(GTFS_DIR)
+            print("Old data removed.")
+        elif non_interactive:
+            print(f"Existing GTFS data found in {GTFS_DIR}. Keeping it (non-interactive; pass --force to re-download).")
+            raise SystemExit(0)
         else:
             print(f"Existing GTFS data found in {GTFS_DIR}.")
             answer = input("Re-download and overwrite? [y/N]: ").strip().lower()
             if answer != "y":
                 print("Aborted. Existing data kept.")
                 raise SystemExit(0)
-        shutil.rmtree(GTFS_DIR)
-        print("Old data removed.")
+            shutil.rmtree(GTFS_DIR)
+            print("Old data removed.")
 
     download_gtfs()
     extract_gtfs()

@@ -180,7 +180,7 @@ async def _fetch_bus_chunk(
             # "DUE" and "APPROACHING" both mean ≤0 minutes; any other
             # non-numeric value (unexpected API change) is also treated as 0
             # rather than raising ValueError and silently dropping the arrival.
-            if prdctdn.lstrip("-").isdigit():
+            if prdctdn.isdigit():
                 minutes = int(prdctdn)
             else:
                 minutes = 0
@@ -200,7 +200,7 @@ async def _fetch_bus_chunk(
                 "stop_name": prd.get("stpnm", ""),
                 "destination": prd.get("des", ""),
                 "arrives_in_minutes": minutes,
-                "is_delayed": prd.get("dly", False) is True or prd.get("dly") == "true",
+                "is_delayed": str(prd.get("dly", "")).lower() in ("true", "1", "yes"),
                 "psgld": psgld,  # normalized: EMPTY | HALF_EMPTY | FULL
             })
         except Exception:
