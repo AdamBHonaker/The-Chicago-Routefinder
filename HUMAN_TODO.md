@@ -24,18 +24,18 @@ Claude cannot do these. Check them off as you go.
 
 ## Phase 6 — Deployment (do after accounts above are ready)
 
-- [ ] Deploy backend to Railway (see step-by-step in `cta_app_handoff_prompt.md`)
-- [ ] Set environment variables in Railway dashboard:
+- [x] Deploy backend to Railway (see step-by-step in `cta_app_handoff_prompt.md`)
+- [x] Set environment variables in Railway dashboard:
   - `CTA_TRAIN_API_KEY`
   - `CTA_BUS_API_KEY`
   - `ANTHROPIC_API_KEY`
   - `GOOGLE_MAPS_API_KEY` ← required for address/landmark geocoding
   - `ALLOWED_ORIGINS` ← fill in after Vercel URL is known
-- [ ] Deploy frontend to Vercel (see step-by-step in `cta_app_handoff_prompt.md`)
-- [ ] Set `VITE_BACKEND_URL` in Vercel dashboard → your Railway URL
-- [ ] Go back to Railway and set `ALLOWED_ORIGINS` → your Vercel URL, then redeploy
-- [ ] Update `frontend/.env.production` with the real Railway URL and commit
-- [ ] Test the live app end-to-end on the public URLs
+- [x] Deploy frontend to Vercel (see step-by-step in `cta_app_handoff_prompt.md`)
+- [x] Set `VITE_BACKEND_URL` in Vercel dashboard → your Railway URL
+- [x] Go back to Railway and set `ALLOWED_ORIGINS` → your Vercel URL, then redeploy
+- [x] Update `frontend/.env.production` with the real Railway URL and commit
+- [x] Test the live app end-to-end on the public URLs
 - [ ] (Optional) Add a custom domain in Vercel dashboard → Settings → Domains
 
 ---

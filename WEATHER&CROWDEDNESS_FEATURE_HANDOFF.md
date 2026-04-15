@@ -2,7 +2,7 @@
 
 ## Project Context
 
-This is a personal family transit PWA for Chicago. The existing platform integrates:
+This is a transit PWA for Chicago. The existing platform integrates:
 
 - **Google Maps Geocoding API** — location/address resolution (`gtfs_loader.py`)
 - **CTA Bus Tracker API** — live bus arrival data (`cta_client.py`)
