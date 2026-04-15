@@ -270,7 +270,8 @@ def _stream_stop_sequences(
 
     Returns {trip_id: [(mapid, arrival_minutes), ...]} for the selected trips only.
     """
-    raw: dict[str, list] = {tid: [] for tid in candidate_trips}
+    candidate_set = set(candidate_trips)   # fast membership test; no list pre-allocation
+    raw: dict[str, list] = defaultdict(list)
 
     print("[transit_graph] Streaming stop_times.txt …")
     t0 = time.time()
@@ -280,7 +281,7 @@ def _stream_stop_sequences(
         for row in csv.DictReader(f):
             rows_read += 1
             tid = row.get("trip_id", "").strip()
-            if tid not in raw:
+            if tid not in candidate_set:
                 continue
 
             sid = row.get("stop_id", "").strip()
@@ -432,7 +433,6 @@ def _build_graph() -> tuple[nx.DiGraph, dict[str, dict]]:
             route_id=best_route,
             direction_id=best_dir,
             line=best_line,
-            all_routes=candidates,
             edge_type="transit",
         )
         transit_edge_count += 1
@@ -556,10 +556,12 @@ def _build_shape_lookup() -> None:
         coords = shapes.get(shape_id)
         if coords:
             new_lookup[(route_id, direction_id)] = coords
-            # Add alias by route_short_name when it differs from route_id
+            # Always also key by route_short_name so callers can use either
+            # identifier. Previously only set when short != route_id, which was
+            # brittle if CTA ever renumbers route_ids without updating short_names.
             short = route_short_names.get(route_id, "")
-            if short and short != route_id:
-                new_lookup.setdefault((short, direction_id), coords)
+            if short:
+                new_lookup[(short, direction_id)] = coords
 
     _shape_lookup = new_lookup
 
@@ -579,6 +581,7 @@ def get_station_coords(mapid: str) -> tuple[float, float] | None:
     return (s["lat"], s["lon"]) if s else None
 
 
+@lru_cache(maxsize=512)
 def get_station_by_name(name: str) -> tuple[float, float] | None:
     """
     Return (lat, lon) for a train parent station by stop_name (case-insensitive
@@ -763,7 +766,8 @@ def get_bus_stop_sequences() -> dict[tuple[str, str], list[tuple]]:
     )
 
     # Stream stop_times.txt, collecting sequences for all candidate bus trips
-    raw: dict[str, list] = {tid: [] for tid in trip_route}
+    candidate_set = set(trip_route)   # fast membership test; no list pre-allocation
+    raw: dict[str, list] = defaultdict(list)
 
     print("[transit_graph] Streaming stop_times.txt for bus sequences …")
     t1 = time.time()
@@ -773,7 +777,7 @@ def get_bus_stop_sequences() -> dict[tuple[str, str], list[tuple]]:
         for row in csv.DictReader(f):
             rows_read += 1
             tid = row.get("trip_id", "").strip()
-            if tid not in raw:
+            if tid not in candidate_set:
                 continue
 
             sid = row.get("stop_id", "").strip()

@@ -6,6 +6,214 @@ Severity: 🔴 High · 🟡 Medium · 🟢 Low.
 
 ---
 
+# 2026-04-15 Low-Severity Audit Pass
+
+---
+
+## ✅ `_save_geocode_cache` rewrites entire file on every new geocode — FIXED
+
+**File:** [backend/gtfs_loader.py](backend/gtfs_loader.py)
+
+**Fixed in:** Replaced write-through with a dirty-flag + background-flush approach. `_geocode_cache_dirty` (bool, always accessed under `_geocode_lock`) is set to `True` whenever a hit or miss is added to `_geocode_cache`. A daemon thread (`geocode-cache-flusher`) calls `_flush_geocode_cache_if_dirty` every 30 s and writes the cache only when dirty. An `atexit` handler guarantees a final flush on clean shutdown. The expensive atomic-rename write now happens at most once per 30 s instead of on every uncached query.
+
+---
+
+## ✅ `_fetch_bus_chunk` silent exception and `get_train/bus_arrivals` missing error counts — FIXED
+
+**Files:** `backend/cta_client.py`, `backend/main.py`, `frontend/src/App.jsx`
+
+**Fixed in:** `_fetch_bus_chunk` now returns a sentinel `[{"_bus_error": True, "exc": ...}]` on exception instead of `[]`. `get_bus_arrivals` scans results for sentinels, strips them, and returns `(arrivals, n_errors)`. `get_train_arrivals` similarly returns `(sorted_good, n_errors)`. `main.py` unpacks both tuples and adds `"bus_errors"` and `"train_errors"` to the response dict. `App.jsx` reads `data.bus_errors` and renders a `.data-warning` message when bus arrivals are empty due to API failures.
+
+---
+
+## ✅ `_rank_routes` dead `dest_lat`/`dest_lon` parameters — FIXED
+
+**Files:** `backend/main.py:253-254, 599`
+
+**Fixed in:** Removed `dest_lat: float | None = None` and `dest_lon: float | None = None` from `_rank_routes` signature and from the call site in `/recommend`.
+
+---
+
+## ✅ `_response_cache` O(n) eviction — FIXED
+
+**Files:** `backend/main.py:36, 702-705`
+
+**Fixed in:** Changed `_response_cache` from `dict` to `collections.OrderedDict`. Cache writes re-insert the key at the end (to maintain insertion order), and eviction now uses `popitem(last=False)` — O(1) — instead of `min()` over all entries.
+
+---
+
+## ✅ `_rate_store` grows unboundedly — FIXED
+
+**Files:** `backend/main.py:87-88`
+
+**Fixed in:** After the hourly-eviction loop in `_check_rate_limit`, if the deque is now empty, `del _rate_store[ip]` removes the entry. The `window` reference is retained for the current request's append, preventing stale IPs from accumulating indefinitely.
+
+---
+
+## ✅ BYOK cache collision — FIXED
+
+**Files:** `backend/main.py:41-47`
+
+**Fixed in:** `_cache_key` now accepts a `byok: bool` parameter and appends `"byok"` to the key when True. The call site passes `byok=bool(byok_key)`. BYOK and shared-quota requests now use separate cache pools.
+
+---
+
+## ✅ `prdctdn.isdigit()` crashes when API returns `None` — FIXED
+
+**Files:** `backend/cta_client.py:179`
+
+**Fixed in:** Changed `prd.get("prdctdn", "")` to `prd.get("prdctdn") or ""`. The `or ""` short-circuits on an explicit `null` value, preventing `AttributeError` on `None.isdigit()`.
+
+---
+
+## ✅ `find_nearest_train_stations` computes Haversine twice per station — FIXED
+
+**Files:** `backend/gtfs_loader.py:567-571`
+
+**Fixed in:** Replaced the double-call with a walrus operator: `if (d := _haversine_miles(...)) <= max_distance_miles` so the result is computed once and reused as `distance_miles`.
+
+---
+
+## ✅ `_save_geocode_counter` lacks atomic rename — FIXED
+
+**Files:** `backend/gtfs_loader.py:76-84`
+
+**Fixed in:** Mirrored `_save_geocode_cache`'s atomic write pattern: write to `.counter.tmp` then `tmp.replace(path)`. A mid-write crash can no longer silently reset the monthly call counter to zero.
+
+---
+
+## ✅ `_normalize_street_abbr` false-matches "St." in saint names — FIXED
+
+**Files:** `backend/gtfs_loader.py:679-683`
+
+**Fixed in:** Added lookahead `(?=\s*(?:,|$))` to `_STREET_ABBR_RE` requiring the suffix token to appear at end-of-string or before a comma. "St. Michael's Church" no longer normalises to "street michael's church"; "123 N Clark St" and "123 Main St, Chicago" still normalise correctly.
+
+---
+
+## ✅ `fuzzy_match_neighborhood` runs SequenceMatcher over ~300 keys on every miss — FIXED
+
+**Files:** `backend/gtfs_loader.py:626`
+
+**Fixed in:** Added `@lru_cache(maxsize=1024)` to `fuzzy_match_neighborhood`. Repeated queries for the same lowercased string now return instantly without re-running O(n·m) SequenceMatcher comparisons.
+
+---
+
+## ✅ `min(G[u][v].values(), ...)` picks zero-length edges — FIXED
+
+**Files:** `backend/walking.py:128, 210`
+
+**Fixed in:** Changed `d.get("length", 0)` to `d.get("length", float("inf"))` in both `walk_directions` and `walk_path`. Edges missing a `length` attribute are now treated as infinitely long, so they lose the `min()` comparison rather than winning it.
+
+---
+
+## ✅ `walk_directions` fallback misclassifies block type by total distance — FIXED
+
+**Files:** `backend/walking.py:167-173`
+
+**Fixed in:** Fallback step always uses `block_type: "long"` and `_LONG_BLOCK_METERS` for block counting. The old `fallback_meters >= _BLOCK_TYPE_THRESHOLD` comparison compared total trip length against a per-edge threshold, producing wrong classifications for walks ≥ 150 m.
+
+---
+
+## ✅ `lru_cache` on functions returning mutable lists — DOCUMENTED
+
+**Files:** `backend/walking.py:52, 81, 176`
+
+**Fixed in:** Added inline comments to `walk_minutes`, `walk_directions`, and `walk_path` noting that `lru_cache` returns the same object on cache hits and callers must not mutate the returned value.
+
+---
+
+## ✅ `get_station_by_name` uncached O(N·M) SequenceMatcher fallback — FIXED
+
+**Files:** `backend/transit_graph.py:582`
+
+**Fixed in:** Added `@lru_cache(maxsize=512)` to `get_station_by_name`. Common destination names like "Howard" now resolve in O(1) after the first call.
+
+---
+
+## ✅ Bus shape lookup relies on `route_short_name == route_id` coincidence — FIXED
+
+**Files:** `backend/transit_graph.py:559-562`
+
+**Fixed in:** `_build_shape_lookup` now always writes both `(route_id, direction_id)` and `(short_name, direction_id)` keys unconditionally, instead of setting the short_name alias only when it differs from route_id. Both keys are always available regardless of CTA renumbering.
+
+---
+
+## ✅ Pre-allocating `raw = {tid: [] for tid in candidates}` wastes memory — FIXED
+
+**Files:** `backend/transit_graph.py:273, 766`
+
+**Fixed in:** Both `_stream_stop_sequences` (trains) and `get_bus_stop_sequences` (buses) now use `defaultdict(list)` populated only when a row matches, with `candidate_set = set(...)` for the membership check. No empty lists are pre-allocated for non-matching trips.
+
+---
+
+## ✅ Transit edges store dead `all_routes` metadata — FIXED
+
+**Files:** `backend/transit_graph.py:435`
+
+**Fixed in:** Removed `all_routes=candidates` from `G.add_edge(...)`. The field was never read by any routing code; removing it reduces per-edge memory for heavily-served segments (Loop, Red Line core).
+
+---
+
+## ✅ BYOK API key persisted to `localStorage` in plaintext — FIXED
+
+**Files:** `frontend/src/App.jsx:274-286`
+
+**Fixed in:** Changed `localStorage` to `sessionStorage` for the BYOK key. The key now clears automatically when the tab is closed, reducing the window for XSS exfiltration.
+
+---
+
+## ✅ `busFullness` dead state sent to backend — FIXED
+
+**Files:** `frontend/src/App.jsx:265, 331`
+
+**Fixed in:** Removed the `busFullness` state variable and the `bus_fullness` field from the request body. Updated the commented-out select JSX with restoration instructions for when CTA re-enables `psgld`.
+
+---
+
+## ✅ `RouteCard` expanded state doesn't reset on new search — FIXED
+
+**Files:** `frontend/src/App.jsx:162-163, 489`
+
+**Fixed in:** Added `searchIdRef` (a `useRef` counter incremented on every form submit). `RouteCard` keys are now `${searchIdRef.current}-${i}` instead of `${i}`, so React unmounts and remounts all cards on each new search, resetting `expanded` to `isFirst`.
+
+---
+
+## ✅ `TransitPhoto` onError leaves orphan caption — FIXED
+
+**Files:** `frontend/src/App.jsx:44-60`
+
+**Fixed in:** Added `const [failed, setFailed] = useState(false)` to `TransitPhoto`. On `onError`, `setFailed(true)` is called and the component returns `null`, hiding both the broken image and its caption.
+
+---
+
+## ✅ `clearRouteLayers` silently no-ops when style not loaded — FIXED
+
+**Files:** `frontend/src/MapView.jsx:45-56`
+
+**Fixed in:** `clearRouteLayers` now accepts explicit `layerIds` and `sourceIds` arrays (tracked in `routeLayerIds` / `routeSourceIds` refs inside `MapView`). `renderRoute` receives the same arrays and records every ID it adds via `_trackSource`/`_trackLayer` helpers. Removal iterates the tracked lists directly without calling `getStyle()`, so stale layers are always removed even when the style is reloading.
+
+---
+
+# 2026-04-15 Production Deployment Fixes
+
+---
+
+## ✅ `/recommend` returned 404 on production — `VITE_BACKEND_URL` missing `https://` in Vercel — FIXED
+
+**Files:** Vercel dashboard → Environment Variables
+
+**Fixed in:** Updated the `VITE_BACKEND_URL` environment variable in the Vercel dashboard to include the `https://` protocol prefix (`https://cta-transit-pwa-prod-production.up.railway.app`) and redeployed. Vite now bakes the absolute URL into the production bundle, so `/recommend` requests hit the Railway backend directly instead of being interpreted as a relative path under the Vercel domain.
+
+---
+
+## ✅ Preview deployment URLs returned 401 on `manifest.webmanifest` (Vercel Authentication) — FIXED
+
+**Files:** Vercel dashboard → Settings → Deployment Protection
+
+**Fixed in:** Adjusted Vercel Deployment Protection settings so PWA assets (`manifest.webmanifest`, icons) are accessible on preview URLs without authentication. PWA install prompts now work on preview deployments.
+
+---
+
 # 2026-04-12 Audit Pass — Fixed 2026-04-13
 
 ---

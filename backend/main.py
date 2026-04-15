@@ -33,17 +33,24 @@ _claude_client = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY",
 # Response cache
 # ---------------------------------------------------------------------------
 # key → (expires_at: float via time.monotonic(), response: dict)
-_response_cache: dict[str, tuple[float, dict]] = {}
+# OrderedDict preserves insertion order so eviction of the oldest entry is O(1)
+# via popitem(last=False) rather than O(n) via min() over all entries.
+_response_cache: collections.OrderedDict[str, tuple[float, dict]] = collections.OrderedDict()
 _CACHE_TTL_SECONDS = 45
 _CACHE_MAX_SIZE    = 500
 
 
-def _cache_key(origin: str, destination: str, transit_mode: str, bus_fullness: str) -> str:
+def _cache_key(origin: str, destination: str, transit_mode: str, bus_fullness: str,
+               byok: bool = False) -> str:
+    # Include a BYOK flag so BYOK and shared-quota requests never share cache
+    # entries — a non-BYOK user would otherwise be served a response whose
+    # Claude call was paid for by a BYOK user (and vice-versa).
     return "|".join([
         origin.lower().strip(),
         destination.lower().strip(),
         transit_mode,
         bus_fullness,
+        "byok" if byok else "",
     ])
 
 # ---------------------------------------------------------------------------
@@ -86,6 +93,12 @@ def _check_rate_limit(ip: str) -> bool:
     # Evict timestamps older than one hour to bound memory growth
     while window and now - window[0] > 3600:
         window.popleft()
+    # If all entries expired and the deque is now empty, remove the dict entry
+    # so IPs that never return don't accumulate indefinitely.  `window` still
+    # holds the deque reference, so the append below works for this request —
+    # it just won't persist to _rate_store (next request starts fresh).
+    if not window:
+        del _rate_store[ip]
     # Per-hour check
     if len(window) >= _RATE_LIMIT_RPH:
         return False
@@ -139,7 +152,7 @@ app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_methods=["POST", "GET"],
+    allow_methods=["POST", "GET", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -250,8 +263,6 @@ def _build_arrival_lookup(
 def _rank_routes(
     routes: list,
     arrival_lookup: dict[tuple[str, str], dict[str, int]],
-    dest_lat: float | None = None,
-    dest_lon: float | None = None,
 ) -> list[tuple[float, int, object]]:
     """
     Add live wait time to each route and sort by total (walk + wait + transit).
@@ -503,7 +514,8 @@ async def recommend(request: RouteRequest, http_request: Request):
         raise HTTPException(status_code=500, detail="CTA_BUS_API_KEY not configured in backend/.env")
 
     # ── Cache check (before any I/O) ──────────────────────────────────────────
-    key = _cache_key(request.origin, request.destination, request.transit_mode, request.bus_fullness)
+    key = _cache_key(request.origin, request.destination, request.transit_mode, request.bus_fullness,
+                     byok=bool(byok_key))
     cached = _response_cache.get(key)
     if cached and time.monotonic() < cached[0]:
         return {**cached[1], "cache_hit": True}
@@ -541,18 +553,20 @@ async def recommend(request: RouteRequest, http_request: Request):
     # ── Train arrivals ────────────────────────────────────────────────────────
     walk_lookup = {s["mapid"]: s.get("walk_minutes", 0) for s in origin_stations}
 
+    n_train_errors = 0
     if request.transit_mode == "Bus":
         train_arrivals = []
     else:
-        train_arrivals = await get_train_arrivals(origin_stations, train_key)
+        train_arrivals, n_train_errors = await get_train_arrivals(origin_stations, train_key)
         for a in train_arrivals:
             a["walk_minutes"] = walk_lookup.get(a.get("station_mapid"), 0)
 
     # ── Bus arrivals ──────────────────────────────────────────────────────────
     bus_arrivals: list[dict] = []
+    n_bus_errors = 0
     if request.transit_mode in ("Bus", "All") and bus_key and origin_bus_stops:
         stop_ids = [s["stop_id"] for s in origin_bus_stops]
-        bus_arrivals = await get_bus_arrivals(stop_ids, bus_key)
+        bus_arrivals, n_bus_errors = await get_bus_arrivals(stop_ids, bus_key)
 
         # Apply bus_fullness filter
         if request.bus_fullness != "All":
@@ -596,8 +610,6 @@ async def recommend(request: RouteRequest, http_request: Request):
                         n_routes=3,
                     ),
                     arrival_lookup,
-                    dest_lat=dest_coords[0],
-                    dest_lon=dest_coords[1],
                 )
             except Exception:
                 traceback.print_exc()
@@ -667,6 +679,8 @@ async def recommend(request: RouteRequest, http_request: Request):
         "dest_coords":   list(dest_coords)   if dest_coords   else None,
         "train_arrivals": train_arrivals,
         "bus_arrivals": bus_arrivals,
+        "train_errors": n_train_errors,
+        "bus_errors":   n_bus_errors,
         "origin_stations": [s["name"] for s in origin_stations],
         "routes": [
             {
@@ -699,9 +713,11 @@ async def recommend(request: RouteRequest, http_request: Request):
     }
 
     # ── Cache write ───────────────────────────────────────────────────────────
+    # Re-insert at end so existing keys move to the "newest" position.
+    if key in _response_cache:
+        del _response_cache[key]
     _response_cache[key] = (time.monotonic() + _CACHE_TTL_SECONDS, response)
     if len(_response_cache) > _CACHE_MAX_SIZE:
-        oldest = min(_response_cache, key=lambda k: _response_cache[k][0])
-        del _response_cache[oldest]
+        _response_cache.popitem(last=False)   # O(1) — drops the oldest insertion
 
     return response

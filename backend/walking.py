@@ -55,7 +55,7 @@ def walk_minutes(
     origin_lon: float,
     dest_lat: float,
     dest_lon: float,
-) -> float:
+) -> float:  # lru_cache safe — float is immutable
     """
     Return the estimated walking time in minutes between two lat/lon points,
     routed along the real pedestrian street network.
@@ -84,7 +84,7 @@ def walk_directions(
     origin_lon: float,
     dest_lat: float,
     dest_lon: float,
-) -> list[dict]:
+) -> list[dict]:  # lru_cache returns the same list object on hits — callers must NOT mutate
     """
     Return turn-by-turn walking directions as a list of steps:
       [{"street": "Broadway", "direction": "S", "minutes": 1.2}, ...]
@@ -125,7 +125,7 @@ def walk_directions(
         raw: list[tuple[str, float, int, int]] = []
         for u, v in zip(node_ids, node_ids[1:]):
             # MultiDiGraph — pick the shortest parallel edge
-            edge_data = min(G[u][v].values(), key=lambda d: d.get("length", 0))
+            edge_data = min(G[u][v].values(), key=lambda d: d.get("length", float("inf")))
             raw.append((_street_name(edge_data), edge_data.get("length", 0.0), u, v))
 
         # Group consecutive edges by street name
@@ -166,11 +166,11 @@ def walk_directions(
     except Exception:
         total_min = _haversine_walk_minutes(origin_lat, origin_lon, dest_lat, dest_lon)
         fallback_meters = total_min * 60 * WALKING_SPEED_MPS
-        is_long_fb       = fallback_meters >= _BLOCK_TYPE_THRESHOLD
-        fallback_block_m = _LONG_BLOCK_METERS if is_long_fb else _SHORT_BLOCK_METERS
-        fallback_blocks  = max(0.5, round(fallback_meters / fallback_block_m * 2) / 2)
-        block_type_fb    = "long" if is_long_fb else "short"
-        return [{"street": "Walk", "direction": "", "direction_full": "", "blocks": fallback_blocks, "block_type": block_type_fb, "minutes": total_min}]
+        # Default to "long" (N-S numbered-address axis) — the fallback total
+        # distance is the full trip, not a per-edge average, so the old threshold
+        # comparison produced wrong classifications for any walk >= 150 m.
+        fallback_blocks = max(0.5, round(fallback_meters / _LONG_BLOCK_METERS * 2) / 2)
+        return [{"street": "Walk", "direction": "", "direction_full": "", "blocks": fallback_blocks, "block_type": "long", "minutes": total_min}]
 
 
 @lru_cache(maxsize=512)
@@ -179,7 +179,7 @@ def walk_path(
     origin_lon: float,
     dest_lat: float,
     dest_lon: float,
-) -> list[list[float]]:
+) -> list[list[float]]:  # lru_cache returns the same list object on hits — callers must NOT mutate
     """
     Return the street-network path between two lat/lon points as [[lat, lon], ...].
 
@@ -207,7 +207,7 @@ def walk_path(
 
         for u, v in zip(node_ids, node_ids[1:]):
             # MultiDiGraph — pick the shortest parallel edge
-            edge_data = min(G[u][v].values(), key=lambda d: d.get("length", 0))
+            edge_data = min(G[u][v].values(), key=lambda d: d.get("length", float("inf")))
 
             if "geometry" in edge_data:
                 # Shapely stores coords as (lon, lat); convert to [lat, lon].

@@ -110,11 +110,11 @@ async def _fetch_station_arrivals(
 async def get_train_arrivals(
     stations: list[dict],
     train_key: str,
-) -> list[dict]:
+) -> tuple[list[dict], int]:
     """
     Fetch live train arrivals for a list of stations concurrently.
     `stations` is a list of dicts from station_lookup.find_stations().
-    Returns arrivals sorted by minutes_until_arrival.
+    Returns (arrivals_sorted_by_minutes, n_errors).
     """
     async with aiohttp.ClientSession() as session:
         tasks = [
@@ -136,7 +136,7 @@ async def get_train_arrivals(
         for e in errors:
             print(f"[cta_client] {e['error']}")
 
-    return sorted(good, key=lambda a: a["arrives_in_minutes"])
+    return sorted(good, key=lambda a: a["arrives_in_minutes"]), len(errors)
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +166,9 @@ async def _fetch_bus_chunk(
             data = await resp.json(content_type=None)
     except Exception as exc:
         print(f"[cta_client] Bus API error for stops {chunk}: {exc}")
-        return []
+        # Return a sentinel so get_bus_arrivals can count failures instead of
+        # silently dropping them. The list[dict] return type is preserved.
+        return [{"_bus_error": True, "exc": str(exc)}]
 
     response = data.get("bustime-response", {})
     prd_list = response.get("prd", [])
@@ -176,7 +178,9 @@ async def _fetch_bus_chunk(
     arrivals = []
     for prd in prd_list:
         try:
-            prdctdn = prd.get("prdctdn", "")
+            # Use `or ""` so an explicit API null ("prdctdn": null) defaults to ""
+            # rather than raising AttributeError on None.isdigit().
+            prdctdn = prd.get("prdctdn") or ""
             # "DUE" and "APPROACHING" both mean ≤0 minutes; any other
             # non-numeric value (unexpected API change) is also treated as 0
             # rather than raising ValueError and silently dropping the arrival.
@@ -213,16 +217,18 @@ async def get_bus_arrivals(
     stop_ids: list[str],
     bus_key: str,
     routes: list[str] | None = None,
-) -> list[dict]:
+) -> tuple[list[dict], int]:
     """
     Fetch live bus predictions for a list of stop IDs.
 
     stop_ids come from CTA GTFS stops.txt (0–29999 range).
     Batches into chunks of 10 (API maximum) and fires all chunks concurrently.
-    Returns an empty list if no stop_ids are provided.
+    Returns (arrivals_sorted_by_minutes, n_errors).
+    n_errors counts how many chunk requests failed; a non-zero value with an
+    empty arrivals list means the Bus API is completely unavailable.
     """
     if not stop_ids:
-        return []
+        return [], 0
 
     chunks = [stop_ids[i:i + 10] for i in range(0, len(stop_ids), 10)]
     async with aiohttp.ClientSession() as session:
@@ -231,7 +237,12 @@ async def get_bus_arrivals(
         )
 
     all_arrivals: list[dict] = []
+    n_errors = 0
     for result in results:
-        all_arrivals.extend(result)
+        for item in result:
+            if item.get("_bus_error"):
+                n_errors += 1
+            else:
+                all_arrivals.append(item)
 
-    return sorted(all_arrivals, key=lambda a: a["arrives_in_minutes"])
+    return sorted(all_arrivals, key=lambda a: a["arrives_in_minutes"]), n_errors

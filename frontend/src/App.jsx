@@ -45,6 +45,9 @@ function TransitPhoto({ fading }) {
   const [photo] = useState(
     () => PHOTOS[Math.floor(Math.random() * PHOTOS.length)]
   );
+  const [failed, setFailed] = useState(false);
+
+  if (failed) return null;
 
   return (
     <div className={`transit-photo${fading ? " transit-photo--fading" : ""}`}>
@@ -52,7 +55,7 @@ function TransitPhoto({ fading }) {
         src={photo.src}
         alt={photo.caption}
         className="transit-photo-img"
-        onError={(e) => { e.currentTarget.style.display = "none"; }}
+        onError={() => setFailed(true)}
       />
       <p className="transit-photo-caption">{photo.caption}</p>
     </div>
@@ -262,7 +265,6 @@ export default function App() {
   const [origin, setOrigin] = useState("");
   const [destination, setDestination] = useState("");
   const [transitMode, setTransitMode] = useState("All");
-  const [busFullness, setBusFullness] = useState("All");
 
   const [result, setResult] = useState(null);   // { recommendation, routes }
   const [loading, setLoading] = useState(false);
@@ -270,18 +272,19 @@ export default function App() {
 
   const [selectedRouteIndex, setSelectedRouteIndex] = useState(0);
 
-  // BYOK state — key persisted to localStorage; settings panel shown/hidden via flag
+  // BYOK state — key persisted to sessionStorage (clears on tab close, safer than
+  // localStorage which any script on the origin could read).
   const [byokKey, setByokKey] = useState(() =>
-    BYOK_ENABLED ? (localStorage.getItem("byok_api_key") || "") : ""
+    BYOK_ENABLED ? (sessionStorage.getItem("byok_api_key") || "") : ""
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   function handleSaveByokKey(key) {
     setByokKey(key);
     if (key) {
-      localStorage.setItem("byok_api_key", key);
+      sessionStorage.setItem("byok_api_key", key);
     } else {
-      localStorage.removeItem("byok_api_key");
+      sessionStorage.removeItem("byok_api_key");
     }
   }
 
@@ -291,6 +294,9 @@ export default function App() {
   const [photoKey, setPhotoKey] = useState(0);  // increment to force new random photo
   const photoFadeTimer = useRef(null);
   const abortRef = useRef(null);
+  // Incremented on every new search so RouteCard instances are remounted,
+  // resetting their expanded state to the isFirst default.
+  const searchIdRef = useRef(0);
 
   useEffect(() => {
     return () => {
@@ -310,6 +316,7 @@ export default function App() {
     // Cancel any in-progress photo fade from a previous search
     if (photoFadeTimer.current) clearTimeout(photoFadeTimer.current);
     setSelectedRouteIndex(0);
+    searchIdRef.current += 1;
 
     // Mount a fresh photo for this search (new key → new random pick)
     setPhotoKey((k) => k + 1);
@@ -328,7 +335,6 @@ export default function App() {
           origin:       origin.trim(),
           destination:  destination.trim(),
           transit_mode: transitMode,
-          bus_fullness: busFullness,
           ...(BYOK_ENABLED && byokKey ? { anthropic_api_key: byokKey } : {}),
         }),
         signal: abortRef.current.signal,
@@ -353,6 +359,7 @@ export default function App() {
         routes,
         originCoords: data.origin_coords,
         destCoords:   data.dest_coords,
+        busDataPartial: (data.bus_errors > 0) && !(data.bus_arrivals?.length),
       });
 
       // Fade photo out once loading completes, regardless of result
@@ -405,7 +412,10 @@ export default function App() {
                 </select>
                 {/* Bus fullness filter — hidden until CTA populates the psgld field
                     in Bus Tracker API responses. All current responses return psgld=""
-                    so the filter has no effect. Re-enable when CTA enables the data.
+                    so the filter has no effect. Re-enable when CTA enables the data:
+                    1. Restore: const [busFullness, setBusFullness] = useState("All");
+                    2. Add bus_fullness: busFullness to the request body in handleSubmit.
+                    3. Uncomment this select.
                 <select
                   value={busFullness}
                   onChange={(e) => setBusFullness(e.target.value)}
@@ -479,6 +489,11 @@ export default function App() {
               <div className="results">
                 <div className="recommendation">
                   <p>{result.recommendation}</p>
+                  {result.busDataPartial && (
+                    <p className="data-warning">
+                      Bus arrival data partially unavailable — some results may be missing.
+                    </p>
+                  )}
                 </div>
 
                 {result.routes.length > 0 && (
@@ -486,7 +501,7 @@ export default function App() {
                     <h2 className="routes-heading">Route options</h2>
                     {result.routes.map((route, i) => (
                       <RouteCard
-                        key={i}
+                        key={`${searchIdRef.current}-${i}`}
                         route={route}
                         index={i}
                         isFirst={i === 0}

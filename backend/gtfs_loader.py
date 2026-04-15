@@ -21,6 +21,7 @@ Pulaski Rd (west). Walk times outside this rectangle fall back to Haversine
 estimates and no CTA stops will be found beyond the boundary.
 """
 
+import atexit
 import csv
 import json
 import math
@@ -74,14 +75,17 @@ def _load_geocode_counter() -> dict:
 
 
 def _save_geocode_counter(counter: dict) -> None:
-    """Persist the monthly geocode call counter to disk."""
+    """Persist the monthly geocode call counter to disk using atomic rename."""
+    tmp = _GEOCODE_COUNTER_PATH.with_suffix(".counter.tmp")
     try:
-        _GEOCODE_COUNTER_PATH.write_text(
-            json.dumps(counter, indent=2),
-            encoding="utf-8",
-        )
+        tmp.write_text(json.dumps(counter, indent=2), encoding="utf-8")
+        tmp.replace(_GEOCODE_COUNTER_PATH)
     except Exception as exc:
         print(f"[gtfs_loader] Could not save geocode counter: {exc}")
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def _geocode_call_count() -> int:
@@ -136,8 +140,39 @@ def _save_geocode_cache(cache: dict) -> None:
             pass
 
 
-# Loaded once at import time; new entries are written through immediately
+# Loaded once at import time; dirty entries are flushed by background thread.
 _geocode_cache: dict[str, tuple[float, float] | None] = _load_geocode_cache()
+
+# True whenever an entry has been added since the last disk flush.
+# Always read/written under _geocode_lock.
+_geocode_cache_dirty: bool = False
+_GEOCODE_FLUSH_INTERVAL = 30  # seconds between background flushes
+
+
+def _flush_geocode_cache_if_dirty() -> None:
+    """Write the cache to disk only when it has been modified since the last flush."""
+    global _geocode_cache_dirty
+    with _geocode_lock:
+        if _geocode_cache_dirty:
+            _save_geocode_cache(_geocode_cache)
+            _geocode_cache_dirty = False
+
+
+def _start_geocode_flush_thread() -> None:
+    """Start a background daemon thread that flushes the cache every 30 s."""
+    stop_event = threading.Event()
+
+    def _flush_loop() -> None:
+        while not stop_event.wait(timeout=_GEOCODE_FLUSH_INTERVAL):
+            _flush_geocode_cache_if_dirty()
+
+    t = threading.Thread(target=_flush_loop, name="geocode-cache-flusher", daemon=True)
+    t.start()
+    # Guarantee a final flush even if the process exits before the next tick.
+    atexit.register(_flush_geocode_cache_if_dirty)
+
+
+_start_geocode_flush_thread()
 
 
 # ---------------------------------------------------------------------------
@@ -430,6 +465,8 @@ def geocode_google(query: str) -> tuple[float, float] | None:
     Returns None on any failure (network error, no result, missing key).
     Requires GOOGLE_MAPS_API_KEY in the environment.
     """
+    global _geocode_cache_dirty
+
     # Fast path: already cached (no lock needed — dict reads are thread-safe)
     if query in _geocode_cache:
         return _geocode_cache[query]
@@ -470,7 +507,7 @@ def geocode_google(query: str) -> tuple[float, float] | None:
                 loc = data["results"][0]["geometry"]["location"]
                 coords: tuple[float, float] = (float(loc["lat"]), float(loc["lng"]))
                 _geocode_cache[query] = coords
-                _save_geocode_cache(_geocode_cache)
+                _geocode_cache_dirty = True
                 _increment_geocode_call_count()
                 print(
                     f"[gtfs_loader] Geocoded and cached '{query}' -> {coords} "
@@ -483,7 +520,7 @@ def geocode_google(query: str) -> tuple[float, float] | None:
 
         # Cache the miss too — avoids hammering the API for queries that never resolve
         _geocode_cache[query] = None
-        _save_geocode_cache(_geocode_cache)
+        _geocode_cache_dirty = True
         return None
 
 
@@ -565,9 +602,9 @@ def find_nearest_train_stations(
     train_stations, _ = _load_stops()
 
     candidates = [
-        {**s, "distance_miles": _haversine_miles(lat, lon, s["lat"], s["lon"])}
+        {**s, "distance_miles": d}
         for s in train_stations
-        if _haversine_miles(lat, lon, s["lat"], s["lon"]) <= max_distance_miles
+        if (d := _haversine_miles(lat, lon, s["lat"], s["lon"])) <= max_distance_miles
     ]
     candidates.sort(key=lambda s: s["distance_miles"])
     candidates = candidates[:max_results]
@@ -623,6 +660,7 @@ _FUZZY_STOP_WORDS: frozenset[str] = frozenset(
 )
 
 
+@lru_cache(maxsize=1024)
 def fuzzy_match_neighborhood(query: str) -> tuple[tuple[float, float] | None, str | None]:
     """
     Fuzzy-match a lowercased, stripped query against NEIGHBORHOOD_COORDS.
@@ -677,7 +715,11 @@ _ABBR_MAP: dict[str, str] = {
 # Sort longest-first so longer patterns are tried before shorter ones
 _sorted_abbrs = sorted(_ABBR_MAP, key=len, reverse=True)
 _STREET_ABBR_RE = re.compile(
-    r"\b(" + "|".join(re.escape(a) + r"\.?" for a in _sorted_abbrs) + r")\b",
+    # Lookahead (?=\s*(?:,|$)) requires the token to be at end-of-string or
+    # immediately before a comma.  This prevents "St." in "St. Michael's Church"
+    # from matching (it's followed by more words), while still matching
+    # "123 N Clark St" (end of string) and "123 N Clark St, Chicago" (before comma).
+    r"\b(" + "|".join(re.escape(a) + r"\.?" for a in _sorted_abbrs) + r")\b(?=\s*(?:,|$))",
     re.IGNORECASE,
 )
 

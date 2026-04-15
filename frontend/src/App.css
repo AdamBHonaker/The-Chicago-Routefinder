@@ -204,6 +204,12 @@
   line-height: 1.5;
 }
 
+.data-warning {
+  font-size: 0.8rem;
+  color: #f59e0b;
+  margin-top: 0.4rem;
+}
+
 /* ── Loading skeleton ────────────────────────────────────────────────────── */
 
 @keyframes shimmer {

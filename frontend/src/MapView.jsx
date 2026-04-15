@@ -42,24 +42,39 @@ const toGeo = ([lat, lon]) => [lon, lat];
 // Layer management helpers
 // ---------------------------------------------------------------------------
 
-function clearRouteLayers(map) {
-  if (!map.isStyleLoaded()) return;
-  const style = map.getStyle();
-
+/**
+ * Remove all route layers/sources whose IDs are tracked in the provided arrays,
+ * then clear those arrays.  Does NOT call map.isStyleLoaded() — we use the
+ * tracked ID lists so old layers are never left behind even when the style
+ * reloads mid-session.  try/catch guards against layers that were never added
+ * (e.g. because style wasn't loaded when renderRoute ran).
+ */
+function clearRouteLayers(map, layerIds, sourceIds) {
   // Layers must be removed before their sources
-  for (const layer of style.layers) {
-    if (layer.id.startsWith("route-")) map.removeLayer(layer.id);
+  for (const id of layerIds.splice(0)) {
+    try { map.removeLayer(id); } catch { /* already gone or style reloaded */ }
   }
-  for (const sourceId of Object.keys(style.sources)) {
-    if (sourceId.startsWith("route-")) map.removeSource(sourceId);
+  for (const id of sourceIds.splice(0)) {
+    try { map.removeSource(id); } catch { /* already gone or style reloaded */ }
   }
+}
+
+/** Thin wrappers that add a source/layer AND record the ID for later cleanup. */
+function _trackSource(map, id, data, sourceIds) {
+  map.addSource(id, data);
+  sourceIds.push(id);
+}
+
+function _trackLayer(map, cfg, layerIds) {
+  map.addLayer(cfg);
+  layerIds.push(cfg.id);
 }
 
 // ---------------------------------------------------------------------------
 // Route rendering
 // ---------------------------------------------------------------------------
 
-function renderRoute(map, route, originCoords, destCoords) {
+function renderRoute(map, route, originCoords, destCoords, layerIds, sourceIds) {
   const { legs } = route;
   if (!legs?.length) return;
 
@@ -74,16 +89,16 @@ function renderRoute(map, route, originCoords, destCoords) {
       if (coords.length < 2) return;
       coords.forEach(c => allGeoCoords.push(c));
 
-      map.addSource(`route-walk-${i}`, {
+      _trackSource(map, `route-walk-${i}`, {
         type: "geojson",
         data: { type: "Feature", geometry: { type: "LineString", coordinates: coords } },
-      });
-      map.addLayer({
+      }, sourceIds);
+      _trackLayer(map, {
         id:     `route-walk-line-${i}`,
         type:   "line",
         source: `route-walk-${i}`,
         paint:  { "line-color": "#888888", "line-width": 3, "line-dasharray": [2, 2] },
-      });
+      }, layerIds);
 
     } else if (leg.type === "transit") {
       const coords = (leg.shape ?? []).map(toGeo);
@@ -91,17 +106,17 @@ function renderRoute(map, route, originCoords, destCoords) {
       coords.forEach(c => allGeoCoords.push(c));
 
       const color = legColor(leg);
-      map.addSource(`route-transit-${i}`, {
+      _trackSource(map, `route-transit-${i}`, {
         type: "geojson",
         data: { type: "Feature", geometry: { type: "LineString", coordinates: coords } },
-      });
-      map.addLayer({
+      }, sourceIds);
+      _trackLayer(map, {
         id:     `route-transit-line-${i}`,
         type:   "line",
         source: `route-transit-${i}`,
         layout: { "line-cap": "round", "line-join": "round" },
         paint:  { "line-color": color, "line-width": 5 },
-      });
+      }, layerIds);
     }
   });
 
@@ -117,7 +132,7 @@ function renderRoute(map, route, originCoords, destCoords) {
       if (leg.to_coords)   boardExit.push({ coord: toGeo(leg.to_coords),   label: `Exit ${leg.line}`,  color });
 
       if (boardExit.length) {
-        map.addSource(`route-boardexit-${i}`, {
+        _trackSource(map, `route-boardexit-${i}`, {
           type: "geojson",
           data: {
             type: "FeatureCollection",
@@ -127,8 +142,8 @@ function renderRoute(map, route, originCoords, destCoords) {
               properties: { label, color: c },
             })),
           },
-        });
-        map.addLayer({
+        }, sourceIds);
+        _trackLayer(map, {
           id:     `route-boardexit-circle-${i}`,
           type:   "circle",
           source: `route-boardexit-${i}`,
@@ -138,7 +153,7 @@ function renderRoute(map, route, originCoords, destCoords) {
             "circle-stroke-width": 2,
             "circle-stroke-color": "#ffffff",
           },
-        });
+        }, layerIds);
       }
 
       // Intermediate stops — evenly sampled from the clipped shape
@@ -155,11 +170,11 @@ function renderRoute(map, route, originCoords, destCoords) {
         }
 
         if (intermFeatures.length) {
-          map.addSource(`route-stops-${i}`, {
+          _trackSource(map, `route-stops-${i}`, {
             type: "geojson",
             data: { type: "FeatureCollection", features: intermFeatures },
-          });
-          map.addLayer({
+          }, sourceIds);
+          _trackLayer(map, {
             id:     `route-stops-circle-${i}`,
             type:   "circle",
             source: `route-stops-${i}`,
@@ -169,7 +184,7 @@ function renderRoute(map, route, originCoords, destCoords) {
               "circle-stroke-width": 2,
               "circle-stroke-color": ["get", "color"],
             },
-          });
+          }, layerIds);
         }
       }
     }
@@ -180,11 +195,11 @@ function renderRoute(map, route, originCoords, destCoords) {
     ? [originCoords[1], originCoords[0]]   // [lat,lon] → [lon,lat]
     : (() => { const p = legs[0]?.path?.[0]; return p ? toGeo(p) : null; })();
   if (originPt) {
-    map.addSource("route-origin", {
+    _trackSource(map, "route-origin", {
       type: "geojson",
       data: { type: "Feature", geometry: { type: "Point", coordinates: originPt } },
-    });
-    map.addLayer({
+    }, sourceIds);
+    _trackLayer(map, {
       id:     "route-origin-circle",
       type:   "circle",
       source: "route-origin",
@@ -194,7 +209,7 @@ function renderRoute(map, route, originCoords, destCoords) {
         "circle-stroke-width": 2,
         "circle-stroke-color": "#ffffff",
       },
-    });
+    }, layerIds);
   }
 
   // Destination dot — use explicit destCoords prop; fall back to last leg path
@@ -202,11 +217,11 @@ function renderRoute(map, route, originCoords, destCoords) {
     ? [destCoords[1], destCoords[0]]       // [lat,lon] → [lon,lat]
     : (() => { const lp = legs[legs.length - 1]?.path; return lp?.length ? toGeo(lp[lp.length - 1]) : null; })();
   if (destPt) {
-    map.addSource("route-dest", {
+    _trackSource(map, "route-dest", {
       type: "geojson",
       data: { type: "Feature", geometry: { type: "Point", coordinates: destPt } },
-    });
-    map.addLayer({
+    }, sourceIds);
+    _trackLayer(map, {
       id:     "route-dest-circle",
       type:   "circle",
       source: "route-dest",
@@ -216,7 +231,7 @@ function renderRoute(map, route, originCoords, destCoords) {
         "circle-stroke-width": 2,
         "circle-stroke-color": "#ffffff",
       },
-    });
+    }, layerIds);
   }
 
   // ── Auto-fit: snap to bounding box of all route coordinates ───────────────
@@ -244,8 +259,10 @@ export default function MapView({
   center       = DEFAULT_CENTER,
   zoom         = DEFAULT_ZOOM,
 }) {
-  const containerRef = useRef(null);
-  const mapRef       = useRef(null);
+  const containerRef  = useRef(null);
+  const mapRef        = useRef(null);
+  const routeLayerIds  = useRef([]);   // tracked IDs set during renderRoute
+  const routeSourceIds = useRef([]);
   const [unlocked, setUnlocked] = useState(false);
   const [styleError, setStyleError] = useState(false);
 
@@ -325,8 +342,8 @@ export default function MapView({
     if (!map) return;
 
     const render = () => {
-      clearRouteLayers(map);
-      if (route) renderRoute(map, route, originCoords, destCoords);
+      clearRouteLayers(map, routeLayerIds.current, routeSourceIds.current);
+      if (route) renderRoute(map, route, originCoords, destCoords, routeLayerIds.current, routeSourceIds.current);
     };
 
     if (map.isStyleLoaded()) {
