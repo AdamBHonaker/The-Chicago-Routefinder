@@ -518,8 +518,7 @@ CTA-Transit-PWA/
 │   │                                      (only returns in-service routes); train lines via Train Tracker
 │   │                                      /ttpositions (active = has live train positions). Enriches bus
 │   │                                      output with GTFS long names + hex colors. Run: python active_routes.py
-│   ├── railway.toml                    ← Railway deployment config (start command, restart policy)
-│   ├── nixpacks.toml                   ← Railway build config (Python 3.12, gdal, proj)
+│   ├── railway.toml                    ← Railway deployment config (builder = "railpack", start command, restart policy)
 │   ├── requirements.txt
 │   ├── geocode_cache.json              ← Persistent geocoding results cache (gitignored, built at runtime)
 │   ├── geocode_counter.json            ← Monthly Google Maps API call counter (gitignored; temporary — remove post-deployment)
