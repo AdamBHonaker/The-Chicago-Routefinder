@@ -552,9 +552,9 @@ CTA-Transit-PWA/
 
 ### Backend → Railway
 
-**Status as of 2026-04-14:** Steps 1–5 complete (excluding `ALLOWED_ORIGINS` — Vercel not yet set up). Deploy in progress.
+**Status as of 2026-04-14:** All steps complete. ✓ Live.
 
-**Full steps (resume from here):**
+**Full steps:**
 1. ~~Create account at railway.app — "Sign in with GitHub"~~ ✓ Done
 2. ~~New Project → create production and staging environments~~ ✓ Done
 3. ~~In the staging service, go to **Settings → Source** and set the **Root Directory** to `backend`~~ ✓ Done (fixed Railpack error)
@@ -564,22 +564,22 @@ CTA-Transit-PWA/
    - ~~`CTA_BUS_API_KEY`~~ ✓
    - ~~`ANTHROPIC_API_KEY`~~ ✓
    - ~~`GOOGLE_MAPS_API_KEY`~~ ✓
-   - `ALLOWED_ORIGINS` ← **TODO** — fill in after Vercel deploy (e.g. `https://cta-transit.vercel.app`)
-6. Deploy in progress — first deploy takes ~5–8 min (downloads GTFS + street graph). Note: GTFS data and the street graph are re-downloaded on every deploy (Railway's filesystem is ephemeral). This keeps data fresh but means every redeploy takes 5–8 min.
-7. Copy the Railway public URL (e.g. `https://cta-transit-backend.railway.app`)
+   - ~~`ALLOWED_ORIGINS`~~ ✓
+6. ~~Deploy — first deploy takes ~5–8 min (downloads GTFS + street graph). Note: GTFS data and the street graph are re-downloaded on every deploy (Railway's filesystem is ephemeral). This keeps data fresh but means every redeploy takes 5–8 min.~~ ✓ Done
+7. ~~Copy the Railway public URL~~ ✓ Done
 
 ### Frontend → Vercel
-1. Create account at vercel.com — "Continue with GitHub"
-2. "Add New Project" → import this repo
-3. Set **root directory** to `frontend`
-4. Add environment variable:
-   - `VITE_BACKEND_URL` = your Railway URL from step 7 above
-5. Deploy — takes ~1 min
-6. Copy the Vercel URL and paste it into Railway's `ALLOWED_ORIGINS` variable
-7. Redeploy the Railway backend (so CORS picks up the new origin)
+1. ~~Create account at vercel.com — "Continue with GitHub"~~ ✓ Done
+2. ~~"Add New Project" → import this repo~~ ✓ Done
+3. ~~Set **root directory** to `frontend`~~ ✓ Done
+4. ~~Add environment variable:~~
+   - ~~`VITE_BACKEND_URL` = your Railway URL from step 7 above~~ ✓ Done
+5. ~~Deploy — takes ~1 min~~ ✓ Done
+6. ~~Copy the Vercel URL and paste it into Railway's `ALLOWED_ORIGINS` variable~~ ✓ Done
+7. ~~Redeploy the Railway backend (so CORS picks up the new origin)~~ ✓ Done
 
 ### After both are live
-- Update `frontend/.env.production` → replace the `your-backend.railway.app` placeholder with the real Railway URL and commit (note: the file currently contains a placeholder — the frontend will not reach the backend until this is updated)
+- ~~Update `frontend/.env.production` → replace the `your-backend.railway.app` placeholder with the real Railway URL and commit~~ ✓ Done
 - Test end-to-end on the live URLs
 - Optional: add a custom domain in Vercel dashboard (Settings → Domains)
 
@@ -588,7 +588,7 @@ CTA-Transit-PWA/
 ## Where to Resume
 
 **Next task: Phase 6 — Deployment.** The app is feature-complete. Before deploying:
-1. Create Railway and Vercel accounts (see HUMAN_TODO.md)
+1. ~~Create Railway and Vercel accounts~~ ✓ Done
 2. Source ≥10 transit photos for the map loading panel (see HUMAN_TODO.md)
 3. Run pre-deployment checks: confirm 40/60 panel ratio on desktop, 300px/350px min-heights on mobile
 

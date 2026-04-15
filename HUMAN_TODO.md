@@ -7,13 +7,8 @@ Claude cannot do these. Check them off as you go.
 
 ## Accounts to Create
 
-- [ ] **Railway** — backend hosting (free tier)
-  - Go to railway.app → "Sign in with GitHub"
-  - No credit card required for free tier
-
-- [ ] **Vercel** — frontend hosting (free tier)
-  - Go to vercel.com → "Continue with GitHub"
-  - No credit card required for free tier
+- [x] **Railway** ✅ — backend hosting (free tier)
+- [x] **Vercel** ✅ — frontend hosting (free tier)
 
 ---
 
