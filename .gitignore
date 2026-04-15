@@ -7,9 +7,6 @@ frontend/.env.local
 # CTA GTFS data — large files, re-downloaded via fetch_gtfs.py
 backend/gtfs_data/
 
-# OSMnx street graph cache — re-downloaded via fetch_street_graph.py
-backend/street_graph.graphml
-
 # Persistent geocode cache — built up at runtime from Google Maps API lookups
 backend/geocode_cache.json
 

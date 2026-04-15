@@ -13,9 +13,13 @@ The download queries the OpenStreetMap Overpass API — it takes 3–10 minutes
 depending on your connection. After the first run the server loads from the
 local cache file in under a second.
 
-Geographic scope: Howard St (north) to 50th St (south), lakefront (east) to
-Pulaski Rd (west). Covers all CTA lines within this rectangle with accurate
+Geographic scope: Howard St (north) to 20th St (south), lakefront (east) to
+Pulaski Rd (west). Covers the current CTA service area with accurate
 street-network walk times. Points outside fall back to Haversine estimates.
+
+NOTE: This file is committed to the repo (backend/street_graph.graphml) so
+Railway does not need to download it at deploy time. Re-run this script locally
+whenever the bounding box changes, then commit the updated graphml.
 """
 
 import os
@@ -26,8 +30,9 @@ GRAPH_PATH = Path(__file__).parent / "street_graph.graphml"
 
 # Bounding box: (left/west, bottom/south, right/east, top/north)
 # OSMnx 2.x format
-# Coverage: Howard St (north) → 50th St (south) | Lakefront (east) → Pulaski Rd (west)
-BBOX = (-87.7260, 41.8050, -87.5200, 42.0200)
+# Coverage: Howard St (north) → 20th St (south) | Lakefront (east) → Pulaski Rd (west)
+# TODO: expand south boundary toward 50th St when Railway memory allows
+BBOX = (-87.7260, 41.8560, -87.5200, 42.0190)
 
 
 def download_and_save() -> None:
