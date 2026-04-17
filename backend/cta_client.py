@@ -16,7 +16,6 @@ import aiohttp
 
 # Tracks raw psgld values seen from the API — logged once per unique value so
 # we can verify the actual format against our normalization assumption.
-_psgld_seen: set[str] = set()
 
 CHICAGO_TZ = ZoneInfo("America/Chicago")
 
@@ -132,9 +131,8 @@ async def get_train_arrivals(
     errors = [a for a in all_arrivals if "error" in a]
 
     if errors:
-        # Log but don't crash — partial results are fine
-        for e in errors:
-            print(f"[cta_client] {e['error']}")
+        msgs = "; ".join(e["error"] for e in errors[:3])
+        print(f"[cta_client] {len(errors)} train error(s): {msgs}")
 
     return sorted(good, key=lambda a: a["arrives_in_minutes"]), len(errors)
 
@@ -189,9 +187,6 @@ async def _fetch_bus_chunk(
             else:
                 minutes = 0
             raw_psgld = prd.get("psgld", "")
-            if raw_psgld and raw_psgld not in _psgld_seen:
-                _psgld_seen.add(raw_psgld)
-                print(f"[cta_client] psgld raw value from API: {raw_psgld!r}")
             # Normalize to UPPER_SNAKE so filter comparisons work regardless
             # of whether CTA sends "HALF EMPTY" (space) or "HALF_EMPTY" (underscore)
             psgld = raw_psgld.replace(" ", "_").upper()

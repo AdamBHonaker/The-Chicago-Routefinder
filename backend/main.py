@@ -2,7 +2,6 @@ import asyncio
 import collections
 import os
 import time
-import traceback
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
@@ -665,8 +664,8 @@ async def recommend(request: RouteRequest, http_request: Request):
                     ),
                     arrival_lookup,
                 )
-            except Exception:
-                traceback.print_exc()
+            except Exception as exc:
+                print(f"[recommend] train routing error: {exc}")
 
         # Bus routing
         if request.transit_mode in ("Bus", "All") and bus_arrivals and origin_bus_stops:
@@ -692,8 +691,8 @@ async def recommend(request: RouteRequest, http_request: Request):
                             origin_bus_stops=origin_bus_stops,
                             n_routes=3,
                         )
-                    except Exception:
-                        traceback.print_exc()
+                    except Exception as exc:
+                        print(f"[recommend] bus transfer routing error: {exc}")
                 # Normalise bus wait semantics (int | None) to match
                 # _rank_routes() output before merging with train results.
                 if bus_ranked:
@@ -722,8 +721,8 @@ async def recommend(request: RouteRequest, http_request: Request):
                         seen_fps.add(fp)
                         deduped.append((_total, _wait, _route))
                 ranked_routes = deduped
-            except Exception:
-                traceback.print_exc()
+            except Exception as exc:
+                print(f"[recommend] bus routing error: {exc}")
 
     # ── Alerts ────────────────────────────────────────────────────────────────
     alert_ids = _alert_ids_from_routes(ranked_routes)
@@ -752,7 +751,7 @@ async def recommend(request: RouteRequest, http_request: Request):
             raise ValueError("No text block in Claude response")
         recommendation = text_block.text
     except Exception as exc:
-        traceback.print_exc()
+        print(f"[recommend] Claude API error: {exc}")
         raise HTTPException(status_code=502, detail=f"Claude API error: {exc}")
 
     # ── Response ──────────────────────────────────────────────────────────────

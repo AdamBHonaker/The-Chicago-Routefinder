@@ -233,10 +233,7 @@ def walk_path(
         return coords
 
     except Exception as e:
-        print(
-            f"[walk_path] routing failed "
-            f"({origin_lat:.5f},{origin_lon:.5f}) → ({dest_lat:.5f},{dest_lon:.5f}): {e!r}"
-        )
+        print(f"[walk_path] routing failed: {type(e).__name__}: {e}")
         return [[origin_lat, origin_lon], [dest_lat, dest_lon]]
 
 

@@ -15,6 +15,7 @@ Chunked plans for upcoming major features, followed by ideas deferred until post
 2. Feature D — Live Arrivals at Transfer Stop — **Structural** (soft dependency on Feature C, now satisfied)
 3. Multi-Leg Train Routing Gap 1 — Shared-Track Edge Deduplication — **Structural** (Dependency on Feature B, now complete)
 4. Claude Haiku for Simple Queries — **Bolt-On**
+5. Feature Language — Multi-Language Support (i18n) — **Bolt-On**
 
 ---
 
@@ -457,3 +458,317 @@ The response cache stores the full response including `model_used`. On a cache h
 - Expanding the "simple" definition to cover two-route same-line queries (deferred; measure quality first)
 - Per-model cost tracking in the response or UI
 - Automatic fallback from Haiku to Sonnet on low-confidence responses (not needed; the classifier is conservative by design)
+
+---
+
+# Feature Language — Multi-Language Support (i18n)
+
+## Overview
+
+Chicago is one of the most linguistically diverse cities in the US. Many transit riders speak languages beyond English as their primary language — including Spanish, Polish, Mandarin, Tagalog, Arabic, Urdu, Vietnamese, Pashto, Hindi, Korean, and others. Mainstream transit apps often support only English, or English plus a handful of Western European languages, leaving many Chicago residents underserved.
+
+This feature adds full internationalization (i18n) to the frontend UI and Claude's AI-generated recommendation text, with a language selector that persists across sessions. The goal is to support a broad, community-representative set of languages — not just common Western ones.
+
+**Why it matters:** The app's value proposition ("stop thinking about how to get there") is only fully realized for riders who can read it. Translating both the static UI text and the AI recommendation opens the app to a much larger share of Chicago's actual transit-riding population.
+
+**Type: Bolt-On** — self-contained change to the frontend and the Claude prompt. No dependency on any routing feature.
+
+**Status: ⬜ Not started**
+
+---
+
+## Scoping decisions — resolved
+
+1. **i18n library:** Use `react-i18next` + `i18next`. This is the standard React i18n stack, well-maintained, supports RTL via HTML `dir` attribute, and handles dynamic string interpolation (e.g. "Walk {minutes} min") cleanly.
+
+2. **Languages to support at launch.** Chosen to reflect Chicago's actual spoken-language demographics per census and community data:
+
+   | Code | Language |
+   |---|---|
+   | `en` | English |
+   | `es` | Spanish |
+   | `fr` | French |
+   | `it` | Italian |
+   | `pl` | Polish |
+   | `ro` | Romanian |
+   | `uk` | Ukrainian |
+   | `ru` | Russian |
+   | `zh` | Chinese (Mandarin, Simplified) |
+   | `yue` | Chinese (Cantonese, Simplified) |
+   | `ja` | Japanese (Standard; furigana parenthetical notation — see decision 11) |
+   | `ko` | Korean |
+   | `tl` | Tagalog |
+   | `vi` | Vietnamese |
+   | `hi` | Hindi |
+   | `gu` | Gujarati |
+   | `pa` | Punjabi |
+   | `ne` | Nepali |
+   | `ur` | Urdu (RTL) |
+   | `ar` | Arabic (RTL) |
+   | `ps` | Pashto (RTL) |
+   | `yo` | Yoruba |
+
+   This list can be extended without structural changes — adding a language is just adding a translation JSON file and a menu entry.
+
+3. **What gets translated.** All static UI strings in `App.jsx` are extracted into translation keys. The AI-generated `recommendation` text from Claude is handled separately (see decision 4). Station names, line names, and street names in leg data are **not** translated — they are proper nouns that must remain in their canonical CTA form for geographic accuracy.
+
+4. **Claude recommendation language.** The `/recommend` backend accepts an optional `language` field in the request body. When present, `build_prompt()` appends a one-line instruction: `"Respond in {language_name}."` This causes Claude to write its recommendation in the user's language. No translation library is needed server-side — Claude handles it natively. The language code is mapped to a full language name (e.g. `"ur"` → `"Urdu"`) before being inserted into the prompt.
+
+5. **Language selector placement.** A `<select>` in the existing header filters bar, next to the transit mode selector. Defaults to the browser's `navigator.language` if it matches a supported language; otherwise defaults to `"en"`. Persists to `localStorage` under key `"cta_language"`.
+
+6. **RTL layout.** Arabic, Urdu, and Pashto are RTL scripts. When one of these languages is selected, set `document.documentElement.dir = "rtl"` and `document.documentElement.lang = langCode`. The existing CSS uses flexbox throughout; RTL flip requires only `direction: rtl` on `.app` plus a few targeted `margin-inline-start/end` adjustments (no full CSS rewrite needed). Test against Arabic at minimum.
+
+7. **Translation files.** One JSON file per language at `frontend/public/locales/{code}/translation.json`. `i18next-http-backend` loads them on demand — only the active language is fetched. English (`en`) is the fallback: if a key is missing from a translation, the English string is shown.
+
+8. **Translation source.** Machine-translate the English strings to seed all other language files (use any translation API or Claude directly during development). The translations do not need to be perfect for launch — native speakers can refine them in future PRs. Mark machine-translated files with a comment `// machine-translated, review welcome` at the top.
+
+9. **Interpolation.** Dynamic strings (e.g. `"Walk {minutes} min to {destination}"`) use i18next's interpolation syntax: `"walk_to": "Walk {{minutes}} min to {{to}}"`. This is already how i18next works; no custom logic required.
+
+10. **Scope of translated strings.** All strings visible to the user in `App.jsx`: form labels, placeholders, button text, status messages, error messages, route card metadata labels, leg descriptions, alerts copy, settings panel text. Strings that are CTA data (station names, line names, alert headlines from the CTA API) are not translated.
+
+11. **Japanese furigana.** For the Claude recommendation text, use parenthetical furigana notation (`漢字（かんじ）`) rather than HTML `<ruby>` tags. This is a widely understood convention in Japanese texts aimed at general audiences, requires no HTML rendering changes on the frontend, and is safe to pass through the existing `renderMarkdown()` function. The Claude prompt instruction for Japanese is: `"Respond in Japanese. Use standard Japanese (a natural mix of hiragana, katakana, and kanji). Add furigana in parentheses after each kanji compound to aid readability — for example: 電車（でんしゃ）."` For static UI translation strings in `ja/translation.json`, include parenthetical furigana inline in the translated values for any kanji-heavy terms.
+
+---
+
+## Chunk 1 — Install i18n library and set up translation infrastructure
+
+**Files:** `frontend/package.json`, `frontend/src/i18n.js` (new), `frontend/public/locales/en/translation.json` (new), `frontend/src/main.jsx`
+
+**What to build:**
+
+- Run: `npm install i18next react-i18next i18next-http-backend i18next-browser-languagedetector`
+- Create `frontend/src/i18n.js`:
+  ```js
+  import i18n from "i18next";
+  import { initReactI18next } from "react-i18next";
+  import HttpBackend from "i18next-http-backend";
+  import LanguageDetector from "i18next-browser-languagedetector";
+
+  const SUPPORTED = ["en","es","fr","it","pl","ro","uk","ru","zh","yue","ja","ko","tl","vi","hi","gu","pa","ne","ur","ar","ps","yo"];
+
+  i18n
+    .use(HttpBackend)
+    .use(LanguageDetector)
+    .use(initReactI18next)
+    .init({
+      fallbackLng: "en",
+      supportedLngs: SUPPORTED,
+      backend: { loadPath: "/locales/{{lng}}/translation.json" },
+      detection: {
+        order: ["localStorage", "navigator"],
+        caches: ["localStorage"],
+        lookupLocalStorage: "cta_language",
+      },
+      interpolation: { escapeValue: false },
+    });
+
+  export default i18n;
+  export { SUPPORTED };
+  ```
+- In `frontend/src/main.jsx`, import `"./i18n.js"` before rendering `<App />`. Wrap `<App />` with `<Suspense fallback={null}>` to handle async locale loading.
+- Create `frontend/public/locales/en/translation.json` with all English strings extracted (see Chunk 2 for the full string inventory).
+
+**Notes:**
+- `i18next-browser-languagedetector` reads `localStorage["cta_language"]` first, then `navigator.language`. This gives the language selector (Chunk 3) automatic persistence for free.
+- Do not add translations for other languages in this chunk — just the English baseline.
+
+---
+
+## Chunk 2 — Extract all UI strings into translation keys
+
+**Files:** `frontend/src/App.jsx`, `frontend/public/locales/en/translation.json`
+
+**What to build:**
+
+Replace every hardcoded user-visible string in `App.jsx` with `t("key")` calls using the `useTranslation` hook (or `Trans` component for interpolated strings). Below is the complete inventory:
+
+| Key | English value |
+|---|---|
+| `app_title` | `CTA Transit` |
+| `tagline` | `Stop thinking about how to get there. Just go.` |
+| `label_from` | `From` |
+| `label_to` | `To` |
+| `placeholder_location` | `Neighborhood, address, or building` |
+| `btn_get_route` | `Get Route` |
+| `btn_finding_route` | `Finding your route…` |
+| `route_options_heading` | `Route options` |
+| `badge_best` | `Best` |
+| `label_min_total` | `{{minutes}} min total` |
+| `label_no_transfers` | `No transfers` |
+| `label_1_transfer` | `1 transfer` |
+| `label_n_transfers` | `{{count}} transfers` |
+| `wait_due` | `Due now` |
+| `wait_minutes` | `{{minutes}} min wait` |
+| `walk_from_origin` | `Walk {{minutes}} min to {{to}}` |
+| `walk_to_destination` | `Walk {{minutes}} min to your destination` |
+| `walk_transfer` | `Transfer — walk {{minutes}} min` |
+| `exit_label_prefix` | `Exit:` |
+| `steps_show` | `Steps` |
+| `steps_hide` | `Hide steps` |
+| `step_walk` | `Walk` |
+| `step_head` | `Head` |
+| `step_along` | `along` |
+| `step_for` | `for` |
+| `block_singular` | `block` |
+| `block_plural` | `blocks` |
+| `long_block_singular` | `long block` |
+| `long_block_plural` | `long blocks` |
+| `short_block_singular` | `short block` |
+| `short_block_plural` | `short blocks` |
+| `error_generic` | `Something went wrong. Please try again.` |
+| `bus_data_partial` | `Bus arrival data partially unavailable — some results may be missing.` |
+| `alerts_more` | `and {{count}} more` |
+| `settings_title` | `Settings` |
+| `settings_label_api_key` | `Your Anthropic API Key` |
+| `settings_hint_api_key` | `Provide your own key and your usage won't count against the app's shared quota.` |
+| `settings_error_key_format` | `Key must start with "sk-ant-"` |
+| `settings_btn_save` | `Save` |
+| `settings_btn_remove_key` | `Remove key` |
+| `aria_close_settings` | `Close settings` |
+| `aria_transit_mode` | `Transit mode` |
+| `aria_language` | `Language` |
+| `aria_settings_active` | `Settings (using your API key)` |
+| `aria_settings` | `Settings` |
+| `aria_loading` | `Finding your route` |
+| `mode_all` | `All modes` |
+| `mode_train` | `Train` |
+| `mode_bus` | `Bus` |
+
+Add each key to `frontend/public/locales/en/translation.json`. In `App.jsx`, call `const { t } = useTranslation()` at the top of each component that uses translated strings.
+
+**Notes:**
+- `formatBlocks()` becomes a call to `t()` with appropriate singular/plural keys — i18next's built-in plural handling (`_one`, `_other` suffixes) can be used, but for simplicity in Chunk 2, just use separate singular/plural keys as listed above.
+- The `"and X more"` alerts string uses `Trans` or a simple template: `t("alerts_more", { count: result.alerts.length - 3 })`.
+- Do not yet add the language selector in this chunk — just wire up `t()` calls against English strings and verify the app still works identically.
+
+---
+
+## Chunk 3 — Add language selector to header
+
+**Files:** `frontend/src/App.jsx`
+
+**What to build:**
+
+- Import `{ useTranslation }` and `{ SUPPORTED }` from `./i18n.js`.
+- Add a `<select>` in the `.filters` div, adjacent to the transit mode selector:
+  ```jsx
+  const { i18n, t } = useTranslation();
+
+  <select
+    value={i18n.language}
+    onChange={(e) => i18n.changeLanguage(e.target.value)}
+    aria-label={t("aria_language")}
+  >
+    {SUPPORTED.map((code) => (
+      <option key={code} value={code}>{LANGUAGE_NAMES[code]}</option>
+    ))}
+  </select>
+  ```
+- Add `LANGUAGE_NAMES` constant in `App.jsx` (not in a translation file — these are the native-script names displayed to speakers of each language):
+  ```js
+  const LANGUAGE_NAMES = {
+    en: "English",    es: "Español",      fr: "Français",    it: "Italiano",
+    pl: "Polski",     ro: "Română",       uk: "Українська",  ru: "Русский",
+    zh: "中文（普通话）",  yue: "粤语",         ja: "日本語",       ko: "한국어",
+    tl: "Filipino",   vi: "Tiếng Việt",   hi: "हिंदी",        gu: "ગુજરાતી",
+    pa: "ਪੰਜਾਬੀ",     ne: "नेपाली",        ur: "اردو",         ar: "العربية",
+    ps: "پښتو",        yo: "Yorùbá",
+  };
+  ```
+- Wire RTL: add a `useEffect` that watches `i18n.language` and sets `document.documentElement.dir` and `document.documentElement.lang`:
+  ```js
+  const RTL_LANGS = new Set(["ar", "ur", "ps"]);
+  useEffect(() => {
+    document.documentElement.dir = RTL_LANGS.has(i18n.language) ? "rtl" : "ltr";
+    document.documentElement.lang = i18n.language;
+  }, [i18n.language]);
+  ```
+- `i18n.changeLanguage()` automatically persists to `localStorage["cta_language"]` via the detector config in Chunk 1.
+
+**Notes:**
+- Native-script language names (العربية, 中文, etc.) must appear in the `<option>` elements — not English names — so a speaker of that language can find their own language in the list.
+- At this point, switching to a non-English language will show English strings (fallback) because other translation files don't exist yet. That is expected. Test that the selector persists across page refreshes and that RTL flip works for Arabic.
+
+---
+
+## Chunk 4 — Create translation files for all supported languages
+
+**Files:** `frontend/public/locales/{es,fr,it,pl,ro,uk,ru,zh,yue,ja,ko,tl,vi,hi,gu,pa,ne,ur,ar,ps,yo}/translation.json`
+
+**What to build:**
+
+For each language code, create `frontend/public/locales/{code}/translation.json` containing translations of every key from the English file. Seed using machine translation (use Claude or any translation API).
+
+Guidelines for each translation:
+- Keep dynamic placeholders (`{{minutes}}`, `{{to}}`, `{{count}}`) exactly as they appear in the English source — i18next requires them to match.
+- Transit-specific terms like "Bus", "Train" should be translated naturally in context.
+- "CTA Transit" in `app_title` should not be translated — it is a proper name.
+- For RTL languages (ar, ur, ps): the JSON values themselves are RTL text, but the JSON file format and keys remain LTR. No special file encoding needed.
+
+Add a comment at the top of each non-English file (as a `"_comment"` key): `"machine-translated, review welcome"`.
+
+**Notes:**
+- 22 languages × ~45 keys = ~990 string translations total. Seed in one or two Claude sessions, grouping by script family for consistency.
+- For `ja/translation.json`: include parenthetical furigana inline in values for kanji-heavy terms (e.g. `"btn_get_route": "経路（けいろ）を取得（しゅとく）"`) — no special tooling needed.
+- After seeding, do a spot-check on at least 3 languages by switching the selector and reading through the UI.
+- RTL languages: verify that Arabic, Urdu, and Pashto text renders correctly in-browser and that the layout flips properly (form labels on the right, chevron on the left, etc.).
+
+---
+
+## Chunk 5 — Backend: Pass language to Claude prompt
+
+**Files:** `backend/main.py`
+
+**What to build:**
+
+- In the `/recommend` endpoint, read `language: str | None = None` from the request body (add to the request schema).
+- Add a `LANGUAGE_NAMES` dict in `main.py` mapping all 22 language codes to their full English names. English names are used in the prompt because that is Claude's instruction language:
+  ```python
+  LANGUAGE_NAMES = {
+      "en": "English",           "es": "Spanish",            "fr": "French",
+      "it": "Italian",           "pl": "Polish",             "ro": "Romanian",
+      "uk": "Ukrainian",         "ru": "Russian",            "zh": "Mandarin Chinese",
+      "yue": "Cantonese Chinese","ja": "Japanese",           "ko": "Korean",
+      "tl": "Filipino (Tagalog)","vi": "Vietnamese",         "hi": "Hindi",
+      "gu": "Gujarati",          "pa": "Punjabi",            "ne": "Nepali",
+      "ur": "Urdu",              "ar": "Arabic",             "ps": "Pashto",
+      "yo": "Yoruba",
+  }
+  ```
+- In `build_prompt()`, add an optional `language: str | None = None` parameter. If non-null and not `"en"`, construct the closing instruction based on the language:
+  - For Japanese (`language == "ja"`): append `"Respond in Japanese. Use standard Japanese (a natural mix of hiragana, katakana, and kanji). Add furigana in parentheses after each kanji compound to aid readability — for example: 電車（でんしゃ）."`
+  - For all other non-English languages: append `"Respond in {LANGUAGE_NAMES[language]}."`
+- In `main.py`, pass `language=language` (the raw code from the request) directly to `build_prompt()`.
+- In the frontend `handleSubmit`, include `language: i18n.language` in the request body alongside `origin`, `destination`, and `transit_mode`.
+
+**Notes:**
+- If `language` is `"en"` or absent, do not append any instruction — Claude defaults to English already, and adding it wastes tokens.
+- This is the only backend change for this feature. No translation library, no additional dependencies.
+- Claude handles all listed scripts (Arabic, Urdu, Pashto, Cyrillic, Devanagari, CJK, etc.) natively.
+- Test manually: set language to Urdu in the selector, submit a query, and verify that the recommendation text is in Urdu script. Set to Japanese and verify parenthetical furigana appears.
+
+---
+
+## Chunk 6 — CSS: RTL layout adjustments
+
+**Files:** `frontend/src/App.css`
+
+**What to build:**
+
+Audit the existing CSS for properties that break under RTL and replace with logical properties or add `[dir="rtl"]` overrides. Key areas to check:
+
+- Any `margin-left` / `margin-right` or `padding-left` / `padding-right` on flex children that creates visual asymmetry under RTL. Replace with `margin-inline-start` / `margin-inline-end` where safe, or add targeted `[dir="rtl"]` overrides.
+- `.leg-pill` — floated or flex-start positioned; verify it aligns correctly when the row direction flips.
+- `.route-chevron` — `▲` / `▼` chevrons don't flip; `◄` / `►` would need to, but these aren't used. No change needed.
+- `.alerts-more` link — verify text alignment under RTL.
+- Form layout — `<label>` spans should right-align under RTL; `text-align: start` (already logical) handles this if used.
+
+**Acceptance criteria:**
+- No text or element visually overlaps under Arabic, Urdu, or Pashto.
+- Form inputs, buttons, and route cards all read correctly right-to-left.
+- LTR layout (English and all other languages) is unchanged.
+
+**Notes:**
+- Do not rewrite the entire CSS file. Only change properties where a visual bug is confirmed in-browser.
+- Test by selecting Arabic, Urdu, and Pashto in the language selector and visually inspecting the full app flow: form → submit → route cards → walk steps.
+- This chunk can be done in parallel with Chunk 4 (translation files) if needed — they are fully independent.
