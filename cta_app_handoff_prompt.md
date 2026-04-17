@@ -578,12 +578,13 @@ CTA-Transit-PWA/
 │   │                                      (only returns in-service routes); train lines via Train Tracker
 │   │                                      /ttpositions (active = has live train positions). Enriches bus
 │   │                                      output with GTFS long names + hex colors. Run: python active_routes.py
-│   ├── railway.toml                    ← Railway deployment config (builder = "railpack", start command, restart policy)
+│   ├── railway.toml                    ← Railway deployment config (builder = "dockerfile", points to backend/Dockerfile)
+│   ├── Dockerfile                      ← Build recipe used by Railway (apt deps, pip install, COPY); curl-LFS step preserved as comments — see Feature K
 │   ├── requirements.txt
 │   ├── geocode_cache.json              ← Persistent geocoding results cache (gitignored, built at runtime)
 │   ├── geocode_counter.json            ← Monthly Google Maps API call counter (gitignored; temporary — remove post-deployment)
 │   ├── gtfs_data/                      ← Downloaded GTFS files (gitignored, re-downloaded on deploy via fetch_gtfs.py)
-│   └── street_graph.graphml            ← Pre-built OSMnx street graph committed via Git LFS (bbox: Howard–20th St); NOT re-downloaded on deploy
+│   └── street_graph.graphml            ← Pre-built OSMnx street graph committed via Git LFS (bbox: Howard–20th St); present locally, NOT present in Railway image — runtime falls back to Haversine. See Feature K to restore.
 └── frontend/
     ├── index.html                      ← PWA meta tags, theme color, apple-touch-icon
     ├── package.json                    ← includes maplibre-gl dependency

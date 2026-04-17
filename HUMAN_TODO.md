@@ -65,6 +65,7 @@ Claude cannot do these. Check them off as you go.
 
 ## Post-Deployment Cleanup
 
+- [ ] **Restore street-network walking graph (Feature K)** — `backend/street_graph.graphml` (120 MB) is committed to LFS but not present at runtime in Railway because the LFS media URL 404s (likely bandwidth-quota exhausted). Walking falls back to Haversine straight-line estimates. To restore street-routed walking: upload `backend/street_graph.graphml` as a GitHub Release asset (recommended) or to Cloudflare R2, then ask Claude to re-enable the curl block in `backend/Dockerfile` (preserved as comments under `--- PRESERVED FOR FUTURE RESTORATION (Feature K) ---`) and point `STREET_GRAPH_URL` at the new host. Full plan: `FEATURE_IMPLEMENTATION_PLANS.md` → Feature K.
 - [ ] **Remove geocoding rate limit** — `backend/gtfs_loader.py` has a temporary 9,500 calls/month cap (`_GEOCODE_CALL_LIMIT`) to prevent accidental charges during testing. Once the app is live and call volume is understood, remove the cap: delete `_GEOCODE_CALL_LIMIT`, `_GEOCODE_COUNTER_PATH`, `_geocode_call_counter`, `_load_geocode_counter`, `_save_geocode_counter`, `_geocode_call_count`, `_increment_geocode_call_count`, and the guard block inside `geocode_google`. The large comment block above `_GEOCODE_CALL_LIMIT` marks all of these.
 
 ---
