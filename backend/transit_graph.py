@@ -33,7 +33,6 @@ from walking import (
     walk_minutes as street_walk_minutes,
     walk_path as street_walk_path,
     walk_directions as street_walk_directions,
-    _load_graph as _load_street_graph,
 )
 
 # ---------------------------------------------------------------------------
@@ -582,9 +581,14 @@ def _build_graph() -> tuple[nx.DiGraph, dict[str, dict]]:
     # Bidirectional walk edges between each train station and nearby bus stops
     # within 0.15 miles (street walk ≤ 5 min). These enable Dijkstra to
     # discover intermodal paths naturally alongside pure-train/bus paths.
+    # Edge weights use Haversine × 1.3 (street-detour factor) to avoid loading
+    # the full street graph into memory during startup — the graph would OOM on
+    # Railway before any requests are served.  Routing requests compute precise
+    # turn-by-turn paths lazily via street_walk_* only when needed.
     intermodal_edge_count = 0
     _TRANSFER_RADIUS_MILES = 0.15
     _TRANSFER_WALK_CAP_MIN = 5.0
+    _DETOUR_FACTOR = 1.3   # straight-line → street-network correction
 
     for mapid, station in parent_stations.items():
         s_lat, s_lon = station["lat"], station["lon"]
@@ -592,7 +596,7 @@ def _build_graph() -> tuple[nx.DiGraph, dict[str, dict]]:
             dist = _haversine_miles(s_lat, s_lon, stop["lat"], stop["lon"])
             if dist > _TRANSFER_RADIUS_MILES:
                 continue
-            walk_min = street_walk_minutes(s_lat, s_lon, stop["lat"], stop["lon"])
+            walk_min = dist / 3.0 * 60 * _DETOUR_FACTOR  # 3 mph, detour-corrected
             if walk_min > _TRANSFER_WALK_CAP_MIN:
                 continue
             G.add_edge(mapid, stop_id,
@@ -623,7 +627,8 @@ def warm_up() -> None:
     get_bus_stop_sequences()
     _build_stop_to_routes()
     _build_shape_lookup()
-    _load_street_graph()  # prime lru_cache before concurrent requests arrive
+    # Street graph is loaded lazily on the first routing request that needs it.
+    # Loading it here would cause an OOM kill on Railway before startup completes.
 
 
 # ---------------------------------------------------------------------------
