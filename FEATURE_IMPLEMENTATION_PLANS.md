@@ -16,6 +16,7 @@ Chunked plans for upcoming major features, followed by ideas deferred until post
 3. Multi-Leg Train Routing Gap 1 — Shared-Track Edge Deduplication — **Structural** (Dependency on Feature B, now complete)
 4. Claude Haiku for Simple Queries — **Bolt-On**
 5. Feature Language — Multi-Language Support (i18n) — **Bolt-On**
+6. Feature K — Restore Street-Network Walking Graph in Production — **Bolt-On**
 
 ---
 
@@ -771,4 +772,67 @@ Audit the existing CSS for properties that break under RTL and replace with logi
 **Notes:**
 - Do not rewrite the entire CSS file. Only change properties where a visual bug is confirmed in-browser.
 - Test by selecting Arabic, Urdu, and Pashto in the language selector and visually inspecting the full app flow: form → submit → route cards → walk steps.
+
+---
+
+# Feature K — Restore Street-Network Walking Graph in Production
+
+## Overview
+
+`backend/street_graph.graphml` is a 120 MB OSMnx pedestrian network of Chicago, used by [walking.py](backend/walking.py) (`walk_minutes`, `walk_directions`, `walk_path`) to produce street-routed walking times, turn-by-turn directions, and curved Shapely polylines for the map view. The file is committed via Git LFS but **not present at runtime in the Railway deployment**:
+
+- Rebuilding from OpenStreetMap via `fetch_street_graph.py` OOM-kills on the Railway free memory tier.
+- Pulling the LFS object at Docker build time via `media.githubusercontent.com/media/...` returns 404 (likely LFS-bandwidth quota exhausted, or LFS objects not publicly served for this repo).
+- Current state (commit 954c7fa + Dockerfile change in this commit): runtime falls back to Haversine straight-line walking estimates. App is functional but walking UX is degraded — walk minutes are crow-flies, "directions" collapse to a single `"Walk"` step, and the drawn walk path is a straight line rather than following streets.
+
+**Goal:** Get the real graphml onto the deployed container so `walking.py` loads it at startup, restoring street-routed walking. Do this without paying for a Railway memory upgrade and without depending on GitHub LFS bandwidth.
+
+**Type: Bolt-On** — backend-only; no frontend or routing-engine changes. Restoring the graph file is transparent to all callers because the fallback path in [walking.py:53-66](backend/walking.py#L53-L66) is already in place.
+
+**Status: ⬜ Not started**
+
+**Prerequisites:** None. The Dockerfile already contains the preserved curl block (commented out under `--- PRESERVED FOR FUTURE RESTORATION (Feature K) ---`); restoration is mostly a matter of pointing it at a working URL.
+
+---
+
+## Hosting options (pick one in Chunk 1)
+
+1. **GitHub Release asset.** Upload `street_graph.graphml` as a binary asset on a tagged release (e.g. `street-graph-v1`). Public download URL is stable, served by GitHub's CDN, and not subject to LFS bandwidth limits. **Recommended** — zero infra cost, no new accounts.
+   - URL pattern: `https://github.com/AdamBHonaker/CTA-Transit-PWA/releases/download/<tag>/street_graph.graphml`
+2. **Cloudflare R2.** Free tier covers 10 GB storage + 10M reads/mo. Pay $0 for this use case. Requires a Cloudflare account and one bucket.
+3. **AWS S3 / Backblaze B2.** Similar to R2 but with non-zero egress cost on AWS. Avoid unless already in use.
+4. **Railway volume.** Mount a persistent volume, upload the file once via `railway run`. Avoids any external host but adds a Railway resource and complicates local/dev parity. Lowest priority.
+
+## Chunk 1 — Choose host and upload graphml
+
+- Pick from the four options above (default: GitHub Release).
+- Upload the local `backend/street_graph.graphml` (120 MB, sha256 `55a82d0fc8eadbd47289fc3e4ad37130a187622343c15f65dcabdff0a4a58afc` per the LFS pointer).
+- Verify the public download URL works with `curl -fSL` and that `Content-Length` matches the local file size.
+
+## Chunk 2 — Re-enable Dockerfile curl step
+
+- In `backend/Dockerfile`, uncomment the block under `--- PRESERVED FOR FUTURE RESTORATION (Feature K) ---`.
+- Update the `STREET_GRAPH_URL` ARG default to the new host URL.
+- Keep both safety checks intact (size ≥ 1 MB; reject LFS-pointer stub).
+- Optional: pin to a specific Release tag rather than `latest`/`main` so future graph regenerations don't silently change the deployed file.
+
+## Chunk 3 — Verify in production
+
+- Trigger a Railway redeploy.
+- Watch the build log for `street_graph.graphml: <bytes> bytes` (should be ~120 MB).
+- Watch the runtime startup log for `[walking] Graph loaded: <N> nodes, <M> edges` (vs. the current `Street graph not found ... Haversine fallback`).
+- Spot-check one trip in the live app: confirm `walk_minutes` reports street-routed values (not Haversine), `walk_directions` returns multiple named-street steps, and the map's walk path follows actual streets rather than a straight line.
+
+## Acceptance criteria
+
+- Build completes without 404 on the graph URL.
+- Backend logs confirm graph loaded at startup.
+- Live app shows multi-step walk directions and curved walk paths on the map for at least one verified trip.
+- No regression in build time beyond the ~5–10 s curl download.
+
+## Notes / gotchas
+
+- The graphml is regenerated by `fetch_street_graph.py` whenever the OSM bbox changes. After any regeneration, re-upload to the chosen host and (if pinned) bump the Release tag in the Dockerfile.
+- If memory becomes the limiting factor again at runtime (graph load is ~300 MB resident), revisit the bbox in `fetch_street_graph.py:36` rather than abandoning street routing.
+- Feature K is purely operational; once the file is reachable from the build, all routing/UX behavior is restored automatically by existing code.
 - This chunk can be done in parallel with Chunk 4 (translation files) if needed — they are fully independent.

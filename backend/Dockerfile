@@ -15,17 +15,32 @@ RUN pip install -r requirements.txt
 
 COPY . .
 
-# Replace the Git LFS pointer stub with the real street-network graph.
-# Pulled from GitHub's LFS media endpoint at build time so the file is baked
-# into the image and the runtime never has to rebuild it from OpenStreetMap
-# (which OOM-kills on the current Railway memory tier).
+# NOTE: street_graph.graphml is intentionally NOT downloaded at build time.
+# The file lives in Git LFS but GitHub's LFS media endpoint returns 404
+# (likely bandwidth-quota exhausted on the free tier). The runtime falls back
+# to Haversine straight-line walking estimates via walking.py — see commit
+# 954c7fa ("Fix OOM crash: use Haversine for intermodal edges, defer street
+# graph load"). Walking times are degraded but the app deploys and serves.
 #
-# When the Railway memory tier is increased, this RUN step can be removed and
-# `python fetch_street_graph.py` re-added to the start command in railway.toml
-# as a self-healing fallback.
-ARG STREET_GRAPH_URL=https://media.githubusercontent.com/media/AdamBHonaker/CTA-Transit-PWA/main/backend/street_graph.graphml
-RUN curl -fSL --retry 3 --retry-delay 2 -o street_graph.graphml "$STREET_GRAPH_URL" \
-    && head -c 200 street_graph.graphml | grep -qv "git-lfs.github.com" \
-    && echo "street_graph.graphml: $(wc -c < street_graph.graphml) bytes"
+# To restore street-network routing, see Feature K in
+# FEATURE_IMPLEMENTATION_PLANS.md (host the 120 MB graphml as a GitHub
+# Release asset / S3 / R2 / Railway volume and re-enable the curl step
+# preserved below).
+#
+# --- PRESERVED FOR FUTURE RESTORATION (Feature K) ---
+# ARG STREET_GRAPH_URL=https://media.githubusercontent.com/media/AdamBHonaker/CTA-Transit-PWA/main/backend/street_graph.graphml
+# RUN curl -fSL --retry 3 --retry-delay 2 -o street_graph.graphml "$STREET_GRAPH_URL" \
+#     && SIZE=$(wc -c < street_graph.graphml) \
+#     && echo "street_graph.graphml: $SIZE bytes" \
+#     && if [ "$SIZE" -lt 1048576 ]; then \
+#          echo "ERROR: street_graph.graphml is only $SIZE bytes — likely an LFS pointer or quota-exhausted response."; \
+#          head -c 500 street_graph.graphml; \
+#          exit 1; \
+#        fi \
+#     && if head -c 200 street_graph.graphml | grep -q "git-lfs.github.com"; then \
+#          echo "ERROR: street_graph.graphml is an LFS pointer stub, not the real file."; \
+#          exit 1; \
+#        fi
+# --- END PRESERVED ---
 
 CMD ["sh", "-c", "python fetch_gtfs.py && uvicorn main:app --host 0.0.0.0 --port $PORT --no-access-log --log-level warning"]
