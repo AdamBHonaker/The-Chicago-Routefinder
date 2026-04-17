@@ -33,6 +33,7 @@ from walking import (
     walk_minutes as street_walk_minutes,
     walk_path as street_walk_path,
     walk_directions as street_walk_directions,
+    _load_graph as _load_street_graph,
 )
 
 # ---------------------------------------------------------------------------
@@ -622,6 +623,7 @@ def warm_up() -> None:
     get_bus_stop_sequences()
     _build_stop_to_routes()
     _build_shape_lookup()
+    _load_street_graph()  # prime lru_cache before concurrent requests arrive
 
 
 # ---------------------------------------------------------------------------

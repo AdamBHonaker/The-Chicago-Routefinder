@@ -163,7 +163,7 @@ async def _fetch_bus_chunk(
         ) as resp:
             data = await resp.json(content_type=None)
     except Exception as exc:
-        print(f"[cta_client] Bus API error for stops {chunk}: {exc}")
+        print(f"[cta_client] Bus API error for {len(chunk)} stops: {exc}")
         # Return a sentinel so get_bus_arrivals can count failures instead of
         # silently dropping them. The list[dict] return type is preserved.
         return [{"_bus_error": True, "exc": str(exc)}]

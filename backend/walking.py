@@ -12,6 +12,7 @@ Key OSMnx 2.x notes:
   - Edge "length" attribute is in metres
 """
 
+import threading
 from functools import lru_cache
 from pathlib import Path
 
@@ -32,21 +33,28 @@ _DIRECTION_FULL = {
 }
 
 
-@lru_cache(maxsize=1)
-def _load_graph():
-    """
-    Load the cached street graph. Cached after first call — subsequent
-    requests reuse the in-memory graph with no disk or network I/O.
-    """
-    if not GRAPH_PATH.exists():
-        raise FileNotFoundError(
-            f"Street graph not found at {GRAPH_PATH}. "
-            "Run `python fetch_street_graph.py` to download it."
-        )
-    print(f"[walking] Loading street graph from {GRAPH_PATH} ...")
-    G = ox.load_graphml(GRAPH_PATH)
-    print(f"[walking] Graph loaded: {G.number_of_nodes():,} nodes, {G.number_of_edges():,} edges")
-    return G
+_graph_lock = threading.Lock()
+_graph_cache: "nx.MultiDiGraph | None" = None
+
+
+def _load_graph() -> "nx.MultiDiGraph":
+    """Load street graph once; subsequent calls return the cached instance."""
+    global _graph_cache
+    if _graph_cache is not None:
+        return _graph_cache
+    with _graph_lock:
+        if _graph_cache is not None:
+            return _graph_cache
+        if not GRAPH_PATH.exists():
+            raise FileNotFoundError(
+                f"Street graph not found at {GRAPH_PATH}. "
+                "Run `python fetch_street_graph.py` to download it."
+            )
+        print(f"[walking] Loading street graph from {GRAPH_PATH} ...")
+        G = ox.load_graphml(GRAPH_PATH)
+        print(f"[walking] Graph loaded: {G.number_of_nodes():,} nodes, {G.number_of_edges():,} edges")
+        _graph_cache = G
+    return _graph_cache
 
 
 @lru_cache(maxsize=512)
