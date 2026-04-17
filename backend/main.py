@@ -18,7 +18,7 @@ load_dotenv()
 
 from gtfs_loader import (
     resolve_location, geocode_google, NEIGHBORHOOD_COORDS,
-    fuzzy_match_neighborhood,
+    fuzzy_match_neighborhood, _normalize_street_abbr,
 )
 from cta_client import get_train_arrivals, get_bus_arrivals, get_alerts, _TRAIN_LINE_TO_ALERT_ID
 from transit_graph import (
@@ -214,6 +214,7 @@ def _coords_for_location(
     centroid as a last resort so the routing engine always has coordinates.
     """
     q = query.lower().strip()
+    q = _normalize_street_abbr(q)
 
     # 1. Exact match
     coords = NEIGHBORHOOD_COORDS.get(q)
@@ -227,7 +228,7 @@ def _coords_for_location(
         return coords
 
     # 3. Google Maps geocoding (result is cached after resolve_location already called it)
-    coords = geocode_google(query)
+    coords = geocode_google(q)
     if coords:
         return coords
 

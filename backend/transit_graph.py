@@ -424,7 +424,11 @@ def _load_transfer_edges(
             if from_p not in parent_stations or to_p not in parent_stations:
                 continue
 
-            # transfers.txt has no min_transfer_time — use our default
+            # Pessimistic floor: even if GTFS publishes a sub-2-minute transfer
+            # (e.g. 45 s for a cross-platform xfer), we clamp it to _TRANSFER_MINUTES
+            # so routing estimates stay conservative and never promise a tight
+            # connection that relies on a GTFS value we haven't validated in the field.
+            # To override, change _TRANSFER_MINUTES at the top of this file.
             try:
                 min_sec = float(row.get("min_transfer_time", "").strip() or "0")
                 minutes = max(min_sec / 60.0, _TRANSFER_MINUTES)
@@ -816,7 +820,12 @@ def clip_shape(
         # between the actual stop coordinates so the caller always gets ≥ 2 points.
         return [[board_lat, board_lon], [exit_lat, exit_lon]]
 
-    return shape_points[lo : hi + 1]
+    segment = shape_points[lo : hi + 1]
+    # If the rider travels in the opposite direction of the shape, reverse so the
+    # animated polyline direction matches actual travel.
+    if board_idx > exit_idx:
+        segment = segment[::-1]
+    return segment
 
 
 # ---------------------------------------------------------------------------
@@ -1859,9 +1868,11 @@ def find_bus_transfer_routes(
 
                         transfer_hav = _haversine_miles(sk_lat, sk_lon,
                                                         *_bus_stop_coords.get(t_stop_id, (sk_lat, sk_lon)))
+                        # 20.0 = 60 min/hr ÷ 3 mph walk speed; ×1.3 corrects
+                        # straight-line to Manhattan-grid distance.
                         score = (board_walk_min + wait_min
-                                 + transfer_hav * 20.0
-                                 + best_exit_dist * 20.0)
+                                 + transfer_hav * 26.0
+                                 + best_exit_dist * 26.0)
 
                         arrival_candidates.append((
                             score,

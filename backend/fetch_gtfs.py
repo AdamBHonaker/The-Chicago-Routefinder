@@ -36,16 +36,26 @@ EXPECTED_FILES = [
 def download_gtfs() -> None:
     GTFS_DIR.mkdir(exist_ok=True)
 
-    print(f"Downloading CTA GTFS data from {GTFS_URL} ...")
+    total_hint = ""
+    try:
+        head = urllib.request.Request(GTFS_URL, method="HEAD",
+            headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(head, timeout=10) as r:
+            cl = int(r.headers.get("Content-Length", 0))
+            if cl:
+                total_hint = f" (~{cl // (1024*1024)} MB)"
+    except Exception:
+        pass
+    print(f"Downloading CTA GTFS data from {GTFS_URL}{total_hint} ...")
     try:
         request = urllib.request.Request(
             GTFS_URL,
             headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36"},
         )
         with urllib.request.urlopen(request, timeout=60) as response:
-            total = int(response.headers.get("Content-Length", 0))
             downloaded = 0
             chunk_size = 64 * 1024  # 64 KB chunks
+            last_report_mb = 0
 
             with open(GTFS_ZIP, "wb") as f:
                 while True:
@@ -54,11 +64,13 @@ def download_gtfs() -> None:
                         break
                     f.write(chunk)
                     downloaded += len(chunk)
-                    if total:
-                        pct = downloaded / total * 100
-                        print(f"  {downloaded / 1024:.0f} KB / {total / 1024:.0f} KB  ({pct:.0f}%)", end="\r")
+                    # Log only every 5 MB to avoid Railway log rate limits
+                    mb = downloaded // (5 * 1024 * 1024)
+                    if mb > last_report_mb:
+                        last_report_mb = mb
+                        print(f"  ... {downloaded // (1024*1024)} MB downloaded")
 
-        print(f"\nDownload complete: {downloaded / 1024:.0f} KB saved to {GTFS_ZIP}")
+        print(f"Download complete: {downloaded // 1024} KB saved to {GTFS_ZIP}")
     except Exception as e:
         raise RuntimeError(f"Failed to download GTFS data: {e}") from e
 

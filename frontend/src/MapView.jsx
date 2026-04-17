@@ -318,9 +318,10 @@ export default function MapView({
         }
       });
 
-      // Clear the error banner once the map successfully loads or updates data
+      // Only clear the error banner when the style itself has successfully loaded,
+      // not on any arbitrary tile/source load event.
       map.on("data", (e) => {
-        if (e.isSourceLoaded) {
+        if (e.dataType === "style" && e.isSourceLoaded) {
           setStyleError(false);
         }
       });

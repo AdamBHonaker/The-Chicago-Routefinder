@@ -6,6 +6,86 @@ Severity: 🔴 High · 🟡 Medium · 🟢 Low.
 
 ---
 
+# 2026-04-17 Style Error Dismissal, Geocode Double-Suffix, and Transfer Floor Documentation Fixes
+
+---
+
+## ✅ `styleError` in `MapView.jsx` cleared on any tile load, not specifically on style recovery — FIXED
+
+**File:** `frontend/src/MapView.jsx`
+
+**Fixed in:** Added `e.dataType === "style"` guard to the `map.on("data", ...)` handler alongside the existing `e.isSourceLoaded` check. The error banner now clears only when the map style itself has successfully loaded, not when any arbitrary tile source finishes loading.
+
+---
+
+## ✅ `geocode_google()` double-appended `, Chicago, IL` if already present in query — FIXED
+
+**File:** `backend/gtfs_loader.py`
+
+**Fixed in:** Changed `"address": query + ", Chicago, IL"` to `"address": query if "chicago" in query.lower() else query + ", Chicago, IL"`. Queries that already contain "chicago" (any case) are sent as-is; the suffix is only appended when the city is absent.
+
+---
+
+## ✅ `_load_transfer_edges` silently clamped sub-2-minute GTFS transfers with no explanation — FIXED
+
+**File:** `backend/transit_graph.py` — `_load_transfer_edges()`
+
+**Fixed in:** Added a multi-line comment above the `max(min_sec / 60.0, _TRANSFER_MINUTES)` line documenting that this is an intentional pessimistic floor, why it exists (conservative routing estimates, unvalidated GTFS values), and where to change it (`_TRANSFER_MINUTES` constant at the top of the file).
+
+---
+
+# 2026-04-17 Geocoding, Shape Direction, Transfer Scoring, and Bus Label Fixes
+
+---
+
+## ✅ `_coords_for_location()` passed raw `query` to `geocode_google()` — cache miss, double API call — FIXED
+
+**File:** `backend/main.py`
+
+**Fixed in:** Added `q = _normalize_street_abbr(q)` after the existing `q = query.lower().strip()` in `_coords_for_location()`, and changed `geocode_google(query)` to `geocode_google(q)`. Imported `_normalize_street_abbr` from `gtfs_loader`. The geocode cache key now matches the one produced by `resolve_location()`, eliminating the redundant Google Maps API call on every routing request.
+
+---
+
+## ✅ `clip_shape()` returned shape points in wrong order for reverse-direction trips — FIXED
+
+**File:** `backend/transit_graph.py`
+
+**Fixed in:** After computing `board_idx` and `exit_idx`, the slice `shape_points[lo:hi+1]` is now assigned to `segment` and reversed (`segment[::-1]`) when `board_idx > exit_idx`. The reversed segment is returned so the animated polyline direction always matches the rider's actual direction of travel.
+
+---
+
+## ✅ Bus transfer scoring used haversine × 20 instead of grid-corrected walk minutes — FIXED
+
+**File:** `backend/transit_graph.py` — `find_bus_transfer_routes()`
+
+**Fixed in:** Applied a 1.3× Manhattan-grid correction factor to both the transfer-walk and exit-walk haversine terms in the candidate scoring formula: `transfer_hav * 26.0` and `best_exit_dist * 26.0` (previously `* 20.0`). The correction factor approximates real street-grid walk distances, improving candidate ranking so nearby-looking stops via straight-line distance are not incorrectly favored over better options.
+
+---
+
+## ✅ `_format_routes()` labeled bus wait as "next train" in Claude prompt — FIXED
+
+**File:** `backend/main.py`
+
+**Fixed in:** `_format_routes()` already correctly detects `is_bus` by checking whether `first_transit.line` is a directional string (`"Northbound"`, `"Southbound"`, etc.) and uses `"next bus Due"` / `"next bus in N min"` vs. `"next train Due"` / `"next train in N min"` accordingly. Confirmed present in code and removed from BUGS_TO_BE_FIXED.md.
+
+---
+
+# 2026-04-17 Railway Log Rate Limit Fix
+
+---
+
+## ✅ GTFS download progress loop bursts past Railway's 500 logs/sec limit — FIXED
+
+**File:** [`backend/fetch_gtfs.py`](backend/fetch_gtfs.py)
+
+**Severity:** 🔴 High (caused Railway to drop log messages and flag the replica)
+
+**What happened:** `backend/gtfs_data/` is gitignored, so Railway re-downloads the full CTA GTFS zip (~50 MB) on every fresh container (first deploy, container restarts). The old `download_gtfs()` printed one progress line per 64 KB chunk — ~800 `print()` calls for a 50 MB file. In a terminal these overwrite each other via `end="\r"`, but Railway treats every `print()` as a new log line. A fast Railway network connection could push all 800 lines through in under a second, exceeding Railway's 500 logs/sec replica limit. This manifested as a Railway warning ("Messages dropped: N") observed by the user when initiating a directions request that coincided with a backend container restart.
+
+**Fix:** Removed the per-chunk progress print. Added a HEAD request before download to show the file size up front (one log line). Progress is now logged at most once per 5 MB downloaded (~10 lines for a 50 MB file). Start and completion messages are retained. Net result: ~800 lines/download → ≤12 lines/download.
+
+---
+
 # 2026-04-16 Bus Wait Correctness Fix
 
 ---
