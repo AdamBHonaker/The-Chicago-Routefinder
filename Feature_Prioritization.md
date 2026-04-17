@@ -6,23 +6,12 @@ Classification of each feature as **Bolt-On** (self-contained, no dependencies o
 
 ## Chunked Features
 
-### Feature B — Intermodal Routing (Train + Bus)
-**Type: Structural**
-Depends on:
-- **Stable production deployment (Phase 6)** — the feature plan explicitly requires the app to be running stably before starting.
-- **`get_bus_stop_sequences()`** — must be restructured to be called inside `_build_graph()`, changing warm-up ordering.
-- Intersects with Feature C: once Feature B's unified graph is live, `find_bus_routes()` (which Feature C extends) becomes partially redundant and deduplication logic must be added.
-- ~~Intersects with Feature A~~: Feature A is complete — `_path_to_route()` changes from Feature A are already in place. Feature B must be written against this post-A version.
-
----
-
 ### Feature D — Live Arrivals at Transfer Stop
 **Type: Structural (soft dependency)**
 The train-to-train half works independently today. The bus-transfer half depends on:
 - **Feature C** (Bus+Bus Transfers) — bus transfer arrivals are only meaningful once bus transfer routes exist. ✅ Feature C is now complete, so this dependency is satisfied.
 
 ---
-
 
 ## Future Enhancements
 
@@ -87,27 +76,7 @@ Also verify that a location near both a Red Line and a Brown Line station (e.g.,
 
 ### Multi-Leg Train Routing — Gap 1 (Shared-Track Edge Deduplication)
 **Type: Structural**
-Modifies the same `_path_to_route()` logic that Feature B also restructures. The feature plan notes this is "out of scope for Feature B and should be addressed in a separate scoped session," but if Feature B is built first, this fix must be written against the post-B version of `_path_to_route()`. Depends on: **Feature B** (if building after intermodal routing is live).
-
----
-
-### Multi-Leg Train Routing — Gap 2 (Bus Access/Egress to Train Stations)
-**Type: Structural**
-Explicitly deferred to Feature B — this gap is resolved as a natural consequence of the unified intermodal graph. Depends on: **Feature B**.
-
----
-
-### Rate Limiting on `/recommend`
-~~**Type: Bolt-On**~~
-~~Standalone infrastructure change to `main.py` and `requirements.txt`. No dependency on any routing, geocoding, or UI feature. Must ship before or shortly after public launch.~~
-**✅ Complete (2026-04-14)** — Code written; feature is OFF by default. Enable with `RATE_LIMIT_ENABLED=true` in Railway env vars before public launch.
-
----
-
-### Bring Your Own API Key (BYOK)
-~~**Type: Bolt-On (soft interaction)**~~
-~~Self-contained `RouteRequest` field + per-request client logic on the backend, and a Settings panel on the frontend. No hard dependency on other features. Soft interaction with Rate Limiting: BYOK requests should bypass the global spend cap but still count against per-IP limits — this logic is trivial to add regardless of whether Rate Limiting is built first.~~
-**✅ Complete (2026-04-14)** — Code written; feature is OFF by default. Enable with `BYOK_ENABLED=true` (Railway) + `VITE_BYOK_ENABLED=true` (Vercel) before activating for users.
+Modifies `_path_to_route()`. Feature B is now complete — any fix here must be written against the post-B version of `_path_to_route()` (which uses `_resolve_node()` for all node metadata). No additional dependency blockers remain.
 
 ---
 
@@ -238,4 +207,19 @@ Read `response.alerts` from the `/recommend` response.
 - Confirm that a route involving a line with a known active alert (check transitchicago.com/travel-information/alerts/ before testing) surfaces that alert in the UI
 - Confirm that a route on a line with no active alerts renders nothing extra
 - Confirm that the Claude recommendation text mentions the disruption when a major alert is present
+
+---
+
+### Feature J — Deprecate `find_bus_routes()` in Favor of Unified Graph
+**Type: Bolt-On**
+Self-contained cleanup to `transit_graph.py`, `main.py`, and `cta_client.py`. No dependency on any planned feature beyond Feature B (which is ✅ complete).
+
+**Prerequisite:** Feature B must be verified in production — unified-graph bus-only routes must be manually validated on real Chicago trips before `find_bus_routes()` is removed.
+
+**What it does:** Removes `find_bus_routes()` (~200 lines) now that the unified NetworkX graph from Feature B surfaces bus-only paths via `find_routes()`. Restructures `main.py` to call `find_bus_transfer_routes()` unconditionally (not as a fallback). Removes the `_route_fingerprint()` deduplication step that exists only to reconcile the two bus-routing codepaths. Full implementation plan in `FEATURE_IMPLEMENTATION_PLANS.md`.
+
+**Files touched:**
+- `backend/transit_graph.py` — remove `find_bus_routes()` definition (~200 lines); update comments in `_build_shape_lookup()` and `find_bus_transfer_routes()`
+- `backend/main.py` — remove import and call site; restructure bus routing block; update `_rank_bus_routes()` docstring; remove `_route_fingerprint()` dedup
+- `backend/cta_client.py` — update stale comment referencing `find_bus_routes()`
 

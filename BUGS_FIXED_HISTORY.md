@@ -6,6 +6,30 @@ Severity: 🔴 High · 🟡 Medium · 🟢 Low.
 
 ---
 
+# 2026-04-16 Bus Wait Correctness Fix
+
+---
+
+## ✅ Bus routes bypass `_rank_routes` — live wait times not normalised — FIXED
+
+**File:** `backend/main.py`
+
+**Fixed in:** Added `_rank_bus_routes()` helper immediately after `_rank_routes()`. It takes the `(total, wait, route)` tuples already returned by `find_bus_routes()` / `find_bus_transfer_routes()` and re-expresses the `wait` field as `int | None` to match `_rank_routes()` output semantics: `wait > 0` = bus in N min, `wait == 0` = Due, `wait is None` = no data (defensive; bus routing only builds routes when a live arrival exists, so None should not occur). In the `/recommend` endpoint, `if bus_ranked: bus_ranked = _rank_bus_routes(bus_ranked)` is called immediately after the bus routing block and before the merge with train results. `find_bus_routes()`, `find_bus_transfer_routes()`, and `_rank_routes()` were **not** modified.
+
+---
+
+# 2026-04-16 Performance Fix
+
+---
+
+## ✅ `get_bus_stop_sequences` double-streamed 5.8M-row `stop_times.txt` — FIXED
+
+**File:** `backend/transit_graph.py`
+
+**Fixed in:** Replaced `_stream_stop_sequences` with `_stream_all_stop_sequences`, which processes both train and bus trips in a single pass through `stop_times.txt`. Added `_bus_seq_cache: dict | None = None` at module level. `_build_graph()` now loads bus metadata (`_load_bus_route_map`, `_load_bus_stop_lookup`, `_load_bus_candidate_trips`) before the stream call, passes them into the unified streamer, and stores the returned `bus_result` into `_bus_seq_cache`. `get_bus_stop_sequences()` returns `_bus_seq_cache` immediately when set (fast path); the original streaming logic is preserved as a fallback for isolated test calls. `@lru_cache` removed from `get_bus_stop_sequences` — the module-level variable replaces it. Net result: one fewer 5.8M-row file scan, saving ~7–10 s on cold start.
+
+---
+
 # 2026-04-15 Low-Severity Audit Pass
 
 ---

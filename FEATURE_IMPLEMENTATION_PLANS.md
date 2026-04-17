@@ -298,9 +298,20 @@ Add `find_bus_transfer_routes(origin_lat, origin_lon, dest_lat, dest_lon, bus_ar
 
 Train and bus routes are currently found independently (`find_routes()` for trains, `find_bus_routes()` for buses) and merged by total time in `main.py`. A combined trip — walk → Red Line → transfer to bus 36 → destination — is never surfaced as a structured route card. The majority of Chicago trips are served by train-only or bus-only routes, so this is deferred until post-launch with real trip data to validate demand.
 
-**Status: ⬜ Not started**
+**Status: ✅ Complete (2026-04-16)**
 
-**Prerequisite:** This is a significant architectural change. Do not start until Phase 6 deployment is complete and the app is running stably in production. A scoping session is also recommended before implementation begins.
+**What was implemented:**
+- `_build_graph()` — added `node_type="train"` to existing train station nodes; `mode="train"` to all train transit edges; `line_code` attribute added to train transit edges.
+- `_build_graph()` — bus stop nodes added after train graph is built (node_type="bus", lat, lon, name from stops.txt).
+- `_build_graph()` — bus transit edges added for all route/direction pairs from the cached bus stop sequences (mode="bus", line_code=route_short_name, edge_type="transit").
+- `_build_graph()` — bidirectional train↔bus walk edges added for every train station / bus stop pair within 0.15 miles and ≤5 min street walk (edge_type="walk", mode="walk").
+- `_resolve_node()` helper added — resolves node name, lat, lon from either the stations dict (train) or graph node attributes (bus).
+- `_path_to_route()` — all node metadata lookups updated to use `_resolve_node()`; new `edge_type == "walk"` handler added for mid-path train↔bus transfers; bus TransitLeg assembly uses `edge.get("line_code")`.
+- `find_routes()` — virtual ORIGIN→bus_stop and bus_stop→DEST walk edges added so Dijkstra surfaces intermodal paths.
+- `warm_up()` — logs graph size (nodes + edges) after `_build_graph()`.
+- `main.py` — `find_routes()` called with `n_routes=5`; `_route_fingerprint()` deduplication added after merge-sort to prevent unified-graph bus-only routes from duplicating `find_bus_routes()` results.
+- Module docstring updated to describe bus stop nodes and walk edges.
+- `find_nearest_bus_stops` imported in transit_graph.py.
 
 **Note on `find_bus_routes()`:** As of 2026-04-11, `find_bus_routes()` uses a two-pass design. Pass 1 collects candidates via haversine only; Pass 2 builds Route objects via OSMnx only for candidates within the progressive exit-stop threshold (0.25–2.0 miles). Any changes to `find_bus_routes()` as part of this feature must preserve this two-pass structure or replace it with something equally efficient.
 
@@ -434,6 +445,116 @@ In `main.py`:
 - Map rendering: `renderRoute()` uses `leg.line` to pick color — verify `BUS_DIRECTION_COLORS` lookup works for bus legs within a mixed route
 - Walk transfer legs between train station and bus stop should render as dashed gray walk segments on the map (same as other walk legs) — verify `leg.path` is populated for these
 - Manual test: find a real Chicago trip that benefits from an intermodal route (e.g. Brown Line to Western, then bus 49 south) and confirm the route card and map look correct
+
+---
+
+# Feature J — Deprecate `find_bus_routes()` in Favor of Unified Graph
+
+> **Note:** Labeled Feature J to avoid collision with Feature H (Deduplicate Same-Line Station Candidates) in `Feature_Prioritization.md`.
+
+## Overview
+
+Feature B added bus stop nodes and bus transit edges to the NetworkX graph, so `find_routes()` now surfaces bus-only paths alongside intermodal ones. The standalone `find_bus_routes()` function — which pre-dates the unified graph — is now partially redundant. This feature removes it, restructures the bus routing block in `main.py` to call `find_bus_transfer_routes()` unconditionally, and cleans up all downstream references.
+
+**Why it matters:** Two parallel codepaths that find bus routes (one via the unified graph, one via `find_bus_routes()`) must be kept in sync as the graph evolves. Removing `find_bus_routes()` eliminates ~200 lines of routing logic, one CTA Bus Tracker API call per request, and a deduplication step that exists only to reconcile the two codepaths.
+
+**Status: ⬜ Not started**
+
+**Prerequisites:** Feature B must be complete and verified in production. Do not begin until unified-graph bus-only routes have been manually validated on real Chicago trips.
+
+---
+
+## Scoping decisions — resolved
+
+1. **Keep `find_bus_transfer_routes()`.** It provides bus+bus transfer routes (bus A → walk → bus B) that the unified graph does not model — bus-to-bus walk transfers are not represented as graph edges. This function stays and becomes the sole bus-routing entry point in `main.py`.
+
+2. **Call `find_bus_transfer_routes()` unconditionally.** Currently it is only called when `find_bus_routes()` returns empty or poor results. After this feature, it is called unconditionally whenever `transit_mode` is `"Bus"` or `"All"`, subject to the existing `bus_arrivals and origin_bus_stops` guard. Direct-bus results are already found by `find_routes()` on the unified graph; `find_bus_transfer_routes()` handles bus+bus transfer trips that the graph still cannot surface.
+
+3. **Live arrival data is already covered.** `find_bus_routes()` queried `bus_arrivals` for real-time first-leg wait. `find_bus_transfer_routes()` returns the same `(total, wait_min, route)` tuple where `wait_min` is the live wait for bus A — so the live wait on the first boarding leg is preserved.
+
+4. **Progressive exit-stop threshold is dropped.** `find_bus_routes()` applied a two-pass haversine filter to prune buses that don't make meaningful progress toward the destination. The unified graph relies on Dijkstra edge weights instead. Route quality must be validated during Chunk 1 verification before removing this filter. If the unified graph surfaces obviously poor bus-only paths, address the graph's edge weighting before proceeding to Chunk 2.
+
+5. **`_rank_bus_routes()` is retained for `find_bus_transfer_routes()`.** It normalises wait semantics across bus results. Its docstring and comments referencing `find_bus_routes()` as a caller must be updated to reference `find_bus_transfer_routes()` only.
+
+6. **Deduplication logic in `main.py` is removed.** The `_route_fingerprint()` deduplication added by Feature B exists solely to prevent unified-graph bus-only routes from duplicating `find_bus_routes()` results. Once `find_bus_routes()` is removed, that deduplication step can also be removed — the unified graph and `find_bus_transfer_routes()` produce non-overlapping route types by design (direct bus vs. bus+bus transfer).
+
+---
+
+## Chunk 1 — Verification: Confirm unified graph covers direct-bus route quality
+
+**Files:** None (read-only verification)
+
+**What to verify:**
+
+Run the following test queries against the live app and inspect the returned routes. For each query, confirm that `find_routes()` via the unified graph returns at least one direct-bus result of comparable quality to what `find_bus_routes()` currently returns.
+
+| Test query | What to check |
+|---|---|
+| Wicker Park → Logan Square (short direct bus) | Unified graph returns bus 56 or 72 as a direct option |
+| Lincoln Square → Lakeview (crosstown bus) | Route card shows a direct bus, not just train options |
+| Pilsen → Bridgeport (bus-only neighborhood pair) | At least one bus result with a reasonable total time |
+| Trip where find_bus_routes() currently returns empty | `find_bus_transfer_routes()` still returns transfer options after the gate changes |
+
+**Acceptance criteria for proceeding to Chunk 2:**
+- Unified graph surfaces at least one direct-bus option for each test query above
+- Total times are within 10% of what `find_bus_routes()` currently returns for the same query
+- No obviously nonsensical bus paths (e.g. a bus route that travels away from the destination before turning around)
+
+If the unified graph fails these checks, stop and file a scoped fix for the graph's bus edge weighting before continuing.
+
+**Notes:**
+- The `_route_fingerprint()` deduplication added by Feature B is still active during this verification — both codepaths are running in parallel, so there is no risk of regression
+- Check Railway logs for any `find_bus_routes()` errors or empty-result cases that would indicate coverage gaps
+
+---
+
+## Chunk 2 — Restructure bus routing block in `main.py`
+
+**Files:** `backend/main.py`
+
+**What to build:**
+- Remove the `find_bus_routes(...)` call from the bus routing block (~line 649). The entire `bus_routes = find_bus_routes(...)` call and its immediate result-handling are removed.
+- Call `find_bus_transfer_routes()` unconditionally (not as a fallback) whenever `transit_mode` is `"Bus"` or `"All"`, subject to the existing `bus_arrivals and origin_bus_stops` guard:
+  ```python
+  if bus_arrivals and origin_bus_stops:
+      transfer_routes = await loop.run_in_executor(
+          executor,
+          find_bus_transfer_routes,
+          origin_lat, origin_lon, dest_lat, dest_lon,
+          bus_arrivals, origin_bus_stops,
+      )
+  else:
+      transfer_routes = []
+  ```
+- Remove the activation-gate logic that previously checked whether `find_bus_routes()` returned empty results before calling `find_bus_transfer_routes()`.
+- Remove the `_route_fingerprint()` deduplication block — it is no longer needed once `find_bus_routes()` is gone (unified-graph results and `find_bus_transfer_routes()` results are non-overlapping by design).
+- Remove the `find_bus_routes` import from the `from transit_graph import ...` line (~line 25).
+- Update the docstring and inline comments in `_rank_bus_routes()` (~lines 337, 340, 348) to reference `find_bus_transfer_routes()` as its sole caller; remove any reference to `find_bus_routes()`.
+
+**Notes:**
+- The `bus_arrivals and origin_bus_stops` guard is unchanged — `find_bus_transfer_routes()` still requires live arrival data and a non-empty origin stop list.
+- After this change, bus-only direct routes come exclusively from `find_routes()` (unified graph); bus+bus transfer routes come exclusively from `find_bus_transfer_routes()`. The merge-sort over `ranked_routes` already handles both lists.
+- Run the same test queries from Chunk 1 after this change and confirm no regression.
+
+---
+
+## Chunk 3 — Remove `find_bus_routes()` definition and clean up all references
+
+**Files:** `backend/transit_graph.py`, `backend/cta_client.py`
+
+**What to build:**
+
+In `transit_graph.py`:
+- Remove the `find_bus_routes(...)` function definition (~line 1361, ~200 lines). The entire function body is deleted.
+- Update the comment in `_build_shape_lookup()` (~line 627) that reads `"find_bus_routes() calls get_shape(route_short_name, direction_id)"`. If `find_bus_transfer_routes()` also calls `get_shape()`, update the comment to name it as the caller; otherwise remove the reference entirely.
+- Update the docstring and inline comments inside `find_bus_transfer_routes()` (~lines 1584, 1600, 1610) that reference `find_bus_routes()` as the activation-gate caller. Update to reflect that `find_bus_transfer_routes()` is now called unconditionally from `main.py`.
+
+In `cta_client.py`:
+- Update the comment on the field at ~line 203: `"# GTFS stop ID — used by find_bus_routes()"`. If the field is still used by `find_bus_transfer_routes()` or another caller, update the comment to name the new caller. If it is not used by any remaining caller, remove the comment.
+
+**Notes:**
+- After deletion, run a repo-wide search for `find_bus_routes` to confirm no remaining references: `grep -r "find_bus_routes" backend/`
+- Run the full Feature B verification checklist after the removal to confirm no routing regressions — intermodal, bus-only, and bus+bus transfer routes should all continue to work correctly.
 
 ---
 
@@ -869,7 +990,9 @@ Train-to-train routing with line changes and transfers is **already implemented*
 
 **Practical effect:** Route cards on shared-track trips may show the wrong line name for the shared segment (e.g. "Red Line" when the rider is on the "Brown Line" through the shared section). Timing is still correct — only the label can be wrong.
 
-**Future fix:** Store `all_routes` on the edge (already persisted as `edge_data["all_routes"]`) and use the incoming line context when labelling the shared-track leg. Alternatively, retain separate edges per route_id for shared-track pairs and handle deduplication during `_path_to_route()` rather than at graph-build time.
+**Future fix:** Retain separate edges per route_id for shared-track pairs in `_build_graph()`, then handle deduplication during `_path_to_route()` using incoming line context.
+
+> **Note:** The original approach of storing `all_routes` metadata on edges was removed in the 2026-04-15 audit (`G.add_edge(..., all_routes=candidates)` removed as dead code — the field was never read). Any implementation of this fix must use the alternative approach: store multiple edges per shared-track pair and select the correct one in `_path_to_route()` based on the incoming `TransitLeg`'s `line_code`.
 
 **Status: ⬜ Not started**
 
@@ -909,28 +1032,29 @@ def _last_transit_leg(legs: list) -> TransitLeg | None:
 
 In the transit-leg grouping block, after reading `group_route = edge.get("route_id", "")`:
 
+> **Important:** `all_routes` is NOT available on edges — it was removed as dead code in the 2026-04-15 audit. The correct approach is to first update `_build_graph()` to store multiple edges per shared-track station pair (one per route_id), then use incoming line context in `_path_to_route()` to select the right one. The code sketch below is illustrative of the `_path_to_route()` half only; the `_build_graph()` prerequisite must be completed first.
+
 ```python
-# If the rider is already on a line that also serves this edge, keep that label
-# (shared-track case: e.g. Purple Line rider passing through Red-labelled edge).
+# If the rider is already on a line that also serves this edge, prefer that label.
+# Prerequisite: _build_graph() must store one edge per route_id on shared-track pairs
+# (i.e. use a MultiDiGraph or a route_id-keyed parallel edge structure).
 incoming = _last_transit_leg(legs)
-if incoming:
-    all_routes = edge.get("all_routes", [])  # list[(route_id, dir_id, line_name, minutes)]
-    match = next(
-        (r for r in all_routes if r[0] == incoming.line_code),
-        None,
-    )
-    if match:
-        group_route, group_dir, group_line = match[0], match[1], match[2]
+if incoming and incoming.line_code == edge.get("route_id"):
+    # already on the right edge — no override needed
+    pass
+elif incoming:
+    # check if there is a parallel edge for the incoming line_code
+    # (implementation depends on chosen graph storage approach)
+    pass
 ```
 
-The while-loop that merges consecutive edges uses `next_edge.get("route_id") != group_route` as the break condition. This comparison already uses `group_route` — after the override above it will correctly break when the shared segment ends and the lines diverge. No change needed to the loop itself.
+The while-loop that merges consecutive edges uses `next_edge.get("route_id") != group_route` as the break condition — this is unchanged.
 
-Shape lookup at the end of the block calls `get_shape(group_route, group_dir)`. After the override, `group_route` and `group_dir` are the correct incoming-line values, so shape lookup inherits the fix automatically.
+Shape lookup at the end of the block calls `get_shape(group_route, group_dir)`. After the override, `group_route` and `group_dir` should carry the correct incoming-line values.
 
 **Edge cases:**
-- If the incoming line is not in `all_routes` (genuine line change, not shared-track): the override does not fire; the stored label is used as before.
-- First transit leg (no `incoming`): `_last_transit_leg` returns `None`; override skipped.
-- Same-station transfer WalkLeg inserted between two transit legs: `_last_transit_leg` still finds the previous `TransitLeg` correctly because it searches backward past walk legs.
+- First transit leg (no `incoming`): no override needed; stored label is used as-is.
+- Same-station transfer WalkLeg between two transit legs: `_last_transit_leg` finds the previous `TransitLeg` correctly because it searches backward past walk legs.
 
 **Test after:** Re-run the verification queries above. Purple Line through the Howard–Belmont segment should now label as "Purple Line".
 
@@ -940,9 +1064,9 @@ Shape lookup at the end of the block calls `get_shape(group_route, group_dir)`. 
 
 **What happens:** Both the origin walk leg (user → boarding station) and the destination walk leg (alighting station → destination) are always pedestrian walks. If a bus would provide faster access to a better-positioned train station — e.g. taking Route 22 to a Red Line station rather than walking 12 minutes — that option is never considered.
 
-**Future fix:** Addressed by Feature B (Intermodal Routing — Train + Bus), which is now fully scoped above. No separate implementation work needed here — Feature B's unified graph handles this gap as a natural consequence.
+**Fix:** Addressed by Feature B (Intermodal Routing — Train + Bus) — complete 2026-04-16. Feature B's unified graph handles this gap as a natural consequence via `ORIGIN→bus_stop` virtual walk edges in `find_routes()`.
 
-**Status: ⬜ Deferred to Feature B**
+**Status: ✅ Resolved by Feature B (2026-04-16)**
 
 ---
 
@@ -1030,7 +1154,7 @@ Shape lookup at the end of the block calls `get_shape(group_route, group_dir)`. 
 **Frontend (`App.jsx` + `App.css`):**
 - `BYOK_ENABLED = import.meta.env.VITE_BYOK_ENABLED === "true"` — compile-time flag; `false` means `SettingsPanel` is never rendered and no `anthropic_api_key` is ever sent
 - `SettingsPanel` component: gear icon ⚙ in header filters row (active-state tint when key is stored); modal-style panel with `type="password"` input, Save and Remove key buttons, inline format validation error
-- `byokKey` state initialised from `localStorage` (`byok_api_key`) on mount; `handleSaveByokKey` writes/removes from `localStorage`
+- `byokKey` state initialised from `sessionStorage` (`byok_api_key`) on mount; `handleSaveByokKey` writes/removes from `sessionStorage` (clears on tab close — safer than `localStorage`)
 - Fetch body spreads `{ anthropic_api_key: byokKey }` only when `BYOK_ENABLED && byokKey`
 
 **To activate:** Set `BYOK_ENABLED=true` in Railway env vars AND `VITE_BYOK_ENABLED=true` in Vercel env vars, then redeploy both services.
@@ -1038,7 +1162,7 @@ Shape lookup at the end of the block calls `get_shape(group_route, group_dir)`. 
 **Still out of scope (deferred):**
 - Key validation endpoint (pre-flight test call to Anthropic)
 - Server-side key storage of any kind
-- Encrypting the key at rest in `localStorage`
+- Encrypting the key at rest in `sessionStorage`
 - Usage or cost dashboard for BYOK users
 - Auto-detecting when the server key is exhausted and prompting for BYOK
 

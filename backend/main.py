@@ -330,6 +330,35 @@ def _rank_routes(
     return ranked
 
 
+def _rank_bus_routes(
+    bus_ranked: list[tuple],
+) -> list[tuple[float, "int | None", object]]:
+    """
+    Normalise wait semantics for bus routes returned by find_bus_routes() or
+    find_bus_transfer_routes().
+
+    find_bus_routes() internally computes wait from live arrivals and stores it
+    as a plain int (defaulting to 0 when no data).  This function re-expresses
+    the wait as int | None to match _rank_routes() output:
+      - wait > 0  → keep as-is (bus is N minutes away)
+      - wait == 0 → keep as 0 (bus is Due — not "no data"; bus routes are only
+                    built when a live arrival exists, so 0 always means Due)
+      - wait is None → keep as None (should not occur but handled defensively)
+
+    The total is already correct (computed inside find_bus_routes as
+    route.total_minutes_no_wait + wait_min).  We return it unchanged.
+
+    Returns list of (total, wait, route) with wait typed as int | None,
+    re-sorted by total ascending.
+    """
+    result: list[tuple] = []
+    for total, wait, route in bus_ranked:
+        normalised_wait: "int | None" = int(wait) if wait is not None else None
+        result.append((float(total), normalised_wait, route))
+    result.sort(key=lambda x: x[0])
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Prompt building
 # ---------------------------------------------------------------------------
@@ -607,7 +636,7 @@ async def recommend(request: RouteRequest, http_request: Request):
                         dest_lat=dest_coords[0],
                         dest_lon=dest_coords[1],
                         origin_stations=origin_stations,
-                        n_routes=3,
+                        n_routes=5,
                     ),
                     arrival_lookup,
                 )
@@ -640,10 +669,34 @@ async def recommend(request: RouteRequest, http_request: Request):
                         )
                     except Exception:
                         traceback.print_exc()
+                # Normalise bus wait semantics (int | None) to match
+                # _rank_routes() output before merging with train results.
+                if bus_ranked:
+                    bus_ranked = _rank_bus_routes(bus_ranked)
                 ranked_routes = sorted(
                     ranked_routes + bus_ranked,
                     key=lambda x: x[0],
                 )[:5]
+
+                # Deduplicate routes with identical leg fingerprints — the
+                # unified graph may surface bus-only paths that duplicate
+                # find_bus_routes() results; keep only the first occurrence.
+                def _route_fingerprint(route):
+                    return tuple(
+                        (leg.leg_type,
+                         getattr(leg, "line_code", ""),
+                         getattr(leg, "from_mapid", ""),
+                         getattr(leg, "to_mapid", ""))
+                        for leg in route.legs
+                    )
+                seen_fps: set = set()
+                deduped: list = []
+                for _total, _wait, _route in ranked_routes:
+                    fp = _route_fingerprint(_route)
+                    if fp not in seen_fps:
+                        seen_fps.add(fp)
+                        deduped.append((_total, _wait, _route))
+                ranked_routes = deduped
             except Exception:
                 traceback.print_exc()
 

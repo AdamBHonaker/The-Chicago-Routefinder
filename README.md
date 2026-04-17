@@ -45,8 +45,7 @@ See [PYTHON_TERMINAL_TEST_STARTUP_INSTRUCTIONS.md](PYTHON_TERMINAL_TEST_STARTUP_
 # Backend
 cd backend
 pip install -r requirements.txt
-python fetch_gtfs.py          # download CTA GTFS data
-python fetch_street_graph.py  # download Chicago street graph
+python fetch_gtfs.py          # download CTA GTFS data (street graph is pre-built via Git LFS)
 uvicorn main:app --reload
 
 # Frontend (separate terminal)
@@ -70,6 +69,6 @@ Standalone scripts in `backend/` that run independently of the server:
 - [cta_app_handoff_prompt.md](cta_app_handoff_prompt.md) — Full project brief, architecture, decisions, and phase history
 - [MAP_IMPLEMENTATION_PLAN.md](MAP_IMPLEMENTATION_PLAN.md) — Map feature design decisions and implementation plan
 - [WEATHER&CROWDEDNESS_FEATURE_HANDOFF.md](WEATHER&CROWDEDNESS_FEATURE_HANDOFF.md) — Weather and crowdedness feature design
-- [FEATURE_IMPLEMENTATION_PLANS.md](FEATURE_IMPLEMENTATION_PLANS.md) — Chunked implementation plans (Features A–F) and post-launch enhancement ideas
-- [BUGS_TO_BE_FIXED.md](BUGS_TO_BE_FIXED.md) — Open bugs (2 🟢 low-priority deferred); [BUGS_FIXED_HISTORY.md](BUGS_FIXED_HISTORY.md) — Log of all resolved bugs
+- [FEATURE_IMPLEMENTATION_PLANS.md](FEATURE_IMPLEMENTATION_PLANS.md) — Chunked implementation plans (Features A–J) and post-launch enhancement ideas
+- [BUGS_TO_BE_FIXED.md](BUGS_TO_BE_FIXED.md) — Open bugs (2 🔴 high, 4 🟡 medium, 6 🟢 low); [BUGS_FIXED_HISTORY.md](BUGS_FIXED_HISTORY.md) — Log of all resolved bugs
 - [HUMAN_TODO.md](HUMAN_TODO.md) — Tasks requiring human action (accounts, API keys, deployment steps)

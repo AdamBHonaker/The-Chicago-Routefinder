@@ -29,16 +29,15 @@ You need **two terminal windows open at the same time**: one for the backend (Py
    ```
 
 ### Data files (first-time or after re-downloading)
-These files are large and gitignored — they live only on your local machine. If they are missing, run these **from the `backend/` folder** before starting the server:
+The GTFS data is large and gitignored — it lives only on your local machine. If it is missing, run this **from the `backend/` folder** before starting the server:
 
 ```
 python fetch_gtfs.py
-python fetch_street_graph.py
 ```
 
 - `fetch_gtfs.py` downloads CTA GTFS static data (~354 MB) to `backend/gtfs_data/`
-- `fetch_street_graph.py` downloads the OSMnx street graph (~155 MB) to `backend/street_graph.graphml`
-- Both downloads take a few minutes. Run them once; re-run only when you want fresh CTA schedule data.
+- The OSMnx street graph (`backend/street_graph.graphml`) is **pre-built and committed to the repo via Git LFS** — it downloads automatically with `git pull` and does **not** need to be regenerated. Only run `python fetch_street_graph.py` if you need to rebuild it with a different bounding box.
+- GTFS download takes a few minutes. Run it once; re-run only when you want fresh CTA schedule data.
 
 ---
 
@@ -103,7 +102,6 @@ If CTA publishes a new GTFS feed or you want fresh schedule data, stop the backe
 ```
 cd "C:\Users\Adam & Serena\OneDrive\Documents\GitHub\CTA-Transit-PWA\backend"
 python fetch_gtfs.py
-python fetch_street_graph.py
 ```
 
-Then restart the backend normally.
+Then restart the backend normally. The street graph does **not** need to be re-downloaded — it is stored in Git LFS.

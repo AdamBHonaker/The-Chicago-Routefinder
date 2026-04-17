@@ -167,7 +167,7 @@ Decisions finalized 2026-04-09. All chunks below are designed to be worked on an
 **What to build:**
 - A `<MapView route={route} />` component
 - Initializes a MapLibre map with:
-  - Style: `https://tiles.openfreemap.org/styles/positron`
+  - Style: `https://tiles.openfreemap.org/styles/liberty` *(Positron was dropped — see decisions table above)*
   - Initial center: Chicago (`[-87.65, 41.85]`), zoom 11 (shown before route data)
   - Navigation controls disabled by default (map is locked)
 - Exposes a "🔓 Unlock map" button, absolutely positioned top-left within the route padding area

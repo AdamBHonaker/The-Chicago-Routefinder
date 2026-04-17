@@ -1,12 +1,14 @@
 """
-Transit graph builder and route finder for the CTA train network.
+Transit graph builder and route finder for the CTA transit network.
 
 Builds a NetworkX directed weighted graph from CTA GTFS static data.
 
-Nodes:  train parent stations (mapids 40000–49999)
+Nodes:  train parent stations (mapids 40000–49999) and bus stops (IDs 0–29999)
 Edges:
   - Transit:  consecutive stops on the same trip; weight = scheduled minutes
   - Transfer: inter-station transfer points (from transfers.txt); weight = 2 min
+  - Walk:     train↔bus transfer connections within 0.15 miles; weight = street
+              walk minutes (Feature B — intermodal routing)
 
 The graph is built once and cached for the lifetime of the process.
 
@@ -26,7 +28,7 @@ from pathlib import Path
 
 import networkx as nx
 
-from gtfs_loader import GTFS_DIR, _haversine_miles, find_nearest_train_stations
+from gtfs_loader import GTFS_DIR, _haversine_miles, find_nearest_train_stations, find_nearest_bus_stops
 from walking import (
     walk_minutes as street_walk_minutes,
     walk_path as street_walk_path,
@@ -67,6 +69,10 @@ _TARGET_NOON_MINUTES = 720.0
 # call. The copy is created once per thread (lazily on first request) and reused
 # for all subsequent requests on that thread.
 _thread_local: threading.local = threading.local()
+
+# Cache populated by _build_graph() so get_bus_stop_sequences() can return
+# it without re-streaming stop_times.txt a second time.
+_bus_seq_cache: dict[tuple[str, str], list[tuple]] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -254,39 +260,47 @@ def _parse_gtfs_time(t: str) -> float:
     return h * 60.0 + m + s / 60.0
 
 
-def _stream_stop_sequences(
-    candidate_trips: dict[str, str],   # {trip_id: route_id} — all weekday candidates
-    trip_direction:  dict[str, str],   # {trip_id: direction_id}
-    platform_to_parent: dict[str, str],
-) -> dict[str, list[tuple[str, float]]]:
+def _stream_all_stop_sequences(
+    train_candidates:   dict[str, str],   # {trip_id: route_id}  — train weekday trips
+    train_dirs:         dict[str, str],   # {trip_id: direction_id}
+    bus_candidates:     dict[str, str],   # {trip_id: route_id}  — bus weekday trips
+    bus_dirs:           dict[str, str],   # {trip_id: direction_id}
+    platform_to_parent: dict[str, str],   # {platform_stop_id: parent_mapid}
+    bus_stop_lookup:    dict[str, dict],  # {stop_id: {name, lat, lon}}
+    bus_route_map:      dict[str, str],   # {route_id: route_short_name}
+) -> tuple[dict[str, list[tuple[str, float]]], dict[tuple[str, str], list[tuple]]]:
     """
-    Stream stop_times.txt once, collecting ordered (parent_mapid, arrival_min)
-    sequences for all candidate trip IDs.  After streaming, one trip per
-    (route_id, direction_id) is selected — the one whose first-stop departure
-    is closest to noon — giving representative midday in-vehicle times.
+    Single-pass stream of stop_times.txt that simultaneously builds:
+      - train_selected : {trip_id: [(parent_mapid, arrival_min), ...]}
+                         (same output as the old _stream_stop_sequences)
+      - bus_result     : {(route_short_name, direction_id): [(stop_id, stop_name,
+                           lat, lon, arr_minutes), ...]}
+                         (same output as get_bus_stop_sequences)
 
-    stop_times.txt is 5.8 M rows; this function reads the whole file once and
-    keeps only a few thousand rows across all candidates.
+    Replaces the old _stream_stop_sequences and eliminates the second
+    dedicated stop_times.txt pass that get_bus_stop_sequences previously
+    performed.
 
-    Returns {trip_id: [(mapid, arrival_minutes), ...]} for the selected trips only.
+    Selection strategy (unchanged from original functions):
+      Train — one representative trip per (route_id, direction_id), chosen as
+              the weekday trip whose first-stop departure is closest to noon.
+      Bus   — same midday-targeting strategy per (route_short_name, direction_id).
     """
-    candidate_set = set(candidate_trips)   # fast membership test; no list pre-allocation
-    raw: dict[str, list] = defaultdict(list)
-
-    print("[transit_graph] Streaming stop_times.txt …")
+    print("[transit_graph] Streaming stop_times.txt (unified train+bus pass) …")
     t0 = time.time()
+
+    # --- raw accumulators ---
+    train_raw: dict[str, list] = {tid: [] for tid in train_candidates}
+    bus_raw:   dict[str, list] = {tid: [] for tid in bus_candidates}
+
+    all_candidate_tids = set(train_candidates) | set(bus_candidates)
     rows_read = 0
 
     with open(GTFS_DIR / "stop_times.txt", encoding="utf-8-sig") as f:
         for row in csv.DictReader(f):
             rows_read += 1
             tid = row.get("trip_id", "").strip()
-            if tid not in candidate_set:
-                continue
-
-            sid = row.get("stop_id", "").strip()
-            parent = platform_to_parent.get(sid)
-            if not parent:
+            if tid not in all_candidate_tids:
                 continue
 
             arr_str = (row.get("arrival_time") or row.get("departure_time") or "").strip()
@@ -299,36 +313,87 @@ def _stream_stop_sequences(
             except (ValueError, IndexError):
                 continue
 
-            raw[tid].append((seq, parent, arr_min))
+            if tid in train_raw:
+                sid = row.get("stop_id", "").strip()
+                parent = platform_to_parent.get(sid, sid)
+                train_raw[tid].append((seq, parent, arr_min))
 
-    elapsed = time.time() - t0
-    print(f"[transit_graph] Streamed {rows_read:,} rows in {elapsed:.1f}s")
+            if tid in bus_raw:
+                sid = row.get("stop_id", "").strip()
+                if sid in bus_stop_lookup:
+                    bus_raw[tid].append((seq, sid, arr_min))
 
-    # Sort each trip's stops and record first-stop departure time
-    sorted_raw: dict[str, list] = {}
-    first_arrival: dict[str, float] = {}
-    for tid, rows in raw.items():
+    print(
+        f"[transit_graph] Unified stream: {rows_read:,} rows in {time.time() - t0:.1f}s"
+    )
+
+    # ------------------------------------------------------------------ #
+    # Train side — identical post-processing to old _stream_stop_sequences
+    # ------------------------------------------------------------------ #
+    train_sorted: dict[str, list] = {}
+    train_first:  dict[str, float] = {}
+    for tid, rows in train_raw.items():
         if not rows:
             continue
         rows.sort(key=lambda x: x[0])
-        sorted_raw[tid] = rows
-        first_arrival[tid] = rows[0][2]   # arrival_min of stop_sequence=min
+        train_sorted[tid] = rows
+        train_first[tid]  = rows[0][2]
 
-    # For each (route_id, direction_id) group, pick the trip closest to noon
-    groups: dict[tuple[str, str], list[str]] = defaultdict(list)
-    for tid in sorted_raw:
-        rid = candidate_trips[tid]
-        did = trip_direction.get(tid, "0")
-        groups[(rid, did)].append(tid)
+    train_groups: dict[tuple[str, str], list[str]] = {}
+    for tid in train_sorted:
+        rid = train_candidates[tid]
+        did = train_dirs.get(tid, "0")
+        train_groups.setdefault((rid, did), []).append(tid)
 
-    selected: dict[str, list[tuple[str, float]]] = {}
-    for (rid, did), tids in groups.items():
-        best = min(tids, key=lambda t: abs(first_arrival.get(t, 0.0) - _TARGET_NOON_MINUTES))
-        selected[best] = [(mapid, arr_min) for _, mapid, arr_min in sorted_raw[best]]
+    train_selected: dict[str, list[tuple[str, float]]] = {}
+    for (rid, did), tids in train_groups.items():
+        best = min(tids, key=lambda t: abs(train_first.get(t, 0.0) - _TARGET_NOON_MINUTES))
+        seq_list: list[tuple[str, float]] = []
+        for _, parent, arr_min in train_sorted[best]:
+            seq_list.append((parent, arr_min))
+        train_selected[best] = seq_list
 
-    print(f"[transit_graph] Selected {len(selected)} representative trips "
-          f"({len(groups)} line/direction pairs, targeting noon departures)")
-    return selected
+    print(f"[transit_graph] Selected {len(train_selected)} representative train trips "
+          f"({len(train_groups)} line/direction pairs, targeting noon departures)")
+
+    # ------------------------------------------------------------------ #
+    # Bus side — mirrors get_bus_stop_sequences post-processing exactly
+    # ------------------------------------------------------------------ #
+    bus_sorted: dict[str, list] = {}
+    bus_first:  dict[str, float] = {}
+    for tid, rows in bus_raw.items():
+        if not rows:
+            continue
+        rows.sort(key=lambda x: x[0])
+        bus_sorted[tid] = rows
+        bus_first[tid]  = rows[0][2]
+
+    bus_groups: dict[tuple[str, str], list[str]] = {}
+    for tid in bus_sorted:
+        rid = bus_candidates[tid]
+        did = bus_dirs.get(tid, "0")
+        bus_groups.setdefault((rid, did), []).append(tid)
+
+    bus_result: dict[tuple[str, str], list[tuple]] = {}
+    for (rid, did), tids in bus_groups.items():
+        best  = min(tids, key=lambda t: abs(bus_first.get(t, 0.0) - _TARGET_NOON_MINUTES))
+        short = bus_route_map.get(rid, rid)
+        seq_entries: list[tuple] = []
+        for _, sid, arr_min in bus_sorted[best]:
+            meta = bus_stop_lookup.get(sid, {})
+            seq_entries.append((
+                sid,
+                meta.get("name", sid),
+                meta.get("lat", 0.0),
+                meta.get("lon", 0.0),
+                arr_min,
+            ))
+        bus_result[(short, did)] = seq_entries
+
+    n_pairs = len(bus_result)
+    print(f"[transit_graph] Bus sequences built: {n_pairs} route/direction pairs")
+
+    return train_selected, bus_result
 
 
 def _load_transfer_edges(
@@ -390,13 +455,32 @@ def _build_graph() -> tuple[nx.DiGraph, dict[str, dict]]:
     platform_to_parent = _load_platform_to_parent()
     train_route_ids    = _load_train_route_ids()
     selected_trips, trip_dirs = _load_representative_trips(train_route_ids)
-    stop_seqs          = _stream_stop_sequences(selected_trips, trip_dirs, platform_to_parent)
+
+    # Load bus metadata so the unified streamer can process both train and bus
+    # stop_times in a single pass — eliminating the second file stream that
+    # get_bus_stop_sequences() previously performed.
+    bus_route_map   = _load_bus_route_map()
+    bus_stop_lookup = _load_bus_stop_lookup()
+    bus_trip_route, bus_trip_dir = _load_bus_candidate_trips(set(bus_route_map.keys()))
+
+    stop_seqs, bus_result = _stream_all_stop_sequences(
+        selected_trips, trip_dirs,
+        bus_trip_route, bus_trip_dir,
+        platform_to_parent,
+        bus_stop_lookup,
+        bus_route_map,
+    )
+
+    # Cache bus sequences so get_bus_stop_sequences() returns them immediately
+    # without re-streaming stop_times.txt.
+    global _bus_seq_cache
+    _bus_seq_cache = bus_result
 
     G = nx.DiGraph()
 
     # Add all parent station nodes with metadata
     for mapid, meta in parent_stations.items():
-        G.add_node(mapid, **meta)
+        G.add_node(mapid, node_type="train", **meta)
 
     # Build transit edges from stop sequences
     # edge_candidates[(from, to)] = list of (route_id, line_name, minutes)
@@ -433,7 +517,9 @@ def _build_graph() -> tuple[nx.DiGraph, dict[str, dict]]:
             route_id=best_route,
             direction_id=best_dir,
             line=best_line,
+            line_code=best_route,
             edge_type="transit",
+            mode="train",
         )
         transit_edge_count += 1
 
@@ -447,9 +533,75 @@ def _build_graph() -> tuple[nx.DiGraph, dict[str, dict]]:
                            line="transfer", edge_type="transfer")
                 transfer_edge_count += 1
 
+    # ── Chunk 1 (Feature B): Add bus stop nodes ────────────────────────────
+    # Bus stop IDs (0–29999) never collide with train mapids (40000–49999).
+    for stop_id, stop in bus_stop_lookup.items():
+        G.add_node(
+            stop_id,
+            node_type="bus",
+            lat=stop["lat"],
+            lon=stop["lon"],
+            name=stop["name"],
+        )
+    print(f"[transit_graph] Added {len(bus_stop_lookup)} bus stop nodes to graph")
+
+    # ── Chunk 2 (Feature B): Add bus route edges ───────────────────────────
+    # Reuse the already-cached bus sequences — no second stop_times.txt scan.
+    bus_sequences = get_bus_stop_sequences()
+    bus_edge_count = 0
+    for (short_name, did), stops in bus_sequences.items():
+        if len(stops) < 2:
+            continue
+        for i in range(len(stops) - 1):
+            from_stop = stops[i]
+            to_stop   = stops[i + 1]
+            from_id   = from_stop[0]   # stop_id
+            to_id     = to_stop[0]     # stop_id
+            from_arr  = from_stop[4]   # arr_minutes since midnight
+            to_arr    = to_stop[4]     # arr_minutes since midnight
+            leg_min   = max(0.5, to_arr - from_arr)
+            G.add_edge(
+                from_id, to_id,
+                weight=leg_min,
+                route_id=short_name,
+                direction_id=did,
+                line=did,          # direction_id; no direction string in GTFS static data
+                line_code=short_name,
+                edge_type="transit",
+                mode="bus",
+            )
+            bus_edge_count += 1
+    print(f"[transit_graph] Added {bus_edge_count} bus transit edges to graph")
+
+    # ── Chunk 3 (Feature B): Add train↔bus transfer walk edges ────────────
+    # Bidirectional walk edges between each train station and nearby bus stops
+    # within 0.15 miles (street walk ≤ 5 min). These enable Dijkstra to
+    # discover intermodal paths naturally alongside pure-train/bus paths.
+    intermodal_edge_count = 0
+    _TRANSFER_RADIUS_MILES = 0.15
+    _TRANSFER_WALK_CAP_MIN = 5.0
+
+    for mapid, station in parent_stations.items():
+        s_lat, s_lon = station["lat"], station["lon"]
+        for stop_id, stop in bus_stop_lookup.items():
+            dist = _haversine_miles(s_lat, s_lon, stop["lat"], stop["lon"])
+            if dist > _TRANSFER_RADIUS_MILES:
+                continue
+            walk_min = street_walk_minutes(s_lat, s_lon, stop["lat"], stop["lon"])
+            if walk_min > _TRANSFER_WALK_CAP_MIN:
+                continue
+            G.add_edge(mapid, stop_id,
+                       weight=walk_min, edge_type="walk", route_id="walk", mode="walk")
+            G.add_edge(stop_id, mapid,
+                       weight=walk_min, edge_type="walk", route_id="walk", mode="walk")
+            intermodal_edge_count += 2
+
+    print(f"[transit_graph] Added {intermodal_edge_count} train↔bus transfer walk edges")
     print(
-        f"[transit_graph] Graph ready: {G.number_of_nodes()} stations, "
-        f"{transit_edge_count} transit edges, {transfer_edge_count} transfer edges "
+        f"[transit_graph] Graph ready: {G.number_of_nodes()} nodes, "
+        f"{G.number_of_edges()} edges "
+        f"(train: {transit_edge_count} transit + {transfer_edge_count} transfer; "
+        f"bus: {bus_edge_count} transit + {intermodal_edge_count} intermodal walk) "
         f"({time.time() - t0:.1f}s)"
     )
     return G, parent_stations
@@ -461,7 +613,8 @@ def warm_up() -> None:
     so the first user request is fast.
     Call this from the FastAPI lifespan or startup event.
     """
-    _build_graph()
+    G, _ = _build_graph()
+    print(f"[transit_graph] Graph size: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
     get_bus_stop_sequences()
     _build_stop_to_routes()
     _build_shape_lookup()
@@ -739,15 +892,9 @@ def _load_bus_candidate_trips(
     return trip_route, trip_dir
 
 
-@lru_cache(maxsize=1)
 def get_bus_stop_sequences() -> dict[tuple[str, str], list[tuple]]:
     """
     Build and cache the bus stop sequence table.
-
-    Streams stop_times.txt once (a second dedicated pass after train graph build),
-    collects sequences for all weekday bus candidate trips, then selects the one
-    per route/direction whose first-stop departure is closest to noon — the same
-    midday-targeting strategy used for train representative trips.
 
     Returns:
         {(route_short_name, direction_id): [
@@ -755,7 +902,20 @@ def get_bus_stop_sequences() -> dict[tuple[str, str], list[tuple]]:
         ]}
         Sequences are ordered by stop_sequence. arr_minutes is minutes since
         midnight for the representative midday trip.
+
+    Fast path: if _build_graph() has already run (the normal case), the result
+    is returned directly from _bus_seq_cache with no I/O.
+
+    Fallback path: if called before _build_graph() (e.g. in isolated tests),
+    the function streams stop_times.txt independently — identical behaviour to
+    the original implementation.
     """
+    # Fast path — _build_graph() already populated the cache during startup.
+    if _bus_seq_cache is not None:
+        return _bus_seq_cache
+
+    # Fallback path — should only be reached in tests or unusual call orders.
+    print("[transit_graph] get_bus_stop_sequences: cache miss — streaming independently …")
     print("[transit_graph] Building bus stop sequence table …")
     t0 = time.time()
 
@@ -843,6 +1003,19 @@ def get_bus_stop_sequences() -> dict[tuple[str, str], list[tuple]]:
 # Path → Route conversion
 # ---------------------------------------------------------------------------
 
+def _resolve_node(node: str, stations: dict, G: "nx.DiGraph") -> tuple[str, float, float]:
+    """Return (name, lat, lon) for a train station or bus stop node.
+
+    Train stations are found in the stations dict; bus stops fall back to
+    graph node attributes (Feature B — intermodal routing).
+    """
+    if node in stations:
+        s = stations[node]
+        return s["name"], s["lat"], s["lon"]
+    node_data = G.nodes.get(node, {})
+    return node_data.get("name", str(node)), node_data.get("lat", 0.0), node_data.get("lon", 0.0)
+
+
 def _path_to_route(
     path: list[str],
     G: nx.DiGraph,
@@ -872,15 +1045,13 @@ def _path_to_route(
         edge_type = edge.get("edge_type", "transit")
         weight    = edge.get("weight", 0.0)
 
-        # ── Walk from user location to first boarding station ──────────────
+        # ── Walk from user location to first boarding station or bus stop ────
         if from_node == ORIGIN:
-            to_meta  = stations.get(to_node, {})
+            to_name, to_lat, to_lon = _resolve_node(to_node, stations, G)
             walk_min = origin_walk_lookup.get(to_node, weight)
-            to_lat   = to_meta.get("lat", origin_lat)
-            to_lon   = to_meta.get("lon", origin_lon)
             legs.append(WalkLeg(
                 from_name="Your location",
-                to_name=to_meta.get("name", to_node),
+                to_name=to_name,
                 minutes=walk_min,
                 path_points=street_walk_path(origin_lat, origin_lon, to_lat, to_lon),
                 directions=street_walk_directions(origin_lat, origin_lon, to_lat, to_lon),
@@ -889,13 +1060,12 @@ def _path_to_route(
             idx += 1
             continue
 
-        # ── Walk from last alighting station to destination ────────────────
+        # ── Walk from last alighting station or bus stop to destination ──────
         if to_node == DEST:
-            from_meta = stations.get(from_node, {})
+            from_name, from_lat, from_lon = _resolve_node(from_node, stations, G)
             walk_min  = dest_walk_lookup.get(from_node, weight)
-            from_lat  = from_meta.get("lat", dest_lat)
-            from_lon  = from_meta.get("lon", dest_lon)
-            # Feature A: use the best station exit if one is known
+            # Feature A: use the best station exit if one is known.
+            # best_exit() returns None for bus stop IDs — no-op for bus alighting.
             exit_info = best_exit(from_node, dest_lat, dest_lon)
             if exit_info is not None:
                 from_lat  = exit_info["lat"]
@@ -903,7 +1073,7 @@ def _path_to_route(
                 walk_min  = exit_info["walk_minutes"]
             label = exit_info["label"] if exit_info else ""
             legs.append(WalkLeg(
-                from_name=from_meta.get("name", from_node),
+                from_name=from_name,
                 to_name="Your destination",
                 minutes=walk_min,
                 path_points=street_walk_path(from_lat, from_lon, dest_lat, dest_lon),
@@ -914,17 +1084,31 @@ def _path_to_route(
             idx += 1
             continue
 
-        # ── Inter-station transfer walk ────────────────────────────────────
+        # ── Inter-station transfer walk (train↔train from transfers.txt) ─────
         if edge_type == "transfer":
-            from_meta = stations.get(from_node, {})
-            to_meta   = stations.get(to_node,   {})
-            flat = from_meta.get("lat", 0.0)
-            flon = from_meta.get("lon", 0.0)
-            tlat = to_meta.get("lat",  0.0)
-            tlon = to_meta.get("lon",  0.0)
+            from_name, flat, flon = _resolve_node(from_node, stations, G)
+            to_name,   tlat, tlon = _resolve_node(to_node,   stations, G)
             legs.append(WalkLeg(
-                from_name=from_meta.get("name", from_node),
-                to_name=to_meta.get("name", to_node),
+                from_name=from_name,
+                to_name=to_name,
+                minutes=weight,
+                path_points=street_walk_path(flat, flon, tlat, tlon),
+                directions=street_walk_directions(flat, flon, tlat, tlon),
+            ))
+            walk_total += weight
+            idx += 1
+            continue
+
+        # ── Mid-path walk edge (train↔bus transfer, Feature B) ─────────────
+        # Walk edges between train stations and bus stops have edge_type="walk".
+        # They are distinct from ORIGIN/DEST walk legs (handled above) and from
+        # transfers.txt transfer edges (edge_type="transfer").
+        if edge_type == "walk":
+            from_name, flat, flon = _resolve_node(from_node, stations, G)
+            to_name,   tlat, tlon = _resolve_node(to_node,   stations, G)
+            legs.append(WalkLeg(
+                from_name=from_name,
+                to_name=to_name,
                 minutes=weight,
                 path_points=street_walk_path(flat, flon, tlat, tlon),
                 directions=street_walk_directions(flat, flon, tlat, tlon),
@@ -953,33 +1137,38 @@ def _path_to_route(
 
         # Detect same-station line change: if previous leg was transit and
         # ended at the same node where this one starts, insert a transfer walk.
+        # Bus stop IDs (0–29999) and train mapids (40000+) never collide, so
+        # this comparison is safe for both node types.
         if legs and isinstance(legs[-1], TransitLeg) and legs[-1].to_mapid == board_node:
-            board_meta = stations.get(board_node, {})
-            blat = board_meta.get("lat", 0.0)
-            blon = board_meta.get("lon", 0.0)
+            board_xfer_name, blat, blon = _resolve_node(board_node, stations, G)
             legs.append(WalkLeg(
-                from_name=board_meta.get("name", board_node),
-                to_name=board_meta.get("name", board_node),
+                from_name=board_xfer_name,
+                to_name=board_xfer_name,
                 minutes=_TRANSFER_MINUTES,
                 path_points=[[blat, blon], [blat, blon]],
                 directions=[{"street": "Change trains", "direction": "", "minutes": _TRANSFER_MINUTES}],
             ))
             walk_total += _TRANSFER_MINUTES
 
-        board_meta  = stations.get(board_node,  {})
-        alight_meta = stations.get(alight_node, {})
+        board_name,  board_lat,  board_lon  = _resolve_node(board_node,  stations, G)
+        alight_name, alight_lat, alight_lon = _resolve_node(alight_node, stations, G)
+
+        # For bus edges, line_code comes from the edge attribute (same as route_id,
+        # but being explicit is safer). For train edges, group_route is the line code.
+        line_code = edge.get("line_code") or group_route
+
         legs.append(TransitLeg(
             line=group_line,
-            line_code=group_route,
-            from_station=board_meta.get("name",  board_node),
+            line_code=line_code,
+            from_station=board_name,
             from_mapid=board_node,
-            to_station=alight_meta.get("name",   alight_node),
+            to_station=alight_name,
             to_mapid=alight_node,
             minutes=seg_minutes,
             shape_points=clip_shape(
-                get_shape(group_route, group_dir),
-                board_meta.get("lat", 0.0),  board_meta.get("lon", 0.0),
-                alight_meta.get("lat", 0.0), alight_meta.get("lon", 0.0),
+                get_shape(line_code, group_dir),
+                board_lat,  board_lon,
+                alight_lat, alight_lon,
             ),
         ))
         transit_total += seg_minutes
@@ -1088,6 +1277,22 @@ def find_routes(
             G.add_edge(mapid, DEST,
                        weight=dest_walk.get(mapid, 0.0),
                        edge_type="walk", route_id="walk", line="walk")
+
+    # Feature B: add virtual walk edges to/from nearby bus stops so Dijkstra
+    # can discover intermodal paths that start or end at a bus stop.
+    for stop in find_nearest_bus_stops(origin_lat, origin_lon):
+        sid = stop["stop_id"]
+        if sid in G.nodes:
+            G.add_edge(ORIGIN, sid,
+                       weight=stop["walk_minutes"], edge_type="walk",
+                       route_id="walk", mode="walk")
+
+    for stop in find_nearest_bus_stops(dest_lat, dest_lon):
+        sid = stop["stop_id"]
+        if sid in G.nodes:
+            G.add_edge(sid, DEST,
+                       weight=stop["walk_minutes"], edge_type="walk",
+                       route_id="walk", mode="walk")
 
     routes: list[Route] = []
     try:
