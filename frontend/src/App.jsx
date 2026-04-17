@@ -357,6 +357,7 @@ export default function App() {
       setResult({
         recommendation: renderMarkdown(data.recommendation),
         routes,
+        alerts: data.alerts || [],
         originCoords: data.origin_coords,
         destCoords:   data.dest_coords,
         busDataPartial: (data.bus_errors > 0) && !(data.bus_arrivals?.length),
@@ -495,6 +496,34 @@ export default function App() {
                     </p>
                   )}
                 </div>
+
+                {result.alerts?.length > 0 && (
+                  <div className="alerts-section">
+                    {result.alerts.slice(0, 3).map((alert) => (
+                      <div
+                        key={alert.alert_id}
+                        className={`alert-item${alert.is_major ? " alert-item--major" : " alert-item--minor"}`}
+                      >
+                        <span className="alert-headline">{alert.headline}</span>
+                        {alert.impact && (
+                          <span className="alert-impact">{alert.impact}</span>
+                        )}
+                      </div>
+                    ))}
+                    {result.alerts.length > 3 && (
+                      <p className="alerts-more">
+                        and{" "}
+                        <a
+                          href="https://www.transitchicago.com/travel-information/alerts/"
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          {result.alerts.length - 3} more
+                        </a>
+                      </p>
+                    )}
+                  </div>
+                )}
 
                 {result.routes.length > 0 && (
                   <section className="routes-section">

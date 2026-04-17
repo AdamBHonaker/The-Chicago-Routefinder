@@ -246,3 +246,91 @@ async def get_bus_arrivals(
                 all_arrivals.append(item)
 
     return sorted(all_arrivals, key=lambda a: a["arrives_in_minutes"]), n_errors
+
+
+# ---------------------------------------------------------------------------
+# Alerts API  (public — no key required)
+# ---------------------------------------------------------------------------
+
+ALERTS_BASE = "http://www.transitchicago.com/api/1.0/detailed_alerts.aspx"
+
+# Maps app-internal line_code values to the lowercase routeid the Alerts API expects
+_TRAIN_LINE_TO_ALERT_ID = {
+    "Red": "red", "Blue": "blue", "Brn": "brn", "G": "g",
+    "Org": "org", "P": "p", "Pink": "pink", "Y": "y",
+}
+
+
+async def _fetch_alerts_for_route(
+    session: aiohttp.ClientSession,
+    route_id: str,
+) -> list[dict]:
+    """Fetch active alerts for a single route id (train line or bus route number)."""
+    try:
+        params = {"outputType": "JSON", "routeid": route_id}
+        async with session.get(
+            ALERTS_BASE, params=params, timeout=aiohttp.ClientTimeout(total=5)
+        ) as resp:
+            data = await resp.json(content_type=None)
+    except Exception:
+        return []
+
+    alerts_raw = data.get("CTAAlerts", {}).get("Alert", [])
+    if isinstance(alerts_raw, dict):
+        alerts_raw = [alerts_raw]
+    if not isinstance(alerts_raw, list):
+        return []
+
+    alerts = []
+    for a in alerts_raw:
+        try:
+            severity = int(a.get("SeverityScore", 0) or 0)
+            impacted = a.get("ImpactedService", {}).get("Service", [])
+            if isinstance(impacted, dict):
+                impacted = [impacted]
+            affected_routes = [
+                s.get("ServiceId", "") for s in impacted if s.get("ServiceId")
+            ]
+            event_end = a.get("EventEnd") or None
+            if event_end == "":
+                event_end = None
+            alerts.append({
+                "alert_id": str(a.get("AlertId", "")),
+                "headline": a.get("Headline", ""),
+                "impact": a.get("Impact", ""),
+                "severity_score": severity,
+                "is_major": severity >= 7,
+                "event_end": event_end,
+                "affected_routes": affected_routes,
+            })
+        except Exception:
+            continue
+    return alerts
+
+
+async def get_alerts(route_ids: list[str]) -> list[dict]:
+    """
+    Fetch active CTA alerts for a list of route ids concurrently.
+    route_ids are Alerts API ids: lowercase train color or bus route number.
+    Deduplicates by alert_id (the same alert can affect multiple requested routes).
+    Returns [] if route_ids is empty.
+    """
+    if not route_ids:
+        return []
+
+    async with aiohttp.ClientSession() as session:
+        results = await asyncio.gather(
+            *[_fetch_alerts_for_route(session, rid) for rid in route_ids]
+        )
+
+    seen: set[str] = set()
+    deduped: list[dict] = []
+    for batch in results:
+        for alert in batch:
+            aid = alert["alert_id"]
+            if aid and aid not in seen:
+                seen.add(aid)
+                deduped.append(alert)
+
+    deduped.sort(key=lambda a: a["severity_score"], reverse=True)
+    return deduped

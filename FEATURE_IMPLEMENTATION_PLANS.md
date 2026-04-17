@@ -448,6 +448,44 @@ In `main.py`:
 
 ---
 
+# Feature H — Deduplicate Same-Line Station Candidates
+
+**Status: ✅ Complete (2026-04-17)**
+
+## Overview
+
+When the user is near a stretch of a single-line corridor (e.g., Lawrence / Argyle / Berwyn are all Red Line only), `find_nearest_train_stations()` returns all three as candidate origin nodes, producing near-duplicate routes that clutter the results.
+
+This feature adds a `_dedup_stations_by_line()` helper that keeps at most one station per unique set of transit lines served. The closest station is kept; others are dropped only when they introduce no new lines. A station near both the Red Line and the Brown Line is kept because it represents a genuinely different routing option.
+
+## Implementation (3 chunks, single file)
+
+**`backend/transit_graph.py`** — all changes:
+
+- **Chunk H-1:** `_dedup_stations_by_line(G, stations)` added as a module-level helper immediately above `find_routes()`. For each station (already sorted ascending by walk_minutes), inspects `G.edges(mapid, data=True)` to collect the `"line"` attribute on all `edge_type="transit"` edges. Keeps the station if `station_lines - covered_lines` is non-empty; otherwise drops it. Stations with no edges in the graph are always kept to prevent degenerate routing failures.
+- **Chunk H-2:** In `find_routes()`, after both `origin_stations` and `dest_stations` are populated and the null-check passes, applies `_dedup_stations_by_line(G_base, ...)` to each list before the ORIGIN/DEST virtual-node edges are added. Uses `G_base` (read-only, no thread-local copy needed).
+- **Chunk H-3:** Manual verification — origin `1131 W Winona St` now yields one Red Line candidate instead of three; origin near Belmont still yields both Red Line and Brown Line candidates.
+
+---
+
+# Feature I — CTA Alerts Integration
+
+**Status: ✅ Complete (2026-04-17)**
+
+## Overview
+
+After routes are calculated for a `/recommend` request, active service alerts are fetched from the CTA Detailed Alerts API for every transit line/route involved in the ranked results. Disruptions are surfaced to the rider in the UI and included in Claude's prompt so the recommendation can account for them. No API key required — the CTA Alerts API is public.
+
+## Implementation (3 chunks)
+
+**Chunk I-1 — `cta_client.py`:** `ALERTS_BASE` URL constant, `_TRAIN_LINE_TO_ALERT_ID` dict (maps internal line_code → Alerts API route id), `_fetch_alerts_for_route(session, route_id)` (single-route async fetch, timeout 5s, returns `[]` on any error), `get_alerts(route_ids)` (concurrent gather via `asyncio.gather`, dedup by `alert_id`, sorted by `severity_score` descending).
+
+**Chunk I-2 — `main.py`:** `get_alerts` and `_TRAIN_LINE_TO_ALERT_ID` imported from `cta_client`. `_alert_ids_from_routes(ranked_routes)` module-level helper extracts deduplicated Alerts API ids from all `TransitLeg`s (train codes mapped through `_TRAIN_LINE_TO_ALERT_ID`; bus route numbers used directly). Alerts fetched in `/recommend` immediately after `ranked_routes` finalized. `build_prompt()` gained `alerts: list[dict] | None = None` — alerts with `severity_score >= 5` appended as "Active service alerts on your route" block (major alerts prefixed "⚠ MAJOR"). `alerts` key added to response payload with 7 fields per alert.
+
+**Chunk I-3 — `App.jsx` / `App.css`:** `alerts` stored in result state from `data.alerts`. Rendered between recommendation text and route cards when non-empty. Major alerts (`is_major: true`) get red left border + bold red headline; minor alerts get yellow border. Impact type shown in muted uppercase below headline. Capped at 3 with "and N more" link to transitchicago.com/travel-information/alerts/. Alert styles in `App.css` (`.alerts-section`, `.alert-item`, `.alert-item--major`, `.alert-item--minor`, `.alert-headline`, `.alert-impact`, `.alerts-more`).
+
+---
+
 # Feature J — Deprecate `find_bus_routes()` in Favor of Unified Graph
 
 > **Note:** Labeled Feature J to avoid collision with Feature H (Deduplicate Same-Line Station Candidates) in `Feature_Prioritization.md`.

@@ -20,7 +20,7 @@ from gtfs_loader import (
     resolve_location, geocode_google, NEIGHBORHOOD_COORDS,
     fuzzy_match_neighborhood,
 )
-from cta_client import get_train_arrivals, get_bus_arrivals
+from cta_client import get_train_arrivals, get_bus_arrivals, get_alerts, _TRAIN_LINE_TO_ALERT_ID
 from transit_graph import (
     find_routes, find_bus_routes, find_bus_transfer_routes, warm_up, get_bus_stop_sequences,
     WalkLeg, TransitLeg, get_station_coords, get_station_by_name,
@@ -302,10 +302,7 @@ def _rank_routes(
                     dlon = to_coords[1] - from_coords[1]
 
                     if dlat == 0.0 and dlon == 0.0:
-                        # Degenerate: boarding and alighting station share coordinates
-                        print(f"[_rank_routes] degenerate bearing for leg "
-                              f"{first_transit.from_mapid}→{first_transit.to_mapid}; "
-                              f"falling back to min wait")
+                        pass  # identical coords — fall through to min(dest_map.values()) below
                     else:
                         best_score = float("-inf")
                         for dest_name, minutes in dest_map.items():
@@ -357,6 +354,22 @@ def _rank_bus_routes(
         result.append((float(total), normalised_wait, route))
     result.sort(key=lambda x: x[0])
     return result
+
+
+def _alert_ids_from_routes(ranked_routes: list[tuple]) -> list[str]:
+    """Return deduplicated Alerts API route ids for all transit legs in ranked_routes."""
+    seen: set[str] = set()
+    ids: list[str] = []
+    for _total, _wait, route in ranked_routes:
+        for leg in route.legs:
+            if not isinstance(leg, TransitLeg):
+                continue
+            code = leg.line_code or ""
+            alert_id = _TRAIN_LINE_TO_ALERT_ID.get(code, code)
+            if alert_id and alert_id not in seen:
+                seen.add(alert_id)
+                ids.append(alert_id)
+    return ids
 
 
 # ---------------------------------------------------------------------------
@@ -432,6 +445,7 @@ def build_prompt(
     transit_mode: str = "All",
     ranked_routes: list[tuple] | None = None,
     bus_fullness: str = "All",
+    alerts: list[dict] | None = None,
 ) -> str:
     mode_constraints = {
         "Train": "The rider wants TRAIN options only. Do not mention buses.",
@@ -490,14 +504,24 @@ def build_prompt(
 
     body = "\n\n".join(sections)
 
+    alert_section = ""
+    significant_alerts = [a for a in (alerts or []) if a.get("severity_score", 0) >= 5]
+    if significant_alerts:
+        alert_lines = []
+        for a in significant_alerts:
+            prefix = "⚠ MAJOR — " if a.get("is_major") else ""
+            impact = f" [{a['impact']}]" if a.get("impact") else ""
+            alert_lines.append(f"  * {prefix}{a['headline']}{impact}")
+        alert_section = "\n\nActive service alerts on your route:\n" + "\n".join(alert_lines)
+
     return (
         f"You are a helpful Chicago transit assistant. "
         f"A rider is at {origin} and wants to get to {destination}.\n\n"
         f"Rider preference: {mode_note}\n\n"
-        f"{body}\n\n"
+        f"{body}{alert_section}\n\n"
         "Lead with the single best option and explain why in plain English. "
         "Factor in total trip time including walking and waiting. "
-        "Note any delays. Keep it to 3-4 sentences — the rider is probably standing outside."
+        "Note any delays or active service alerts. Keep it to 3-4 sentences — the rider is probably standing outside."
     )
 
 
@@ -700,6 +724,10 @@ async def recommend(request: RouteRequest, http_request: Request):
             except Exception:
                 traceback.print_exc()
 
+    # ── Alerts ────────────────────────────────────────────────────────────────
+    alert_ids = _alert_ids_from_routes(ranked_routes)
+    alerts: list[dict] = await get_alerts(alert_ids) if alert_ids else []
+
     # ── Build prompt and call Claude ──────────────────────────────────────────
     prompt = build_prompt(
         origin=request.origin,
@@ -709,6 +737,7 @@ async def recommend(request: RouteRequest, http_request: Request):
         transit_mode=request.transit_mode,
         ranked_routes=ranked_routes or None,
         bus_fullness=request.bus_fullness,
+        alerts=alerts,
     )
 
     try:
@@ -735,6 +764,18 @@ async def recommend(request: RouteRequest, http_request: Request):
         "train_errors": n_train_errors,
         "bus_errors":   n_bus_errors,
         "origin_stations": [s["name"] for s in origin_stations],
+        "alerts": [
+            {
+                "alert_id": a["alert_id"],
+                "headline": a["headline"],
+                "impact": a["impact"],
+                "severity_score": a["severity_score"],
+                "is_major": a["is_major"],
+                "event_end": a["event_end"],
+                "affected_routes": a["affected_routes"],
+            }
+            for a in alerts
+        ],
         "routes": [
             {
                 "total_minutes": round(total),

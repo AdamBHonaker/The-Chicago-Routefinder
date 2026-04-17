@@ -1184,6 +1184,37 @@ def _path_to_route(
 
 
 # ---------------------------------------------------------------------------
+# Feature H — Same-line station deduplication
+# ---------------------------------------------------------------------------
+
+def _dedup_stations_by_line(G: nx.DiGraph, stations: list[dict]) -> list[dict]:
+    """
+    Given stations sorted by ascending walk_minutes, keep only the closest
+    station per unique set of lines served. Stations that introduce no new
+    lines are dropped (they would produce near-duplicate routes).
+
+    Edge case: a station with no edges in the graph is always included to
+    avoid silently breaking routing in degenerate cases.
+    """
+    covered_lines: set[str] = set()
+    result: list[dict] = []
+    for s in stations:
+        mapid = s.get("mapid", "")
+        if mapid not in G:
+            result.append(s)
+            continue
+        station_lines = {
+            data.get("line", "")
+            for _, _, data in G.edges(mapid, data=True)
+            if data.get("line") and data.get("edge_type") == "transit"
+        }
+        if not station_lines or station_lines - covered_lines:
+            result.append(s)
+            covered_lines |= station_lines
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -1239,6 +1270,11 @@ def find_routes(
 
     if not origin_stations or not dest_stations:
         return []
+
+    # Feature H: drop candidate stations that add no new transit lines vs.
+    # a closer same-line station — eliminates near-duplicate routes.
+    origin_stations = _dedup_stations_by_line(G_base, origin_stations)
+    dest_stations   = _dedup_stations_by_line(G_base, dest_stations)
 
     # Walk-time lookups for path→route conversion.
     # dest_walk is already computed by find_nearest_train_stations(walk_to_station=False)
