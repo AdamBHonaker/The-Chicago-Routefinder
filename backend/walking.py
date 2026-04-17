@@ -35,23 +35,32 @@ _DIRECTION_FULL = {
 
 _graph_lock = threading.Lock()
 _graph_cache: "nx.MultiDiGraph | None" = None
+_graph_load_failed: bool = False
 
 
-def _load_graph() -> "nx.MultiDiGraph":
-    """Load street graph once; subsequent calls return the cached instance."""
-    global _graph_cache
+def _load_graph() -> "nx.MultiDiGraph | None":
+    """Load street graph once; returns None (and never retries) if the file is missing or corrupt."""
+    global _graph_cache, _graph_load_failed
     if _graph_cache is not None:
         return _graph_cache
+    if _graph_load_failed:
+        return None
     with _graph_lock:
         if _graph_cache is not None:
             return _graph_cache
+        if _graph_load_failed:
+            return None
         if not GRAPH_PATH.exists():
-            raise FileNotFoundError(
-                f"Street graph not found at {GRAPH_PATH}. "
-                "Run `python fetch_street_graph.py` to download it."
-            )
+            print(f"[walking] Street graph not found at {GRAPH_PATH} — walking will use Haversine fallback.")
+            _graph_load_failed = True
+            return None
         print(f"[walking] Loading street graph from {GRAPH_PATH} ...")
-        G = ox.load_graphml(GRAPH_PATH)
+        try:
+            G = ox.load_graphml(GRAPH_PATH)
+        except Exception as e:
+            print(f"[walking] Failed to load street graph ({type(e).__name__}: {e}) — walking will use Haversine fallback.")
+            _graph_load_failed = True
+            return None
         print(f"[walking] Graph loaded: {G.number_of_nodes():,} nodes, {G.number_of_edges():,} edges")
         _graph_cache = G
     return _graph_cache
@@ -73,6 +82,8 @@ def walk_minutes(
     """
     try:
         G = _load_graph()
+        if G is None:
+            raise RuntimeError("street graph unavailable")
 
         # OSMnx convention: X = longitude, Y = latitude
         origin_node = ox.nearest_nodes(G, X=origin_lon, Y=origin_lat)
@@ -122,6 +133,8 @@ def walk_directions(
 
     try:
         G = _load_graph()
+        if G is None:
+            raise RuntimeError("street graph unavailable")
         origin_node = ox.nearest_nodes(G, X=origin_lon, Y=origin_lat)
         dest_node   = ox.nearest_nodes(G, X=dest_lon,   Y=dest_lat)
         node_ids    = nx.shortest_path(G, origin_node, dest_node, weight="length")
@@ -202,6 +215,8 @@ def walk_path(
     """
     try:
         G = _load_graph()
+        if G is None:
+            raise RuntimeError("street graph unavailable")
 
         origin_node = ox.nearest_nodes(G, X=origin_lon, Y=origin_lat)
         dest_node   = ox.nearest_nodes(G, X=dest_lon,   Y=dest_lat)

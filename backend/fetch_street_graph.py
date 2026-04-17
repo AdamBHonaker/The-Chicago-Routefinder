@@ -17,9 +17,10 @@ Geographic scope: Howard St (north) to 20th St (south), lakefront (east) to
 Pulaski Rd (west). Covers the current CTA service area with accurate
 street-network walk times. Points outside fall back to Haversine estimates.
 
-NOTE: This file is committed to the repo (backend/street_graph.graphml) so
-Railway does not need to download it at deploy time. Re-run this script locally
-whenever the bounding box changes, then commit the updated graphml.
+NOTE: This file is committed to the repo via Git LFS (backend/street_graph.graphml).
+When Railway (or another CI environment) checks out the repo without pulling LFS
+objects, the file is a small pointer stub. This script detects that case and
+re-downloads the graph from OpenStreetMap automatically.
 """
 
 import os
@@ -33,6 +34,27 @@ GRAPH_PATH = Path(__file__).parent / "street_graph.graphml"
 # Coverage: Howard St (north) → 20th St (south) | Lakefront (east) → Pulaski Rd (west)
 # TODO: expand south boundary toward 50th St when Railway memory allows
 BBOX = (-87.7260, 41.8560, -87.5200, 42.0190)
+
+
+def _is_lfs_pointer(path: Path) -> bool:
+    """Return True if the file is a Git LFS pointer stub rather than real data."""
+    try:
+        with open(path, "rb") as f:
+            first_line = f.readline(200)
+        return first_line.startswith(b"version https://git-lfs.github.com")
+    except Exception:
+        return False
+
+
+def _needs_download() -> bool:
+    """Return True if the graph file is absent, empty, or an LFS pointer."""
+    if not GRAPH_PATH.exists():
+        return True
+    if GRAPH_PATH.stat().st_size < 1024:
+        return True
+    if _is_lfs_pointer(GRAPH_PATH):
+        return True
+    return False
 
 
 def download_and_save() -> None:
@@ -60,20 +82,28 @@ def download_and_save() -> None:
 
 
 if __name__ == "__main__":
-    # In non-interactive environments (Railway, CI), skip the prompt and always
-    # re-download so the deploy never hangs waiting for input.
-    force = "--force" in sys.argv or bool(os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("CI"))
-    if GRAPH_PATH.exists():
+    force = "--force" in sys.argv
+
+    if _needs_download():
+        reason = "not found" if not GRAPH_PATH.exists() else ("LFS pointer" if _is_lfs_pointer(GRAPH_PATH) else "too small")
+        print(f"Street graph {reason} at {GRAPH_PATH}. Downloading from OpenStreetMap...")
+        if GRAPH_PATH.exists():
+            GRAPH_PATH.unlink()
+        download_and_save()
+    elif force:
+        print(f"Street graph exists. Re-downloading (--force).")
+        GRAPH_PATH.unlink()
+        download_and_save()
+    else:
         size_mb = GRAPH_PATH.stat().st_size / (1024 * 1024)
-        if force:
-            print(f"Street graph exists ({size_mb:.1f} MB). Re-downloading (non-interactive mode).")
+        if os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("CI"):
+            print(f"Street graph already present ({size_mb:.1f} MB). Keeping it (non-interactive; pass --force to re-download).")
         else:
             print(f"Street graph already exists ({size_mb:.1f} MB) at {GRAPH_PATH}.")
             answer = input("Re-download and overwrite? [y/N]: ").strip().lower()
-            if answer != "y":
+            if answer == "y":
+                GRAPH_PATH.unlink()
+                print("Old graph removed.")
+                download_and_save()
+            else:
                 print("Aborted. Existing graph kept.")
-                sys.exit(0)
-        GRAPH_PATH.unlink()
-        print("Old graph removed.")
-
-    download_and_save()
