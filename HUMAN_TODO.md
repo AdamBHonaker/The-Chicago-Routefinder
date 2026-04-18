@@ -18,7 +18,7 @@ Claude cannot do these. Check them off as you go.
 - [x] **CTA Bus Tracker API key** ✅
 - [x] **Anthropic API key** ✅
 - [x] **Google Maps API key** ✅
-  - Also add to Railway dashboard env vars (Settings → Variables) before deploying
+- [x] Also add to Railway dashboard env vars (Settings → Variables) before deploying
 
 ---
 

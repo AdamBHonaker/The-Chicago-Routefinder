@@ -1,7 +1,7 @@
 # Saved Prompts
 
 ## Scoping Prompt
-Your task is to begin and complete the scoping work needed for an enhancement feature idea I have. This documentation should be added as a new feature in the Feature_Prioritization.md document. The scoping work should be as detailed as needed to do future work efficiently, but no more than that. The work should be split into seperate chunks to make project work simple and easy to break up if needed.
+Your task is to begin and complete the scoping work needed for an enhancement feature idea I have. This documentation should be added as a new feature in the FEATURE_IMPLEMENTATION_PLANS.md document. The scoping work should be as detailed as needed, but no more. If needed, the work should be split into seperate chunks to simplify project work.
 
 --
 
@@ -9,8 +9,30 @@ Your task is to begin and complete the scoping work needed for an enhancement fe
 
 You are a master code writer and documentation updater. Your task is to develop and implement the code for Feature E in the selected file, and after writing this code, you should update the following files as needed:
 - cta_app_handoff_prompt.md
-- Feature_Prioritization.md
 - FEATURE_IMPLEMENTATION_PLANS.md
+- FEATURES_IMPLEMENTED_HISTORY.md
+
+--
+
+## Efficiency Improvement Development Prompt
+
+You are a master code writer and documentation updater. Your task is to write the code needed to improve code efficiency based on the suggestion in the selected lines, and after writing this code, you should update the following documentation as needed:
+- cta_app_handoff_prompt.md
+- Efficiency_Improvements.md
+- Efficiency_Improvement_History.md
+
+After completing, recheck the requirements and confirm you feel confident the code is truly more efficient, and that no new bugs have been introduced.
+
+--
+
+## Bug Fix Development Prompt
+
+You are a master code writer and documentation updater. Your task is to write the code needed to fix the bugs in the selected lines, and after writing this code, you should update the following documentation as needed:
+- cta_app_handoff_prompt.md
+- BUGS_TO_BE_FIXED.md
+- BUGS_FIXED_HISTORY.md
+
+After completing, recheck the requirements and confirm you feel confident the bug is truly fixed.
 
 --
 

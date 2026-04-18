@@ -211,6 +211,9 @@ function SettingsPanel({ apiKey, onSave, onClose }) {
           ✕
         </button>
       </div>
+      <div className="settings-warning" role="alert">
+        <strong>⚠ Security notice:</strong> Your key is stored in this browser. Only use this feature on trusted personal devices.
+      </div>
       <label className="settings-label">
         <span className="settings-label-text">Your Anthropic API Key</span>
         <span className="settings-hint">

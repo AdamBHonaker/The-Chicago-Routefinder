@@ -580,6 +580,79 @@ def _load_stops() -> tuple[list[dict], list[dict]]:
 
 
 # ---------------------------------------------------------------------------
+# Spatial index for nearest-stop queries
+# ---------------------------------------------------------------------------
+#
+# Chicago sits near latitude 41.88°, so one mile of longitude is about
+# 1 / (69 * cos(41.88°)) ≈ 0.01948°. One mile of latitude is 1/69 ≈ 0.01449°.
+# A cell size of ~1 mile in each axis means a 1.0-mile radius query touches
+# at most a 3×3 block of cells (9 cells), regardless of catalog size.
+
+_SPATIAL_CELL_LAT_DEG = 1.0 / 69.0              # ~1 mile of latitude
+_SPATIAL_CELL_LON_DEG = 1.0 / 51.35             # ~1 mile of longitude at Chicago's latitude
+
+
+def _spatial_key(lat: float, lon: float) -> tuple[int, int]:
+    return (int(math.floor(lat / _SPATIAL_CELL_LAT_DEG)),
+            int(math.floor(lon / _SPATIAL_CELL_LON_DEG)))
+
+
+@lru_cache(maxsize=2)
+def _spatial_index(kind: str) -> dict[tuple[int, int], list[dict]]:
+    """
+    Build a grid/bucket spatial index for either "train" or "bus" stops.
+    Built once on first use and cached for the process lifetime (same scope
+    as `_load_stops`).
+    """
+    train_stations, bus_stops = _load_stops()
+    stops = train_stations if kind == "train" else bus_stops
+    index: dict[tuple[int, int], list[dict]] = {}
+    for s in stops:
+        index.setdefault(_spatial_key(s["lat"], s["lon"]), []).append(s)
+    return index
+
+
+def _candidates_within(
+    kind: str,
+    lat: float,
+    lon: float,
+    radius_miles: float,
+) -> list[tuple[float, dict]]:
+    """
+    Return (distance_miles, stop) pairs for every stop of `kind` within
+    `radius_miles` of (lat, lon), using the bucket index plus a bounding-box
+    prefilter before Haversine.
+    """
+    index = _spatial_index(kind)
+
+    dlat_deg = radius_miles / 69.0
+    dlon_deg = radius_miles / 51.35
+
+    min_cell_lat = int(math.floor((lat - dlat_deg) / _SPATIAL_CELL_LAT_DEG))
+    max_cell_lat = int(math.floor((lat + dlat_deg) / _SPATIAL_CELL_LAT_DEG))
+    min_cell_lon = int(math.floor((lon - dlon_deg) / _SPATIAL_CELL_LON_DEG))
+    max_cell_lon = int(math.floor((lon + dlon_deg) / _SPATIAL_CELL_LON_DEG))
+
+    lat_lo, lat_hi = lat - dlat_deg, lat + dlat_deg
+    lon_lo, lon_hi = lon - dlon_deg, lon + dlon_deg
+
+    results: list[tuple[float, dict]] = []
+    for cell_lat in range(min_cell_lat, max_cell_lat + 1):
+        for cell_lon in range(min_cell_lon, max_cell_lon + 1):
+            bucket = index.get((cell_lat, cell_lon))
+            if not bucket:
+                continue
+            for s in bucket:
+                s_lat, s_lon = s["lat"], s["lon"]
+                if s_lat < lat_lo or s_lat > lat_hi or s_lon < lon_lo or s_lon > lon_hi:
+                    continue
+                d = _haversine_miles(lat, lon, s_lat, s_lon)
+                if d <= radius_miles:
+                    results.append((d, s))
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Public lookup functions
 # ---------------------------------------------------------------------------
 
@@ -599,22 +672,15 @@ def find_nearest_train_stations(
     walk_to_station=False:           walk_minutes computed from station → (lat,lon).
                                      Use for destination: user walks FROM the station.
     """
-    train_stations, _ = _load_stops()
-
-    candidates = [
-        {**s, "distance_miles": d}
-        for s in train_stations
-        if (d := _haversine_miles(lat, lon, s["lat"], s["lon"])) <= max_distance_miles
-    ]
-    candidates.sort(key=lambda s: s["distance_miles"])
-    candidates = candidates[:max_results]
+    hits = _candidates_within("train", lat, lon, max_distance_miles)
+    hits.sort(key=lambda item: item[0])
+    candidates = [{**s} for _, s in hits[:max_results]]
 
     for s in candidates:
         if walk_to_station:
             s["walk_minutes"] = walk_minutes(lat, lon, s["lat"], s["lon"])
         else:
             s["walk_minutes"] = walk_minutes(s["lat"], s["lon"], lat, lon)
-        del s["distance_miles"]
 
     return sorted(candidates, key=lambda s: s["walk_minutes"])
 
@@ -631,26 +697,24 @@ def find_nearest_bus_stops(
     (0.25 → 0.5 → 0.75 → 1.0 miles) until at least one stop is found,
     matching the pattern used for train stations.
     """
-    _, bus_stops = _load_stops()
+    radii = (0.25, 0.5, 0.75, 1.0)
+    # Honor max_distance_miles as a ceiling — only try radii up to it, and
+    # ensure max_distance_miles itself is the final attempt.
+    attempts = [r for r in radii if r <= max_distance_miles]
+    if not attempts or attempts[-1] < max_distance_miles:
+        attempts.append(max_distance_miles)
 
-    # Build distance table once
-    with_dist = [
-        {**s, "distance_miles": _haversine_miles(lat, lon, s["lat"], s["lon"])}
-        for s in bus_stops
-    ]
-
-    candidates: list[dict] = []
-    for radius in (0.25, 0.5, 0.75, 1.0):
-        candidates = [s for s in with_dist if s["distance_miles"] <= radius]
-        if candidates:
+    hits: list[tuple[float, dict]] = []
+    for radius in attempts:
+        hits = _candidates_within("bus", lat, lon, radius)
+        if hits:
             break
 
-    candidates.sort(key=lambda s: s["distance_miles"])
-    candidates = candidates[:max_results]
+    hits.sort(key=lambda item: item[0])
+    candidates = [{**s} for _, s in hits[:max_results]]
 
     for s in candidates:
         s["walk_minutes"] = walk_minutes(lat, lon, s["lat"], s["lon"])
-        del s["distance_miles"]
 
     return sorted(candidates, key=lambda s: s["walk_minutes"])
 
@@ -695,23 +759,30 @@ def fuzzy_match_neighborhood(query: str) -> tuple[tuple[float, float] | None, st
 # Street abbreviation normalization
 # ---------------------------------------------------------------------------
 
-_ABBR_MAP: dict[str, str] = {
-    "blvd":  "boulevard",
-    "pkwy":  "parkway",
-    "expy":  "expressway",
-    "terr":  "terrace",
-    "ter":   "terrace",
-    "hwy":   "highway",
-    "ave":   "avenue",
-    "cir":   "circle",
-    "st":    "street",
-    "dr":    "drive",
-    "ln":    "lane",
-    "ct":    "court",
-    "rd":    "road",
-    "pl":    "place",
-    "sq":    "square",
-}
+# Defined as a tuple of (abbr, expansion) pairs rather than a dict literal so
+# that a duplicate key is caught at import time instead of silently winning.
+_ABBR_PAIRS: tuple[tuple[str, str], ...] = (
+    ("blvd", "boulevard"),
+    ("pkwy", "parkway"),
+    ("expy", "expressway"),
+    ("terr", "terrace"),
+    ("ter",  "terrace"),
+    ("hwy",  "highway"),
+    ("ave",  "avenue"),
+    ("cir",  "circle"),
+    ("st",   "street"),
+    ("dr",   "drive"),
+    ("ln",   "lane"),
+    ("ct",   "court"),
+    ("rd",   "road"),
+    ("pl",   "place"),
+    ("sq",   "square"),
+)
+_ABBR_MAP: dict[str, str] = dict(_ABBR_PAIRS)
+assert len(_ABBR_MAP) == len(_ABBR_PAIRS), (
+    f"_ABBR_PAIRS contains duplicate keys: "
+    f"{[k for k in (p[0] for p in _ABBR_PAIRS) if list(p[0] for p in _ABBR_PAIRS).count(k) > 1]}"
+)
 # Sort longest-first so longer patterns are tried before shorter ones
 _sorted_abbrs = sorted(_ABBR_MAP, key=len, reverse=True)
 _STREET_ABBR_RE = re.compile(

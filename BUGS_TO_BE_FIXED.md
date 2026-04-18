@@ -16,16 +16,6 @@ Known issues catalogued for future fixing. Severity: 🔴 High · 🟡 Medium ·
 
 ---
 
-## 🔴 `_ABBR_MAP` contains duplicate keys — last value silently wins
-
-**File:** `backend/gtfs_loader.py`
-
-**What happens:** `_ABBR_MAP` defines `"blvd"` four times and `"pkwy"` twice. Python dicts silently keep the last assignment. Values happen to be identical now, but a future typo in a duplicate key will cause the wrong expansion with no error.
-
-**Fix:** Remove all duplicate keys from `_ABBR_MAP` so each suffix appears exactly once.
-
----
-
 ## 🟢 Transit photos missing — broken images on production
 
 **Files:** `frontend/public/transit-photos/`; `frontend/src/App.jsx` (PHOTOS array)
@@ -34,22 +24,3 @@ Known issues catalogued for future fixing. Severity: 🔴 High · 🟡 Medium ·
 
 **Fix:** Add ≥10 transit photos to `frontend/public/transit-photos/` and update the `PHOTOS` array in `frontend/src/App.jsx` to match the filenames. Then commit and let Vercel redeploy.
 
----
-
-## 🟢 BYOK key stored in browser with no user warning
-
-**File:** `frontend/src/App.jsx`
-
-**What happens:** The Anthropic API key is stored in plaintext in `sessionStorage` (moved from `localStorage` in the 2026-04-15 fix — clears on tab close). The key is still exposed to any XSS vulnerability or malicious browser extension on the Vercel domain — a key with direct billing implications. No in-app warning tells the user about this risk.
-
-**Fix:** Add a visible warning in the BYOK settings panel: *"Your key is stored in this browser. Only use this feature on trusted personal devices."*
-
----
-
-## 🟢 `_build_shape_lookup` holds all GTFS shape points in memory simultaneously
-
-**File:** [backend/transit_graph.py:500-518](backend/transit_graph.py#L500)
-
-**What happens:** `raw_pts: defaultdict(list)` accumulates every point from `shapes.txt` before the second pass (trips.txt) decides which shapes are kept. For CTA this is a few MB, acceptable. Would scale poorly for larger agencies.
-
-**Fix (optional):** Two-pass — read trips.txt first to get the set of shape_ids actually used per route/direction, then stream shapes.txt keeping only those. Not worth the complexity at current data size.

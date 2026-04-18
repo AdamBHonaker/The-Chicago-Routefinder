@@ -195,7 +195,7 @@ async def _fetch_bus_chunk(
                 "type": "bus",
                 "route": prd.get("rt", ""),
                 "direction": prd.get("rtdir", ""),
-                "stop_id": prd.get("stpid", ""),   # GTFS stop ID — used by find_bus_routes()
+                "stop_id": prd.get("stpid", ""),   # GTFS stop ID — used by find_bus_transfer_routes()
                 "stop_name": prd.get("stpnm", ""),
                 "destination": prd.get("des", ""),
                 "arrives_in_minutes": minutes,

@@ -21,7 +21,7 @@ from gtfs_loader import (
 )
 from cta_client import get_train_arrivals, get_bus_arrivals, get_alerts, _TRAIN_LINE_TO_ALERT_ID
 from transit_graph import (
-    find_routes, find_bus_routes, find_bus_transfer_routes, warm_up, get_bus_stop_sequences,
+    find_routes, find_bus_transfer_routes, warm_up, get_bus_stop_sequences,
     WalkLeg, TransitLeg, get_station_coords, get_station_by_name,
 )
 
@@ -331,19 +331,19 @@ def _rank_bus_routes(
     bus_ranked: list[tuple],
 ) -> list[tuple[float, "int | None", object]]:
     """
-    Normalise wait semantics for bus routes returned by find_bus_routes() or
+    Normalise wait semantics for bus routes returned by
     find_bus_transfer_routes().
 
-    find_bus_routes() internally computes wait from live arrivals and stores it
-    as a plain int (defaulting to 0 when no data).  This function re-expresses
-    the wait as int | None to match _rank_routes() output:
+    find_bus_transfer_routes() computes the first-leg wait from live arrivals
+    and stores it as a plain int (defaulting to 0 when no data). This function
+    re-expresses the wait as int | None to match _rank_routes() output:
       - wait > 0  → keep as-is (bus is N minutes away)
       - wait == 0 → keep as 0 (bus is Due — not "no data"; bus routes are only
                     built when a live arrival exists, so 0 always means Due)
       - wait is None → keep as None (should not occur but handled defensively)
 
-    The total is already correct (computed inside find_bus_routes as
-    route.total_minutes_no_wait + wait_min).  We return it unchanged.
+    The total is already correct (computed inside find_bus_transfer_routes as
+    route.total_minutes_no_wait + wait_min). We return it unchanged.
 
     Returns list of (total, wait, route) with wait typed as int | None,
     re-sorted by total ascending.
@@ -668,61 +668,34 @@ async def recommend(request: RouteRequest, http_request: Request):
                 print(f"[recommend] train routing error: {exc}")
 
         # Bus routing
+        #
+        # Direct bus-only paths come from the unified graph via find_routes()
+        # above. find_bus_transfer_routes() runs unconditionally here to
+        # surface bus+bus transfer itineraries (bus A → walk → bus B) that
+        # the graph does not model — bus-to-bus walk transfers are not
+        # represented as graph edges. The two codepaths produce non-overlapping
+        # route types by design, so no deduplication is needed.
         if request.transit_mode in ("Bus", "All") and bus_arrivals and origin_bus_stops:
             try:
-                bus_ranked = find_bus_routes(
+                transfer_ranked = find_bus_transfer_routes(
                     origin_lat=origin_coords[0],
                     origin_lon=origin_coords[1],
                     dest_lat=dest_coords[0],
                     dest_lon=dest_coords[1],
                     bus_arrivals=bus_arrivals,
                     origin_bus_stops=origin_bus_stops,
-                    n_routes=3,
+                    n_routes=2,
                 )
-                # If no direct bus routes found, try bus+bus transfer routing
-                if not bus_ranked:
-                    try:
-                        bus_ranked = find_bus_transfer_routes(
-                            origin_lat=origin_coords[0],
-                            origin_lon=origin_coords[1],
-                            dest_lat=dest_coords[0],
-                            dest_lon=dest_coords[1],
-                            bus_arrivals=bus_arrivals,
-                            origin_bus_stops=origin_bus_stops,
-                            n_routes=3,
-                        )
-                    except Exception as exc:
-                        print(f"[recommend] bus transfer routing error: {exc}")
                 # Normalise bus wait semantics (int | None) to match
                 # _rank_routes() output before merging with train results.
-                if bus_ranked:
-                    bus_ranked = _rank_bus_routes(bus_ranked)
+                if transfer_ranked:
+                    transfer_ranked = _rank_bus_routes(transfer_ranked)
                 ranked_routes = sorted(
-                    ranked_routes + bus_ranked,
+                    ranked_routes + transfer_ranked,
                     key=lambda x: x[0],
                 )[:5]
-
-                # Deduplicate routes with identical leg fingerprints — the
-                # unified graph may surface bus-only paths that duplicate
-                # find_bus_routes() results; keep only the first occurrence.
-                def _route_fingerprint(route):
-                    return tuple(
-                        (leg.leg_type,
-                         getattr(leg, "line_code", ""),
-                         getattr(leg, "from_mapid", ""),
-                         getattr(leg, "to_mapid", ""))
-                        for leg in route.legs
-                    )
-                seen_fps: set = set()
-                deduped: list = []
-                for _total, _wait, _route in ranked_routes:
-                    fp = _route_fingerprint(_route)
-                    if fp not in seen_fps:
-                        seen_fps.add(fp)
-                        deduped.append((_total, _wait, _route))
-                ranked_routes = deduped
             except Exception as exc:
-                print(f"[recommend] bus routing error: {exc}")
+                print(f"[recommend] bus transfer routing error: {exc}")
 
     # ── Alerts ────────────────────────────────────────────────────────────────
     alert_ids = _alert_ids_from_routes(ranked_routes)

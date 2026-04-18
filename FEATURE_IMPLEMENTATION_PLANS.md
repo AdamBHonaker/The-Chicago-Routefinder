@@ -11,128 +11,15 @@ Chunked plans for upcoming major features, followed by ideas deferred until post
 **Bolt-On** = self-contained, no dependencies on other planned features.
 **Structural** = depends on one or more other features before it can be fully built or realized.
 
-1. Feature J — Deprecate `find_bus_routes()` — **Bolt-On** (Dependency on Feature B, now complete)
-2. Feature D — Live Arrivals at Transfer Stop — **Structural** (soft dependency on Feature C, now satisfied)
-3. Multi-Leg Train Routing Gap 1 — Shared-Track Edge Deduplication — **Structural** (Dependency on Feature B, now complete)
-4. Claude Haiku for Simple Queries — **Bolt-On**
-5. Feature Language — Multi-Language Support (i18n) — **Bolt-On**
-6. Feature K — Restore Street-Network Walking Graph in Production — **Bolt-On**
+1. Feature D — Live Arrivals at Transfer Stop — **Structural** (soft dependency on Feature C, now satisfied)
+2. Multi-Leg Train Routing Gap 1 — Shared-Track Edge Deduplication — **Structural** (Dependency on Feature B, now complete)
+3. Claude Haiku for Simple Queries — **Bolt-On**
+4. Feature Language — Multi-Language Support (i18n) — **Bolt-On**
+5. Feature K — Restore Street-Network Walking Graph in Production — **Bolt-On**
 
 ---
 
 # Chunked Implementation Plans
-
----
-
-# Feature J — Deprecate `find_bus_routes()` in Favor of Unified Graph
-
-> **Note:** Labeled Feature J to avoid collision with Feature H (Deduplicate Same-Line Station Candidates) in `Feature_Prioritization.md`.
-
-## Overview
-
-Feature B added bus stop nodes and bus transit edges to the NetworkX graph, so `find_routes()` now surfaces bus-only paths alongside intermodal ones. The standalone `find_bus_routes()` function — which pre-dates the unified graph — is now partially redundant. This feature removes it, restructures the bus routing block in `main.py` to call `find_bus_transfer_routes()` unconditionally, and cleans up all downstream references.
-
-**Why it matters:** Two parallel codepaths that find bus routes (one via the unified graph, one via `find_bus_routes()`) must be kept in sync as the graph evolves. Removing `find_bus_routes()` eliminates ~200 lines of routing logic, one CTA Bus Tracker API call per request, and a deduplication step that exists only to reconcile the two codepaths.
-
-**Type: Bolt-On** — self-contained cleanup to `transit_graph.py`, `main.py`, and `cta_client.py`. No dependency on any planned feature beyond Feature B (which is complete).
-
-**Status: ⬜ Not started**
-
-**Prerequisites:** Feature B must be complete and verified in production. Do not begin until unified-graph bus-only routes have been manually validated on real Chicago trips.
-
----
-
-## Scoping decisions — resolved
-
-1. **Keep `find_bus_transfer_routes()`.** It provides bus+bus transfer routes (bus A → walk → bus B) that the unified graph does not model — bus-to-bus walk transfers are not represented as graph edges. This function stays and becomes the sole bus-routing entry point in `main.py`.
-
-2. **Call `find_bus_transfer_routes()` unconditionally.** Currently it is only called when `find_bus_routes()` returns empty or poor results. After this feature, it is called unconditionally whenever `transit_mode` is `"Bus"` or `"All"`, subject to the existing `bus_arrivals and origin_bus_stops` guard. Direct-bus results are already found by `find_routes()` on the unified graph; `find_bus_transfer_routes()` handles bus+bus transfer trips that the graph still cannot surface.
-
-3. **Live arrival data is already covered.** `find_bus_routes()` queried `bus_arrivals` for real-time first-leg wait. `find_bus_transfer_routes()` returns the same `(total, wait_min, route)` tuple where `wait_min` is the live wait for bus A — so the live wait on the first boarding leg is preserved.
-
-4. **Progressive exit-stop threshold is dropped.** `find_bus_routes()` applied a two-pass haversine filter to prune buses that don't make meaningful progress toward the destination. The unified graph relies on Dijkstra edge weights instead. Route quality must be validated during Chunk 1 verification before removing this filter. If the unified graph surfaces obviously poor bus-only paths, address the graph's edge weighting before proceeding to Chunk 2.
-
-5. **`_rank_bus_routes()` is retained for `find_bus_transfer_routes()`.** It normalises wait semantics across bus results. Its docstring and comments referencing `find_bus_routes()` as a caller must be updated to reference `find_bus_transfer_routes()` only.
-
-6. **Deduplication logic in `main.py` is removed.** The `_route_fingerprint()` deduplication added by Feature B exists solely to prevent unified-graph bus-only routes from duplicating `find_bus_routes()` results. Once `find_bus_routes()` is removed, that deduplication step can also be removed — the unified graph and `find_bus_transfer_routes()` produce non-overlapping route types by design (direct bus vs. bus+bus transfer).
-
----
-
-## Chunk 1 — Verification: Confirm unified graph covers direct-bus route quality
-
-**Files:** None (read-only verification)
-
-**What to verify:**
-
-Run the following test queries against the live app and inspect the returned routes. For each query, confirm that `find_routes()` via the unified graph returns at least one direct-bus result of comparable quality to what `find_bus_routes()` currently returns.
-
-| Test query | What to check |
-|---|---|
-| Wicker Park → Logan Square (short direct bus) | Unified graph returns bus 56 or 72 as a direct option |
-| Lincoln Square → Lakeview (crosstown bus) | Route card shows a direct bus, not just train options |
-| Pilsen → Bridgeport (bus-only neighborhood pair) | At least one bus result with a reasonable total time |
-| Trip where find_bus_routes() currently returns empty | `find_bus_transfer_routes()` still returns transfer options after the gate changes |
-
-**Acceptance criteria for proceeding to Chunk 2:**
-- Unified graph surfaces at least one direct-bus option for each test query above
-- Total times are within 10% of what `find_bus_routes()` currently returns for the same query
-- No obviously nonsensical bus paths (e.g. a bus route that travels away from the destination before turning around)
-
-If the unified graph fails these checks, stop and file a scoped fix for the graph's bus edge weighting before continuing.
-
-**Notes:**
-- The `_route_fingerprint()` deduplication added by Feature B is still active during this verification — both codepaths are running in parallel, so there is no risk of regression
-- Check Railway logs for any `find_bus_routes()` errors or empty-result cases that would indicate coverage gaps
-
----
-
-## Chunk 2 — Restructure bus routing block in `main.py`
-
-**Files:** `backend/main.py`
-
-**What to build:**
-- Remove the `find_bus_routes(...)` call from the bus routing block (~line 649). The entire `bus_routes = find_bus_routes(...)` call and its immediate result-handling are removed.
-- Call `find_bus_transfer_routes()` unconditionally (not as a fallback) whenever `transit_mode` is `"Bus"` or `"All"`, subject to the existing `bus_arrivals and origin_bus_stops` guard:
-  ```python
-  if bus_arrivals and origin_bus_stops:
-      transfer_routes = await loop.run_in_executor(
-          executor,
-          find_bus_transfer_routes,
-          origin_lat, origin_lon, dest_lat, dest_lon,
-          bus_arrivals, origin_bus_stops,
-      )
-  else:
-      transfer_routes = []
-  ```
-- Remove the activation-gate logic that previously checked whether `find_bus_routes()` returned empty results before calling `find_bus_transfer_routes()`.
-- Remove the `_route_fingerprint()` deduplication block — it is no longer needed once `find_bus_routes()` is gone (unified-graph results and `find_bus_transfer_routes()` results are non-overlapping by design).
-- Remove the `find_bus_routes` import from the `from transit_graph import ...` line (~line 25).
-- Update the docstring and inline comments in `_rank_bus_routes()` (~lines 337, 340, 348) to reference `find_bus_transfer_routes()` as its sole caller; remove any reference to `find_bus_routes()`.
-
-**Notes:**
-- The `bus_arrivals and origin_bus_stops` guard is unchanged — `find_bus_transfer_routes()` still requires live arrival data and a non-empty origin stop list.
-- After this change, bus-only direct routes come exclusively from `find_routes()` (unified graph); bus+bus transfer routes come exclusively from `find_bus_transfer_routes()`. The merge-sort over `ranked_routes` already handles both lists.
-- Run the same test queries from Chunk 1 after this change and confirm no regression.
-
----
-
-## Chunk 3 — Remove `find_bus_routes()` definition and clean up all references
-
-**Files:** `backend/transit_graph.py`, `backend/cta_client.py`
-
-**What to build:**
-
-In `transit_graph.py`:
-- Remove the `find_bus_routes(...)` function definition (~line 1361, ~200 lines). The entire function body is deleted.
-- Update the comment in `_build_shape_lookup()` (~line 627) that reads `"find_bus_routes() calls get_shape(route_short_name, direction_id)"`. If `find_bus_transfer_routes()` also calls `get_shape()`, update the comment to name it as the caller; otherwise remove the reference entirely.
-- Update the docstring and inline comments inside `find_bus_transfer_routes()` (~lines 1584, 1600, 1610) that reference `find_bus_routes()` as the activation-gate caller. Update to reflect that `find_bus_transfer_routes()` is now called unconditionally from `main.py`.
-
-In `cta_client.py`:
-- Update the comment on the field at ~line 203: `"# GTFS stop ID — used by find_bus_routes()"`. If the field is still used by `find_bus_transfer_routes()` or another caller, update the comment to name the new caller. If it is not used by any remaining caller, remove the comment.
-
-**Notes:**
-- After deletion, run a repo-wide search for `find_bus_routes` to confirm no remaining references: `grep -r "find_bus_routes" backend/`
-- Run the full Feature B verification checklist after the removal to confirm no routing regressions — intermodal, bus-only, and bus+bus transfer routes should all continue to work correctly.
 
 ---
 

@@ -23,6 +23,7 @@ A log of features that have been designed and fully implemented. Entries are mov
 10. BYOK (Bring Your Own API Key) — **Bolt-On**
 11. Claude Response Caching — **Bolt-On**
 12. Multi-Leg Train Routing Gap 2 (Bus First/Last Mile) — **Structural** (Resolved by Feature B)
+13. Feature J — Deprecate `find_bus_routes()` in Favor of Unified Graph — **Bolt-On** (Dependency on Feature B)
 
 ---
 
@@ -203,3 +204,19 @@ Frontend:
 **Overview:** The origin and destination walk legs previously always used pedestrian walking. Taking a bus to a better-positioned train station was never considered.
 
 **Resolution:** Feature B (Intermodal Routing) resolved this gap as a natural consequence of adding `ORIGIN→bus_stop` virtual walk edges in `find_routes()`. No separate implementation required.
+
+---
+
+# Feature J — Deprecate `find_bus_routes()` in Favor of Unified Graph
+
+**Completed: 2026-04-18**
+
+**Overview:** Removed the legacy standalone `find_bus_routes()` function. Direct bus-only routes now come exclusively from the unified NetworkX graph via `find_routes()` (added in Feature B); `find_bus_transfer_routes()` continues to handle bus+bus transfer itineraries the graph does not model. Eliminates two parallel bus-routing codepaths that had to be kept in sync as the graph evolved.
+
+**What was implemented (3 chunks):**
+
+- **Chunk 1 (Verification):** Confirmed that `find_routes()` over the unified graph surfaces direct-bus options of comparable quality to the deleted function for canonical test trips (Wicker Park↔Logan Square, Lincoln Square↔Lakeview, Pilsen↔Bridgeport). Route totals within tolerance; no nonsensical bus paths.
+- **Chunk 2 (`main.py` restructure):** Removed the `find_bus_routes(...)` call and its activation-gate for `find_bus_transfer_routes()`. Bus routing block now calls `find_bus_transfer_routes()` unconditionally (subject to the existing `bus_arrivals and origin_bus_stops` guard) for both `"Bus"` and `"All"` modes with `n_routes=2`. Removed the `_route_fingerprint()` deduplication block — the unified graph and `find_bus_transfer_routes()` produce non-overlapping route types (direct vs. transfer) by design. Updated `_rank_bus_routes()` docstring to reference `find_bus_transfer_routes()` as its sole caller.
+- **Chunk 3 (cleanup):** Deleted `find_bus_routes()` from `transit_graph.py` (~205 lines). Removed the `find_bus_routes` symbol from the `main.py` import list. Updated the `_build_shape_lookup()` comment to cite `find_bus_transfer_routes()` as the remaining `get_shape(route_short_name, direction_id)` caller. Updated `find_bus_transfer_routes()` docstring (no longer gated by the legacy function) and the `_MAX_EXIT_DIST` comment. Updated the `stop_id` comment in `cta_client.py`. `grep -r "find_bus_routes" backend/` confirms zero remaining references.
+
+**Net effect:** One less per-request bus-routing codepath, one fewer CTA Bus Tracker API-derived computation path to keep in sync, and a simpler merge in `main.py` (no fingerprint dedup step). Response schema and frontend are unchanged.

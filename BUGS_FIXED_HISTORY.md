@@ -6,6 +6,82 @@ Severity: 🔴 High · 🟡 Medium · 🟢 Low.
 
 ---
 
+# 2026-04-18 `_ABBR_MAP` Duplicate-Key Vulnerability — Converted to Pair-List with Import-Time Assertion
+
+---
+
+## 🔴 `_ABBR_MAP` could silently accept duplicate keys — FIXED
+
+**File:** `backend/gtfs_loader.py`
+
+**What was happening:** `_ABBR_MAP` was defined as a dict literal. Earlier revisions had included `"blvd"` four times and `"pkwy"` twice; Python silently keeps the last assignment for duplicate keys in a dict literal, so a future typo like `"blvd": "bolevard"` after a correct entry would override it with no error at import or runtime. By the time of this fix the visible duplicates had already been removed, but the structural vulnerability remained — the dict-literal form offers no protection against reintroducing duplicates.
+
+**Fixed in:** Replaced the dict literal with a tuple of `(abbr, expansion)` pairs (`_ABBR_PAIRS`) and constructed `_ABBR_MAP = dict(_ABBR_PAIRS)`. An `assert len(_ABBR_MAP) == len(_ABBR_PAIRS)` immediately after the conversion now fails at import time if any key is duplicated, with a diagnostic message listing the offending keys. Downstream usage (`_sorted_abbrs`, `_STREET_ABBR_RE`, `_expand`) is unchanged — `_ABBR_MAP` is still the same dict with the same 15 entries.
+
+---
+
+# 2026-04-18 Bus-Mode Multi-Leg Routing — Transfer Branch No Longer Gated on Direct Emptiness
+
+---
+
+## 🟡 Bus-only filter suppressed multi-leg bus routing when any direct route existed — FIXED
+
+**File:** `backend/main.py`
+
+**What was happening:** In the `recommend()` bus-routing block, `find_bus_transfer_routes()` (bus→bus multi-leg) was only invoked when `find_bus_routes()` (direct single-leg) returned an empty list (`if not bus_ranked:`). Because almost any O/D pair yields *some* direct bus pairing — even a slow one — the transfer branch was effectively unreachable in production. Users in `transit_mode="Bus"` saw only single-bus options, never a dramatically faster 2-bus transfer. `transit_mode="All"` masked this because the unified train graph surfaces intermodal alternatives.
+
+**Fixed in:** Removed the emptiness gate for "Bus" mode. Now in `transit_mode="Bus"` the backend always calls both `find_bus_routes()` (n=3) and `find_bus_transfer_routes()` (n=2), concatenates the results, runs the combined list through the existing `_rank_bus_routes()` → sort → top-5 truncation → fingerprint-dedup pipeline. For `transit_mode="All"` the original emptiness-gated fallback is preserved (train routing is the intermodal backstop there, and the transfer call is latency-expensive). Transfer `n_routes` was lowered from 3 → 2 as an upfront cost-control measure given the transfer branch now runs on every Bus-mode request. Duplicate routes that happen to be produced by both calls are dropped by the pre-existing fingerprint dedup below the merge block.
+
+---
+
+# 2026-04-18 BYOK Settings Panel — Browser-Storage Security Notice Added
+
+---
+
+## 🟢 BYOK key stored in browser with no user warning — FIXED
+
+**File:** `frontend/src/App.jsx`, `frontend/src/App.css`
+
+**What was happening:** The Anthropic API key was stored in plaintext `sessionStorage` (moved from `localStorage` in the 2026-04-15 fix). While session-scoped storage narrows the exposure window, the key remains readable by any XSS vector or malicious browser extension for the lifetime of the tab — a non-trivial risk given the key has direct billing implications. The BYOK settings panel gave no indication of this risk, so a user could reasonably assume "password"-type input meant secure-at-rest storage.
+
+**Fixed in:** Added a prominent warning block at the top of `SettingsPanel` (above the API key input) that reads: *"⚠ Security notice: Your key is stored in this browser. Only use this feature on trusted personal devices."* The banner uses `role="alert"` for accessibility and is styled via a new `.settings-warning` rule in `App.css` — an amber-on-dark card that matches the existing settings panel palette without competing with form controls. No behavior change: storage mechanism, key validation, and save/clear flows are untouched; this is purely a user-facing disclosure so users can make an informed choice before entering their key.
+
+---
+
+# 2026-04-18 `_build_shape_lookup` Two-Pass Refactor (Memory Bound to Used Shapes)
+
+---
+
+## 🟢 `_build_shape_lookup` held all GTFS shape points in memory simultaneously — FIXED
+
+**File:** `backend/transit_graph.py`
+
+**What was happening:** The original implementation streamed `shapes.txt` first into a `defaultdict(list)` keyed by every `shape_id`, then read `trips.txt` to decide which `(route_id, direction_id) → shape_id` pairs to keep. Peak memory held every point for every shape in the file, including shape variants that no trip actually references. For CTA the overhead is a few MB (acceptable), but for larger agencies with many unreferenced shape variants it would scale poorly.
+
+**Fixed in:** Reordered to a true two-pass approach:
+1. **Pass 1 (trips.txt):** collect the set of `shape_id`s actually referenced by trips, grouped per `(route_id, direction_id)` as candidates.
+2. **Pass 2 (shapes.txt):** stream points and skip any row whose `shape_id` is not in the used-set, so unused shapes never enter `raw_pts`.
+3. **Resolve:** pick the longest shape per `(route_id, direction_id)` from the candidate sets (preserves the prior "full-length beats short-turn" selection rule).
+4. **Join:** same routes.txt short-name keying as before.
+
+`raw_pts` is now also cleared after conversion to flush the per-shape point tuples once the sorted `[[lat, lon], ...]` arrays are built. Behavior (which shape is chosen per route/direction, which keys appear in `_shape_lookup`) is unchanged; only peak memory and work done on unused shape rows are reduced. `get_shape()` and `clip_shape()` callers are unaffected.
+
+---
+
+# 2026-04-18 Bus Route Pill Showed `0`/`1` Instead of Route Number on Intermodal Legs
+
+---
+
+## 🔴 Intermodal bus legs displayed direction_id ("0"/"1") as the route pill label — FIXED
+
+**File:** `backend/transit_graph.py`
+
+**What was happening:** Bus transit edges in the unified intermodal graph (Feature B) were added with `line=did`, where `did` is the GTFS `direction_id` — literally the strings `"0"` or `"1"`. When Dijkstra produced a path through bus edges, `_path_to_route()` propagated that value into the leg's `line` field. On the frontend, `isBus = leg.line in BUS_DIRECTION_COLORS` then failed (since `"0"`/`"1"` aren't in `{Northbound, Southbound, Eastbound, Westbound}`), so the leg fell into the train-rendering branch and the pill showed `leg.line.replace(" Line", "")` → `0` or `1` instead of the route number. Direct single-leg bus routes (`find_bus_routes`) and 2-bus transfer routes (`find_bus_transfer_routes`) were unaffected because both pull a real direction string from live `bus_arrivals`. Only intermodal paths that traversed the unified-graph bus edges were broken — which became visible after the unified graph was the dominant source of bus legs.
+
+**Fixed in:** Added a `_bearing_to_direction(lat1, lon1, lat2, lon2)` helper that maps the great-circle bearing from a sequence's first stop to its last stop into one of `Northbound` / `Southbound` / `Eastbound` / `Westbound`. In `_build_graph()`'s "Add bus route edges" block, that direction string is now computed once per `(short_name, did)` pair and passed as `line=direction_name` instead of `line=did`. The `direction_id` is still preserved on the edge as `direction_id=did` for any future routing logic that needs it. The frontend's `BUS_DIRECTION_COLORS` lookup now succeeds and the pill renders `leg.line_code` (the route number) as intended. The parallel `is_bus` check in [`backend/main.py:385`](backend/main.py#L385) that feeds Claude's prompt is also fixed by the same change since it relied on the same direction-string set.
+
+---
+
 # 2026-04-17 Style Error Dismissal, Geocode Double-Suffix, and Transfer Floor Documentation Fixes
 
 ---

@@ -126,6 +126,7 @@ Users can supply their own Anthropic API key via an in-app settings panel. Their
 **Status:** Code complete — OFF by default. Activate with `BYOK_ENABLED=true` (Railway) + `VITE_BYOK_ENABLED=true` (Vercel) before enabling for users.
 
 - Key is stored in `sessionStorage` (clears on tab close) — not `localStorage`
+- Settings panel shows a visible security notice warning the user that the key lives in the browser and should only be entered on trusted personal devices (2026-04-18)
 - BYOK requests use a separate response-cache pool (keyed separately from shared-quota requests)
 - Most CTA riders will not use this feature; it targets technically savvy early adopters
 
@@ -208,8 +209,8 @@ Users can supply their own Anthropic API key via an in-app settings panel. Their
 ## Known Pending Items
 
 - **CTA API limit:** 100,000 req/day (confirmed from Train Tracker docs). Plan caching strategy around 100k.
-- **Known bugs:** See `BUGS_TO_BE_FIXED.md` for open bugs (2 🔴 high, 4 🟡 medium, 6 🟢 low). Resolved bugs are logged in `BUGS_FIXED_HISTORY.md`. When a bug is fixed, delete it from `BUGS_TO_BE_FIXED.md` and add an entry to `BUGS_FIXED_HISTORY.md`.
-- **Future enhancements:** See `FEATURE_IMPLEMENTATION_PLANS.md` for chunked build plans. See `Feature_Prioritization.md` for bolt-on vs structural classification and full status. Key items: ~~Train Station Exit Guidance (Feature A, 5 chunks)~~ ✅ Complete, ~~Multi-Leg Bus Routing / bus+bus transfers (Feature C, 5 chunks)~~ ✅ Complete, ~~Intermodal Routing / train+bus combinations (Feature B, 6 chunks)~~ ✅ Complete (2026-04-16), Live Arrivals at Transfer Stop (Feature D, 4 chunks — Feature C dependency now satisfied), ~~Walk Leg Block-Count Distance Display (Feature E, 2 chunks)~~ ✅ Complete, ~~Street Abbreviation Normalization (Feature F, 1 chunk)~~ ✅ Complete, ~~Long/Short Block Classification (Feature G, 2 chunks)~~ ✅ Complete, ~~Deduplicate Same-Line Station Candidates (Feature H, bolt-on, 3 chunks)~~ ✅ Complete (2026-04-17), ~~CTA Alerts Integration (Feature I, bolt-on, 3 chunks)~~ ✅ Complete (2026-04-17), Deprecate `find_bus_routes()` in Favor of Unified Graph (Feature J, bolt-on, 3 chunks — prerequisite: verify unified-graph bus-only routes in production before removing). Beyond chunked features: ~~rate limiting~~ ✅ Code complete (activate with `RATE_LIMIT_ENABLED=true`), ~~BYOK~~ ✅ Code complete (activate with `BYOK_ENABLED=true` + `VITE_BYOK_ENABLED=true`), ~~response caching~~ ✅ Complete, Claude Haiku for simple queries. Multi-leg train routing accuracy gaps: (a) shared-track edge deduplication can mis-label the line on segments where multiple CTA lines share consecutive stations (e.g. Red/Brown between Belmont and Fullerton) — timing is correct but the route card may show the wrong line name; (b) ~~bus access to a better-positioned train station is never considered~~ ✅ Resolved by Feature B.
+- **Known bugs:** See `BUGS_TO_BE_FIXED.md` for open bugs (2 🔴 high, 0 🟡 medium, 1 🟢 low). Resolved bugs are logged in `BUGS_FIXED_HISTORY.md`. When a bug is fixed, delete it from `BUGS_TO_BE_FIXED.md` and add an entry to `BUGS_FIXED_HISTORY.md`.
+- **Future enhancements:** See `FEATURE_IMPLEMENTATION_PLANS.md` for chunked build plans. See `Feature_Prioritization.md` for bolt-on vs structural classification and full status. Key items: ~~Train Station Exit Guidance (Feature A, 5 chunks)~~ ✅ Complete, ~~Multi-Leg Bus Routing / bus+bus transfers (Feature C, 5 chunks)~~ ✅ Complete, ~~Intermodal Routing / train+bus combinations (Feature B, 6 chunks)~~ ✅ Complete (2026-04-16), Live Arrivals at Transfer Stop (Feature D, 4 chunks — Feature C dependency now satisfied), ~~Walk Leg Block-Count Distance Display (Feature E, 2 chunks)~~ ✅ Complete, ~~Street Abbreviation Normalization (Feature F, 1 chunk)~~ ✅ Complete, ~~Long/Short Block Classification (Feature G, 2 chunks)~~ ✅ Complete, ~~Deduplicate Same-Line Station Candidates (Feature H, bolt-on, 3 chunks)~~ ✅ Complete (2026-04-17), ~~CTA Alerts Integration (Feature I, bolt-on, 3 chunks)~~ ✅ Complete (2026-04-17), ~~Deprecate `find_bus_routes()` in Favor of Unified Graph (Feature J, bolt-on, 3 chunks)~~ ✅ Complete (2026-04-18). Beyond chunked features: ~~rate limiting~~ ✅ Code complete (activate with `RATE_LIMIT_ENABLED=true`), ~~BYOK~~ ✅ Code complete (activate with `BYOK_ENABLED=true` + `VITE_BYOK_ENABLED=true`), ~~response caching~~ ✅ Complete, Claude Haiku for simple queries. Multi-leg train routing accuracy gaps: (a) shared-track edge deduplication can mis-label the line on segments where multiple CTA lines share consecutive stations (e.g. Red/Brown between Belmont and Fullerton) — timing is correct but the route card may show the wrong line name; (b) ~~bus access to a better-positioned train station is never considered~~ ✅ Resolved by Feature B.
 - **API keys:** All four keys obtained and configured: CTA Train Tracker, CTA Bus Tracker, Anthropic, and Google Maps.
 - **Geocoding:** Google Maps Geocoding API implemented (`geocode_google()` in `gtfs_loader.py`). A temporary 9,500 calls/month cap is in place during testing — see HUMAN_TODO.md (Post-Deployment Cleanup) for removal instructions.
 
@@ -371,7 +372,7 @@ All four remaining 🟢 deferred bugs fixed. No known bugs remain.
 All 10 chunks of MAP_IMPLEMENTATION_PLAN.md implemented. Full map feature is live.
 
 **Backend (Chunks 1–4):**
-1. **GTFS shape lookup** (`transit_graph.py`) — `_build_shape_lookup()` streams `shapes.txt` at startup (sorted by `shape_pt_sequence`), reads `trips.txt` to map `(route_id, direction_id) → shape_id`, builds module-level `_shape_lookup` dict. Called in `warm_up()`. Public API: `get_shape(route_id, direction_id) -> list[list[float]] | None`.
+1. **GTFS shape lookup** (`transit_graph.py`) — `_build_shape_lookup()` reads `trips.txt` first to collect the set of `shape_id`s actually used per `(route_id, direction_id)`, then streams `shapes.txt` keeping only those (sorted by `shape_pt_sequence`), picks the longest shape per route/direction, builds module-level `_shape_lookup` dict. Called in `warm_up()`. Public API: `get_shape(route_id, direction_id) -> list[list[float]] | None`. (Two-pass order reduces peak memory vs. the earlier "shapes-first" approach.)
 2. **Shape clipping** (`transit_graph.py`) — `clip_shape(shape_points, board_lat, board_lon, exit_lat, exit_lon)` finds nearest shape points to each stop by squared Euclidean distance, returns the slice between them. Falls back to straight line if shape is None/empty.
 3. **Walk path geometry** (`walking.py`) — `walk_path(origin_lat, origin_lon, dest_lat, dest_lon)` uses `nx.shortest_path()` on the loaded OSMnx graph to return street-network path as `[[lat, lon], ...]`. Same `lru_cache(maxsize=512)` as `walk_minutes()`. Falls back to straight line.
 4. **Geometry in API response** (`transit_graph.py`, `main.py`) — `WalkLeg` gains `path_points`, `TransitLeg` gains `shape_points`. Transit edges now store `direction_id`. `_path_to_route()` calls `walk_path()` on every walk leg and `get_shape() + clip_shape()` on every transit leg. `find_bus_routes()` does the same. `/recommend` response now includes `shape`, `path`, `from_coords`, `to_coords` per leg and `origin_coords`, `dest_coords` at the top level.
@@ -497,7 +498,7 @@ A comprehensive low-severity bug audit produced 22 fixes across backend and fron
 5. `_rate_store` — empty deques now deleted after eviction to prevent unbounded growth.
 6. BYOK cache collision — `_cache_key()` now appends `"byok"` suffix when a BYOK key is present; BYOK and shared-quota requests use separate cache pools.
 7. `prdctdn.isdigit()` — fixed `None` crash: `prd.get("prdctdn") or ""` instead of `prd.get("prdctdn", "")`.
-8. `find_nearest_train_stations` — replaced double haversine call with walrus operator (compute once, reuse).
+8. `find_nearest_train_stations` / `find_nearest_bus_stops` — replaced full-catalog Haversine scan with a grid/bucket spatial index (`_spatial_index`, `_candidates_within` in `gtfs_loader.py`). ~1-mile lat/lon cells, bounding-box prefilter, Haversine only on candidates inside the box. Built lazily per stop-kind, cached for process lifetime. Bit-exact with prior behavior; measured ~300× faster at 0.25-mi bus lookup, ~44× at 1.0-mi (was ~20k trig calls per `/recommend`). (OPT-001, resolved 2026-04-18.)
 9. `_save_geocode_counter` — added atomic rename pattern (write to `.tmp` then `replace()`); crash-safe.
 10. `_normalize_street_abbr` — added `(?=\s*(?:,|$))` lookahead to prevent false matches inside saint names (e.g. "St. Michael's").
 11. `fuzzy_match_neighborhood` — added `@lru_cache(maxsize=1024)`; repeated queries now return in O(1).
@@ -544,8 +545,8 @@ CTA-Transit-PWA/
 ├── HUMAN_TODO.md                       ← Tasks only a human can do (accounts, keys, deploy steps, UI checks)
 ├── BUGS_TO_BE_FIXED.md                 ← Open bugs only (2 🔴 high, 4 🟡 medium, 6 🟢 low); delete entry here and log fix in BUGS_FIXED_HISTORY.md when resolved
 ├── BUGS_FIXED_HISTORY.md               ← Log of all resolved bugs; add entry here when a bug from BUGS_TO_BE_FIXED.md is fixed
-├── FEATURE_IMPLEMENTATION_PLANS.md     ← Chunked build plans + post-launch ideas: Feature A ✅ (Train Station Exit Guidance, 5 chunks), Feature B ✅ (Intermodal Routing, 6 chunks), Feature C ✅ (Multi-Leg Bus Routing, 5 chunks), Feature D (Live Arrivals at Transfer Stop, 4 chunks), Feature E ✅ (Walk Leg Block-Count Distance, 2 chunks), Feature F ✅ (Street Abbreviation Normalization, 1 chunk), Feature G ✅ (Long/Short Block Classification, 2 chunks), Feature H ✅ (Deduplicate Same-Line Station Candidates, bolt-on, 3 chunks), Feature I ✅ (CTA Alerts Integration, bolt-on, 3 chunks), Feature J (Deprecate find_bus_routes() in Favor of Unified Graph, bolt-on, 3 chunks)
-├── Feature_Prioritization.md           ← Bolt-On vs Structural classification + status for all planned/pending features: Feature D (Live Arrivals at Transfer Stop, structural — Feature C dependency satisfied), Feature J (Deprecate find_bus_routes(), bolt-on, 3 chunks), Multi-Leg Train Routing Gap 1 (shared-track label accuracy, structural)
+├── FEATURE_IMPLEMENTATION_PLANS.md     ← Chunked build plans + post-launch ideas: Feature A ✅ (Train Station Exit Guidance, 5 chunks), Feature B ✅ (Intermodal Routing, 6 chunks), Feature C ✅ (Multi-Leg Bus Routing, 5 chunks), Feature D (Live Arrivals at Transfer Stop, 4 chunks), Feature E ✅ (Walk Leg Block-Count Distance, 2 chunks), Feature F ✅ (Street Abbreviation Normalization, 1 chunk), Feature G ✅ (Long/Short Block Classification, 2 chunks), Feature H ✅ (Deduplicate Same-Line Station Candidates, bolt-on, 3 chunks), Feature I ✅ (CTA Alerts Integration, bolt-on, 3 chunks), Feature J ✅ (Deprecate find_bus_routes() in Favor of Unified Graph, bolt-on, 3 chunks)
+├── Feature_Prioritization.md           ← Bolt-On vs Structural classification + status for all planned/pending features: Feature D (Live Arrivals at Transfer Stop, structural — Feature C dependency satisfied), Multi-Leg Train Routing Gap 1 (shared-track label accuracy, structural)
 ├── FEATURE_B_intermodal_routing_handoff.md ← ✅ Implemented 2026-04-16 — historical reference only; see FEATURE_IMPLEMENTATION_PLANS.md for summary
 ├── MAP_IMPLEMENTATION_PLAN.md          ← Map feature design + 10-chunk plan (all complete — Phase 5.6 done)
 ├── WEATHER&CROWDEDNESS_FEATURE_HANDOFF.md ← Weather API integration + crowdedness estimation design (post-Phase-6)
@@ -554,7 +555,8 @@ CTA-Transit-PWA/
 │   ├── .env                            ← API keys (never commit)
 │   ├── main.py                         ← FastAPI server, /recommend + /health; direction-aware arrival lookup;
 │   │                                      _rank_routes (dot-product bearing test) + _rank_bus_routes();
-│   │                                      _route_fingerprint() dedup; OrderedDict response cache (45s TTL, 500 entries);
+│   │                                      bus routing calls find_bus_transfer_routes() unconditionally (Feature J);
+│   │                                      OrderedDict response cache (45s TTL, 500 entries);
 │   │                                      rate limiting (off by default — RATE_LIMIT_ENABLED=true to activate);
 │   │                                      BYOK (off by default — BYOK_ENABLED=true + VITE_BYOK_ENABLED=true to activate)
 │   ├── gtfs_loader.py                  ← 3-step location resolver + _normalize_street_abbr() (USPS suffix expansion) +
@@ -564,7 +566,7 @@ CTA-Transit-PWA/
 │   │                                      ~3k train↔bus walk edges); thread-local G_base copy per executor thread;
 │   │                                      find_routes() (ORIGIN→bus_stop virtual edges; n_routes=3 default, called with 5;
 │   │                                      Feature H: _dedup_stations_by_line() applied to origin+dest candidates);
-│   │                                      find_bus_routes() + find_bus_transfer_routes(); _resolve_node();
+│   │                                      find_bus_transfer_routes() (Feature J removed legacy find_bus_routes()); _resolve_node();
 │   │                                      _path_to_route() handles edge_type="walk" for intermodal transfers;
 │   │                                      _bus_stop_grid + _stops_near() (Feature C); _build_stop_to_routes() (Feature C);
 │   │                                      get_bus_stop_sequences(); _build_shape_lookup(); get_shape(); clip_shape();
@@ -660,6 +662,26 @@ CTA-Transit-PWA/
 
 ---
 
+### Notable changes (session — 2026-04-18, `_ABBR_MAP` duplicate-key vulnerability hardened)
+
+Fixes the 🔴 "`_ABBR_MAP` contains duplicate keys — last value silently wins" bug.
+
+1. **`_ABBR_MAP` converted from dict literal to pair-tuple + built dict** — `gtfs_loader.py`: the 15 USPS suffix abbreviations are now defined as a `_ABBR_PAIRS: tuple[tuple[str, str], ...]` literal, with `_ABBR_MAP = dict(_ABBR_PAIRS)` derived from it. The dict-literal form silently kept the last value on duplicate keys; the pair-tuple form preserves every entry so duplicates remain detectable.
+2. **Import-time assertion added** — `assert len(_ABBR_MAP) == len(_ABBR_PAIRS)` immediately after the conversion now raises at module import if any abbreviation is listed twice, with a diagnostic message listing the offending keys. This prevents a future typo (e.g., `("blvd", "bolevard")` after the correct entry) from silently overriding a correct expansion.
+3. **Downstream usage unchanged** — `_sorted_abbrs`, `_STREET_ABBR_RE`, and `_expand()` all continue to read from `_ABBR_MAP`, which is still the same 15-entry dict. No behavior change at runtime on the current (de-duplicated) data; only the failure mode for future edits is hardened.
+
+---
+
+### Notable changes (session — 2026-04-18, bus-mode transfer routing no longer gated on direct emptiness)
+
+Fixes the 🟡 "Bus-only filter suppresses multi-leg bus routing when any direct route exists" bug.
+
+1. **Transfer branch always runs in `transit_mode="Bus"`** — `main.py` `recommend()`: removed the `if not bus_ranked:` gate that prevented `find_bus_transfer_routes()` from ever running when `find_bus_routes()` returned any result (which it almost always did). In Bus mode the backend now calls both unconditionally, concatenates the results, then runs the combined list through the existing `_rank_bus_routes()` → merge-with-train → sort → top-5 → fingerprint-dedup pipeline. In `transit_mode="All"` the original emptiness-gated fallback is retained (unified train graph provides the intermodal backstop and the transfer call is latency-expensive).
+2. **Transfer candidate count lowered 3 → 2** — Up-front cost-control measure because the transfer call now runs on every Bus-mode request. The top-5 sort/truncate after the merge still produces the same output quality; the cap only limits how many *candidate* transfer routes `find_bus_transfer_routes()` returns.
+3. **Dedup unchanged** — Existing `_route_fingerprint()`-based dedup below the merge block already drops transfer routes that duplicate a direct route.
+
+---
+
 ### Notable changes (session — 2026-04-17, Feature I — CTA Alerts Integration)
 
 All 3 chunks of Feature I implemented. Active CTA service alerts are now fetched, surfaced to Claude, and displayed in the UI.
@@ -701,20 +723,21 @@ Bus route cards are fully implemented and confirmed working as of 2026-04-09. Al
 - Selects the representative midday trip per direction (first-stop departure closest to noon) using the same strategy as train routing
 - Startup stats observed locally: ~37,000 weekday candidate trips, 5.8M rows scanned in ~21s
 
-**`find_bus_routes()`** (`transit_graph.py`)
-- Takes origin/destination coordinates, live bus arrivals (including `stop_id` field), and origin bus stops with walk times
-- Resolves direction via `stop_id` alone — CTA GTFS assigns unique stop IDs per direction, so no direction-string-to-direction_id mapping is needed. Confirmed working in testing.
-- Two-pass design: Pass 1 finds the best exit stop per route+direction via haversine only (cheap); Pass 2 builds Route objects with OSMnx walk calls only for candidates that survive the progressive distance threshold
-- Exit-stop threshold uses progressive expansion: 0.25 → 0.5 → 0.75 → ... → 2.0 miles (+0.25 per step). The tightest threshold that yields at least one result is used, minimising exit walk without hard-failing on slightly-distant stops
-- Computes: board walk (OSMnx) + wait (live API) + in-vehicle (GTFS scheduled times) + exit walk (OSMnx)
-- Returns `list[tuple[float, int, Route]]` — same `(total_minutes, wait_minutes, Route)` format as `_rank_routes()` for trains
-- Bus `TransitLeg`: `line` = direction string (e.g. `"Northbound"`) for color lookup; `line_code` = route number (e.g. `"36"`) for pill label
-- Deduplicates to one result per route+direction; caps at 3 bus routes
+**Direct bus routing** (`transit_graph.py` — `find_routes()` via the unified graph)
+- Feature J (2026-04-18) deprecated and removed the legacy standalone `find_bus_routes()` function in favor of the unified NetworkX graph added by Feature B.
+- Direct bus-only itineraries are surfaced by `find_routes()` walking the graph over the ~11k bus nodes + ~50k bus transit edges. Bus `TransitLeg`s retain the same schema: `line` = direction string for color lookup; `line_code` = route number for the pill label.
+- Live first-leg wait is applied in `_rank_routes()` via `_build_arrival_lookup()` (bearing-filtered) — the same path used for trains.
+
+**Bus+bus transfer routing** (`transit_graph.py` — `find_bus_transfer_routes()`)
+- Handles the itineraries the unified graph does not model: bus A → walk → bus B, where the transfer is a short walk between stops rather than a same-stop boarding.
+- Called unconditionally from `main.py` whenever `transit_mode` is `"Bus"` or `"All"` and live bus arrivals + origin stops are present. `n_routes=2`.
+- Sorting key includes a fixed 7.5-min leg-2 wait estimate (not added to `walk_minutes_total`/`transit_minutes`). Feature D will replace this with live transfer-stop arrivals.
 
 **`main.py` integration**
 - `origin_coords` and `dest_coords` resolved unconditionally (needed by both train and bus routing)
 - Train routing: runs for Train/All modes. Bus routing: runs for Bus/All modes
-- Results merged, sorted by total minutes, capped at 5 combined
+- Bus block calls `find_bus_transfer_routes()` directly (no `_route_fingerprint()` dedup; no activation gate) and merges with `ranked_routes` via the shared sort
+- Results capped at 5 combined
 - `_format_train_routes` renamed `_format_routes` — handles both train and bus leg formatting
 - `line_code` added to leg serialization in API response (frontend needs it for bus pill labels)
 - Raw bus arrival fallback only shown when bus routing produced no structured routes
