@@ -19,7 +19,7 @@ from gtfs_loader import (
     resolve_location, geocode_google, NEIGHBORHOOD_COORDS,
     fuzzy_match_neighborhood, _normalize_street_abbr,
 )
-from cta_client import get_train_arrivals, get_bus_arrivals, get_alerts, _TRAIN_LINE_TO_ALERT_ID
+from cta_client import get_train_arrivals, get_bus_arrivals, get_alerts, _TRAIN_LINE_TO_ALERT_ID, LINE_NAMES
 from transit_graph import (
     find_routes, find_bus_transfer_routes, warm_up, get_bus_stop_sequences,
     WalkLeg, TransitLeg, get_station_coords, get_station_by_name,
@@ -356,6 +356,20 @@ def _rank_bus_routes(
     return result
 
 
+def _is_simple_query(ranked_routes: list[tuple]) -> bool:
+    """
+    A query is 'simple' if there is exactly one ranked route and that route
+    contains exactly one TransitLeg (direct ride, no transfer). Walk legs are
+    not counted. Simple queries are routed to Haiku for cost savings; all
+    others use Sonnet.
+    """
+    if len(ranked_routes) != 1:
+        return False
+    _, _, route = ranked_routes[0]
+    transit_legs = [leg for leg in route.legs if isinstance(leg, TransitLeg)]
+    return len(transit_legs) == 1
+
+
 def _alert_ids_from_routes(ranked_routes: list[tuple]) -> list[str]:
     """Return deduplicated Alerts API route ids for all transit legs in ranked_routes."""
     seen: set[str] = set()
@@ -649,23 +663,36 @@ async def recommend(request: RouteRequest, http_request: Request):
                 detail="Your origin and destination appear to be the same location.",
             )
 
-        # Train routing
-        if request.transit_mode != "Bus":
-            try:
-                arrival_lookup = _build_arrival_lookup(train_arrivals)
-                ranked_routes = _rank_routes(
-                    find_routes(
-                        origin_lat=origin_coords[0],
-                        origin_lon=origin_coords[1],
-                        dest_lat=dest_coords[0],
-                        dest_lon=dest_coords[1],
-                        origin_stations=origin_stations,
-                        n_routes=5,
-                    ),
-                    arrival_lookup,
-                )
-            except Exception as exc:
-                print(f"[recommend] train routing error: {exc}")
+        # Unified-graph routing (trains + direct bus + intermodal).
+        # Feature J (2026-04-18): the legacy Bus-mode short-circuit that skipped
+        # find_routes() entirely was removed. find_routes() is the sole source
+        # of direct bus-only itineraries now that find_bus_routes() is gone,
+        # so it must run in every mode. In Bus mode we post-filter to drop
+        # routes that traverse any train leg.
+        try:
+            arrival_lookup = _build_arrival_lookup(train_arrivals)
+            ranked_routes = _rank_routes(
+                find_routes(
+                    origin_lat=origin_coords[0],
+                    origin_lon=origin_coords[1],
+                    dest_lat=dest_coords[0],
+                    dest_lon=dest_coords[1],
+                    origin_stations=origin_stations,
+                    n_routes=5,
+                ),
+                arrival_lookup,
+            )
+            if request.transit_mode == "Bus":
+                ranked_routes = [
+                    (total, wait, route)
+                    for total, wait, route in ranked_routes
+                    if not any(
+                        isinstance(leg, TransitLeg) and leg.line_code in LINE_NAMES
+                        for leg in route.legs
+                    )
+                ]
+        except Exception as exc:
+            print(f"[recommend] unified-graph routing error: {exc}")
 
         # Bus routing
         #
@@ -713,10 +740,16 @@ async def recommend(request: RouteRequest, http_request: Request):
         alerts=alerts,
     )
 
+    # Model selection — Haiku for simple direct rides, Sonnet for everything else.
+    simple = _is_simple_query(ranked_routes)
+    model = "claude-haiku-4-5-20251001" if simple else "claude-sonnet-4-6"
+    max_tokens = 300 if simple else 400
+    print(f"[claude model={'haiku' if simple else 'sonnet'} simple={simple}]")
+
     try:
         message = await claude_client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=400,
+            model=model,
+            max_tokens=max_tokens,
             messages=[{"role": "user", "content": prompt}],
         )
         text_block = next((c for c in message.content if hasattr(c, "text")), None)
@@ -730,6 +763,7 @@ async def recommend(request: RouteRequest, http_request: Request):
     # ── Response ──────────────────────────────────────────────────────────────
     response = {
         "recommendation": recommendation,
+        "model_used": "haiku" if simple else "sonnet",
         "origin_coords": list(origin_coords) if origin_coords else None,
         "dest_coords":   list(dest_coords)   if dest_coords   else None,
         "train_arrivals": train_arrivals,

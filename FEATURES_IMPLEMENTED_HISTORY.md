@@ -24,6 +24,7 @@ A log of features that have been designed and fully implemented. Entries are mov
 11. Claude Response Caching — **Bolt-On**
 12. Multi-Leg Train Routing Gap 2 (Bus First/Last Mile) — **Structural** (Resolved by Feature B)
 13. Feature J — Deprecate `find_bus_routes()` in Favor of Unified Graph — **Bolt-On** (Dependency on Feature B)
+14. Claude Haiku for Simple Queries — **Bolt-On**
 
 ---
 
@@ -216,7 +217,25 @@ Frontend:
 **What was implemented (3 chunks):**
 
 - **Chunk 1 (Verification):** Confirmed that `find_routes()` over the unified graph surfaces direct-bus options of comparable quality to the deleted function for canonical test trips (Wicker Park↔Logan Square, Lincoln Square↔Lakeview, Pilsen↔Bridgeport). Route totals within tolerance; no nonsensical bus paths.
-- **Chunk 2 (`main.py` restructure):** Removed the `find_bus_routes(...)` call and its activation-gate for `find_bus_transfer_routes()`. Bus routing block now calls `find_bus_transfer_routes()` unconditionally (subject to the existing `bus_arrivals and origin_bus_stops` guard) for both `"Bus"` and `"All"` modes with `n_routes=2`. Removed the `_route_fingerprint()` deduplication block — the unified graph and `find_bus_transfer_routes()` produce non-overlapping route types (direct vs. transfer) by design. Updated `_rank_bus_routes()` docstring to reference `find_bus_transfer_routes()` as its sole caller.
+- **Chunk 2 (`main.py` restructure):** Removed the `find_bus_routes(...)` call and its activation-gate for `find_bus_transfer_routes()`. Bus routing block now calls `find_bus_transfer_routes()` unconditionally (subject to the existing `bus_arrivals and origin_bus_stops` guard) for both `"Bus"` and `"All"` modes with `n_routes=2`. Removed the `_route_fingerprint()` deduplication block — the unified graph and `find_bus_transfer_routes()` produce non-overlapping route types (direct vs. transfer) by design. Updated `_rank_bus_routes()` docstring to reference `find_bus_transfer_routes()` as its sole caller. Also dropped the legacy `if transit_mode != "Bus"` gate on `find_routes()` so the unified-graph call runs in every mode — it is now the sole source of direct bus-only itineraries. In Bus mode, results are post-filtered to drop any route that traverses a train `TransitLeg` (`line_code in LINE_NAMES`). Imports `LINE_NAMES` from `cta_client`.
 - **Chunk 3 (cleanup):** Deleted `find_bus_routes()` from `transit_graph.py` (~205 lines). Removed the `find_bus_routes` symbol from the `main.py` import list. Updated the `_build_shape_lookup()` comment to cite `find_bus_transfer_routes()` as the remaining `get_shape(route_short_name, direction_id)` caller. Updated `find_bus_transfer_routes()` docstring (no longer gated by the legacy function) and the `_MAX_EXIT_DIST` comment. Updated the `stop_id` comment in `cta_client.py`. `grep -r "find_bus_routes" backend/` confirms zero remaining references.
 
 **Net effect:** One less per-request bus-routing codepath, one fewer CTA Bus Tracker API-derived computation path to keep in sync, and a simpler merge in `main.py` (no fingerprint dedup step). Response schema and frontend are unchanged.
+
+---
+
+# Claude Haiku for Simple Queries
+
+**Completed: 2026-04-18**
+
+**Overview:** Routes with exactly one option and a single direct `TransitLeg` (no transfers) are now handled by `claude-haiku-4-5-20251001` instead of `claude-sonnet-4-6`. Haiku is ~65% cheaper and fully capable of formatting a single-option recommendation; Sonnet is reserved for multi-option or multi-leg responses that need comparison reasoning.
+
+**What was implemented:**
+
+- Added `_is_simple_query(ranked_routes)` helper in `backend/main.py`. Returns `True` iff `len(ranked_routes) == 1` **and** that route contains exactly one `TransitLeg` (walk legs do not count). Conservative by design — any query with multiple routes, a transfer, or multiple same-line options falls through to Sonnet.
+- Model selection branch in `/recommend` immediately before the `claude_client.messages.create(...)` call. Haiku uses `max_tokens=300`; Sonnet keeps `max_tokens=400`. The prompt is identical for both models — no prompt divergence to maintain.
+- Stdout log line `[claude model=haiku|sonnet simple=True|False]` printed on every request for cost analysis.
+- `"model_used": "haiku" | "sonnet"` added to the `/recommend` response dict. Frontend ignores it; exists for observability and future surfacing. The response cache stores it unchanged, so cache hits still return the correct `model_used` value from the original call.
+- BYOK path uses the same classifier — whether the request uses a shared-quota key or a user-supplied key, the same `simple` determination picks the model.
+
+**Out of scope (explicitly not done):** Haiku-specific prompt tuning; expanding "simple" to cover two same-line options; per-model cost tracking in the response; automatic Haiku→Sonnet fallback on low-confidence output (the classifier is conservative enough that this is not needed).

@@ -59,7 +59,7 @@ Accuracy is essential. The routing engine must:
 
 **AI Integration**
 - `anthropic` (official Python SDK) — Claude API calls from backend
-- Model: `claude-sonnet-4-6`
+- Model: `claude-sonnet-4-6` by default; `claude-haiku-4-5-20251001` for simple single-option/single-leg queries (see cost reduction strategies below)
 
 **Database** *(not planned for V1 or V2)*
 - No database required. Phase 7 is ad monetization (AdSense). User accounts and saved routes are not currently planned.
@@ -111,7 +111,7 @@ Accuracy is essential. The routing engine must:
 **Cost reduction strategies to implement from the start:**
 - Limit free requests per user per day to control API costs
 - Cache Claude responses for identical or near-identical queries
-- Consider Claude Haiku for simpler queries (65% cheaper than Sonnet)
+- Claude Haiku for simple queries ✅ implemented 2026-04-18: `/recommend` picks `claude-haiku-4-5-20251001` when `ranked_routes` has exactly one route with exactly one `TransitLeg` (direct ride, no transfer); all other queries keep `claude-sonnet-4-6`. Response includes `"model_used": "haiku"|"sonnet"` for observability.
 
 > **Rate limiting status:** Code complete — OFF by default. Activate with `RATE_LIMIT_ENABLED=true` in Railway env vars before enabling for public traffic.
 
@@ -726,6 +726,7 @@ Bus route cards are fully implemented and confirmed working as of 2026-04-09. Al
 **Direct bus routing** (`transit_graph.py` — `find_routes()` via the unified graph)
 - Feature J (2026-04-18) deprecated and removed the legacy standalone `find_bus_routes()` function in favor of the unified NetworkX graph added by Feature B.
 - Direct bus-only itineraries are surfaced by `find_routes()` walking the graph over the ~11k bus nodes + ~50k bus transit edges. Bus `TransitLeg`s retain the same schema: `line` = direction string for color lookup; `line_code` = route number for the pill label.
+- `find_routes()` runs in every mode now (the old `if transit_mode != "Bus"` gate was removed as part of Feature J — without it, Bus mode returned no direct-bus routes for origin/destination pairs that lacked a qualifying bus-transfer option). In Bus mode, `main.py` post-filters the ranked list to drop any route containing a train leg (`leg.line_code in LINE_NAMES`).
 - Live first-leg wait is applied in `_rank_routes()` via `_build_arrival_lookup()` (bearing-filtered) — the same path used for trains.
 
 **Bus+bus transfer routing** (`transit_graph.py` — `find_bus_transfer_routes()`)
