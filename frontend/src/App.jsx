@@ -146,8 +146,15 @@ function RouteLegs({ legs }) {
         const pillLabel = isBus
           ? leg.line_code
           : leg.line?.replace(" Line", "");
+        const isTransferLeg = legs.slice(0, i).some(l => l.type === "transit");
+        const xferWait = leg.transfer_wait_minutes;
+        const xferNote =
+          isTransferLeg && xferWait !== undefined && xferWait !== null
+            ? (xferWait === 0 ? "⏱ Due" : `⏱ ${xferWait} min wait`)
+            : null;
         return (
           <li key={i} className="leg leg-transit">
+            {xferNote && <span className="transfer-wait-note">{xferNote}</span>}
             <span className="leg-pill" style={{ background: color }}>
               {pillLabel}
             </span>
@@ -358,7 +365,7 @@ export default function App() {
       const routes = data.routes || [];
 
       setResult({
-        recommendation: renderMarkdown(data.recommendation),
+        recommendation: renderMarkdown(data.recommendation || ""),
         routes,
         alerts: data.alerts || [],
         originCoords: data.origin_coords,

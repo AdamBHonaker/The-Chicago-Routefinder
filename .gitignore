@@ -9,6 +9,8 @@ backend/gtfs_data/
 
 # Persistent geocode cache — built up at runtime from Google Maps API lookups
 backend/geocode_cache.json
+backend/geocode_cache.journal
+backend/geocode_cache.tmp
 
 # Monthly Google Maps API call counter — temporary pre-deployment rate limiter
 backend/geocode_counter.json

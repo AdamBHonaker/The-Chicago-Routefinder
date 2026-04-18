@@ -23,16 +23,21 @@ estimates and no CTA stops will be found beyond the boundary.
 
 import atexit
 import csv
+import heapq
 import json
 import math
 import os
 import re
 import threading
+import time
 from difflib import SequenceMatcher
 from functools import lru_cache
 from pathlib import Path
 
 import requests
+
+# Persistent HTTP session — reuses keep-alive connections across geocode calls.
+_http_session = requests.Session()
 
 from walking import walk_minutes
 
@@ -44,8 +49,12 @@ _GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
 # Chicago bounding box for geocoding bias (SW lat,lon | NE lat,lon)
 _CHICAGO_BOUNDS = "41.64,-87.94|42.02,-87.52"
 
-# Persistent geocode cache — survives server restarts
+# Persistent geocode cache — survives server restarts.
+# Writes use a snapshot file + append-only journal so frequent flushes are O(delta),
+# not O(cache size). The journal is replayed over the snapshot on load and compacted
+# back into the snapshot periodically (see _GEOCODE_COMPACT_* below).
 _GEOCODE_CACHE_PATH = Path(__file__).parent / "geocode_cache.json"
+_GEOCODE_JOURNAL_PATH = Path(__file__).parent / "geocode_cache.journal"
 
 # ---------------------------------------------------------------------------
 # TEMPORARY pre-deployment rate limit — remove after go-live
@@ -112,19 +121,38 @@ _geocode_lock = threading.Lock()
 
 
 def _load_geocode_cache() -> dict[str, tuple[float, float] | None]:
-    """Load the geocode cache from disk. Returns an empty dict if not found."""
+    """Load the geocode cache from disk: snapshot JSON + any appended journal lines."""
+    cache: dict[str, tuple[float, float] | None] = {}
     if _GEOCODE_CACHE_PATH.exists():
         try:
             raw = json.loads(_GEOCODE_CACHE_PATH.read_text(encoding="utf-8"))
             # JSON stores lists; convert [lat, lon] back to tuples (or None)
-            return {k: tuple(v) if v is not None else None for k, v in raw.items()}
+            cache = {k: tuple(v) if v is not None else None for k, v in raw.items()}
         except Exception as exc:
-            print(f"[gtfs_loader] Could not load geocode cache: {exc}")
-    return {}
+            print(f"[gtfs_loader] Could not load geocode cache snapshot: {exc}")
+    if _GEOCODE_JOURNAL_PATH.exists():
+        try:
+            with _GEOCODE_JOURNAL_PATH.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        k, v = json.loads(line)
+                    except Exception:
+                        # Skip torn/corrupt trailing lines rather than failing startup
+                        continue
+                    cache[k] = tuple(v) if v is not None else None
+        except Exception as exc:
+            print(f"[gtfs_loader] Could not replay geocode journal: {exc}")
+    return cache
 
 
-def _save_geocode_cache(cache: dict) -> None:
-    """Persist the geocode cache to disk using an atomic rename to prevent corruption."""
+def _save_geocode_cache(cache: dict) -> bool:
+    """Write the full snapshot atomically and drop the journal it subsumes.
+
+    Returns True on success, False on failure.
+    """
     tmp = _GEOCODE_CACHE_PATH.with_suffix(".tmp")
     try:
         tmp.write_text(
@@ -132,30 +160,81 @@ def _save_geocode_cache(cache: dict) -> None:
             encoding="utf-8",
         )
         tmp.replace(_GEOCODE_CACHE_PATH)
+        # Snapshot now contains every key the journal replayed — drop it.
+        try:
+            _GEOCODE_JOURNAL_PATH.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return True
     except Exception as exc:
         print(f"[gtfs_loader] Could not save geocode cache: {exc}")
         try:
             tmp.unlink(missing_ok=True)
         except Exception:
             pass
+        return False
 
 
 # Loaded once at import time; dirty entries are flushed by background thread.
 _geocode_cache: dict[str, tuple[float, float] | None] = _load_geocode_cache()
 
-# True whenever an entry has been added since the last disk flush.
-# Always read/written under _geocode_lock.
-_geocode_cache_dirty: bool = False
+# Entries added since the last journal append. Always mutated under _geocode_lock.
+_geocode_pending: dict[str, tuple[float, float] | None] = {}
 _GEOCODE_FLUSH_INTERVAL = 30  # seconds between background flushes
+_GEOCODE_COMPACT_INTERVAL = 3600  # seconds between full snapshot rewrites
+_GEOCODE_COMPACT_THRESHOLD = 500  # journal entries that force an early compaction
+_geocode_last_compact: float = time.monotonic()
+_geocode_journal_entries: int = 0  # lines appended since last full snapshot
+
+
+def _append_geocode_journal(entries: dict[str, tuple[float, float] | None]) -> None:
+    """Append new cache entries to the journal as JSONL — O(delta) per flush."""
+    try:
+        with _GEOCODE_JOURNAL_PATH.open("a", encoding="utf-8") as f:
+            for k, v in entries.items():
+                f.write(json.dumps([k, list(v) if v is not None else None], ensure_ascii=False) + "\n")
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                # fsync not supported on this fd (e.g. some network FS); tolerable.
+                pass
+    except Exception as exc:
+        print(f"[gtfs_loader] Could not append to geocode journal: {exc}")
 
 
 def _flush_geocode_cache_if_dirty() -> None:
-    """Write the cache to disk only when it has been modified since the last flush."""
-    global _geocode_cache_dirty
+    """Append pending entries to the journal; compact to a full snapshot periodically."""
+    global _geocode_pending, _geocode_last_compact, _geocode_journal_entries
     with _geocode_lock:
-        if _geocode_cache_dirty:
-            _save_geocode_cache(_geocode_cache)
-            _geocode_cache_dirty = False
+        if not _geocode_pending:
+            # Even with no new entries, honor a time-based compaction so any prior
+            # journal growth gets folded back into the snapshot eventually.
+            if (
+                _geocode_journal_entries > 0
+                and time.monotonic() - _geocode_last_compact >= _GEOCODE_COMPACT_INTERVAL
+            ):
+                _save_geocode_cache(_geocode_cache)
+                _geocode_journal_entries = 0
+                _geocode_last_compact = time.monotonic()
+            return
+        pending = _geocode_pending
+        _geocode_pending = {}
+        now = time.monotonic()
+        should_compact = (
+            _geocode_journal_entries + len(pending) >= _GEOCODE_COMPACT_THRESHOLD
+            or now - _geocode_last_compact >= _GEOCODE_COMPACT_INTERVAL
+        )
+        if should_compact:
+            if _save_geocode_cache(_geocode_cache):
+                _geocode_journal_entries = 0
+                _geocode_last_compact = now
+            else:
+                # Save failed — restore pending so entries aren't lost on next flush
+                _geocode_pending.update(pending)
+        else:
+            _append_geocode_journal(pending)
+            _geocode_journal_entries += len(pending)
 
 
 def _start_geocode_flush_thread() -> None:
@@ -465,8 +544,6 @@ def geocode_google(query: str) -> tuple[float, float] | None:
     Returns None on any failure (network error, no result, missing key).
     Requires GOOGLE_MAPS_API_KEY in the environment.
     """
-    global _geocode_cache_dirty
-
     # Fast path: already cached (no lock needed — dict reads are thread-safe)
     if query in _geocode_cache:
         return _geocode_cache[query]
@@ -492,7 +569,7 @@ def geocode_google(query: str) -> tuple[float, float] | None:
             return None
 
         try:
-            resp = requests.get(
+            resp = _http_session.get(
                 _GOOGLE_MAPS_GEOCODE_URL,
                 params={
                     "address": query if "chicago" in query.lower() else query + ", Chicago, IL",
@@ -507,20 +584,25 @@ def geocode_google(query: str) -> tuple[float, float] | None:
                 loc = data["results"][0]["geometry"]["location"]
                 coords: tuple[float, float] = (float(loc["lat"]), float(loc["lng"]))
                 _geocode_cache[query] = coords
-                _geocode_cache_dirty = True
+                _geocode_pending[query] = coords
                 _increment_geocode_call_count()
                 print(
                     f"[gtfs_loader] Geocoded and cached '{query}' -> {coords} "
                     f"(monthly calls: {_geocode_call_count()}/{_GEOCODE_CALL_LIMIT})"
                 )
                 return coords
-            print(f"[gtfs_loader] Google geocoding returned status '{data.get('status')}' for '{query}'")
+            status = data.get("status")
+            print(f"[gtfs_loader] Google geocoding returned status '{status}' for '{query}'")
+            # Only cache permanent misses (ZERO_RESULTS = address genuinely doesn't exist).
+            # Transient errors (OVER_QUERY_LIMIT, REQUEST_DENIED, UNKNOWN_ERROR, etc.)
+            # must not be cached so future requests can retry.
+            if status == "ZERO_RESULTS":
+                _geocode_cache[query] = None
+                _geocode_pending[query] = None
         except Exception as exc:
             print(f"[gtfs_loader] Google geocoding failed for '{query}': {exc}")
+            # Don't cache transient network/timeout errors — allow retries.
 
-        # Cache the miss too — avoids hammering the API for queries that never resolve
-        _geocode_cache[query] = None
-        _geocode_cache_dirty = True
         return None
 
 
@@ -544,7 +626,7 @@ def _load_stops() -> tuple[list[dict], list[dict]]:
             "Run `python fetch_gtfs.py` to download the data."
         )
 
-    with open(stops_file, encoding="utf-8-sig") as f:
+    with open(stops_file, newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         for row in reader:
             try:
@@ -673,8 +755,7 @@ def find_nearest_train_stations(
                                      Use for destination: user walks FROM the station.
     """
     hits = _candidates_within("train", lat, lon, max_distance_miles)
-    hits.sort(key=lambda item: item[0])
-    candidates = [{**s} for _, s in hits[:max_results]]
+    candidates = [{**s} for _, s in heapq.nsmallest(max_results, hits, key=lambda item: item[0])]
 
     for s in candidates:
         if walk_to_station:
@@ -710,8 +791,7 @@ def find_nearest_bus_stops(
         if hits:
             break
 
-    hits.sort(key=lambda item: item[0])
-    candidates = [{**s} for _, s in hits[:max_results]]
+    candidates = [{**s} for _, s in heapq.nsmallest(max_results, hits, key=lambda item: item[0])]
 
     for s in candidates:
         s["walk_minutes"] = walk_minutes(lat, lon, s["lat"], s["lon"])
@@ -722,6 +802,20 @@ def find_nearest_bus_stops(
 _FUZZY_STOP_WORDS: frozenset[str] = frozenset(
     {"the", "of", "a", "an", "and", "at", "in", "on", "chicago"}
 )
+
+
+@lru_cache(maxsize=1)
+def _neighborhood_word_index() -> dict[str, frozenset[str]]:
+    """
+    Inverted index: meaningful word → frozenset of NEIGHBORHOOD_COORDS keys
+    containing that word. Built once; lets multi-word fuzzy queries skip
+    keys that can't possibly share a meaningful token.
+    """
+    word_keys: dict[str, set[str]] = {}
+    for key in NEIGHBORHOOD_COORDS:
+        for w in set(key.split()) - _FUZZY_STOP_WORDS:
+            word_keys.setdefault(w, set()).add(key)
+    return {w: frozenset(ks) for w, ks in word_keys.items()}
 
 
 @lru_cache(maxsize=1024)
@@ -739,17 +833,44 @@ def fuzzy_match_neighborhood(query: str) -> tuple[tuple[float, float] | None, st
     stay in sync automatically.
     """
     q_words = set(query.split()) - _FUZZY_STOP_WORDS
+
+    # Multi-word queries must share a meaningful word with the matched key
+    # — use the inverted index to skip keys that can't possibly qualify.
+    # Single-word / stop-word-only queries scan the full map (behavior
+    # preserved — those never had the word-overlap requirement).
+    if len(q_words) > 1:
+        word_index = _neighborhood_word_index()
+        candidates: set[str] = set()
+        for w in q_words:
+            hits = word_index.get(w)
+            if hits:
+                candidates.update(hits)
+        if not candidates:
+            return None, None
+        iterable: "object" = candidates
+    else:
+        iterable = NEIGHBORHOOD_COORDS
+
+    # SequenceMatcher caches info about seq2, so hold `query` as seq2 and
+    # swap seq1 per key — this is the documented fast pattern for "one vs many".
+    matcher = SequenceMatcher()
+    matcher.set_seq2(query)
+
     best_score, best_key = 0.0, None
-    for key in NEIGHBORHOOD_COORDS:
-        score = SequenceMatcher(None, query, key).ratio()
+    for key in iterable:
+        matcher.set_seq1(key)
+        # quick_ratio() is a cheap upper bound on ratio(); if it can't beat
+        # the current best we can skip the expensive real computation.
+        if matcher.quick_ratio() <= best_score:
+            continue
+        score = matcher.ratio()
         if score <= best_score:
             continue
-        if len(q_words) > 1:
-            key_words = set(key.split()) - _FUZZY_STOP_WORDS
-            if not q_words & key_words:
-                continue
         best_score = score
         best_key = key
+        # A ratio of 1.0 means exact match — nothing can beat it.
+        if best_score >= 0.99:
+            break
     if best_score >= 0.95 and best_key:
         return NEIGHBORHOOD_COORDS[best_key], best_key
     return None, None
@@ -822,12 +943,13 @@ def resolve_location(query: str) -> tuple[list[dict], list[dict], str | None]:
         (train_stations, bus_stops, matched_name)
         matched_name is the dict key or the original query if geocoded.
     """
-    q = query.lower().strip()
+    original_query = query.strip()
+    q = original_query.lower()
     q = _normalize_street_abbr(q)          # expand "Ave" → "avenue", etc.
 
     # 1. Exact match
     coords = NEIGHBORHOOD_COORDS.get(q)
-    matched_name = q if coords else None
+    matched_name = original_query if coords else None
 
     # 2. Fuzzy match via shared helper (0.95 threshold + meaningful-word guard)
     if coords is None:
@@ -837,7 +959,7 @@ def resolve_location(query: str) -> tuple[list[dict], list[dict], str | None]:
     if coords is None:
         coords = geocode_google(q)
         if coords:
-            matched_name = q
+            matched_name = original_query
 
     if coords is None:
         return [], [], None

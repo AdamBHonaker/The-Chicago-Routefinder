@@ -61,14 +61,14 @@ def load_parent_stations() -> dict[str, dict]:
         for row in csv.DictReader(f):
             try:
                 sid = int(row["stop_id"].strip())
-            except ValueError:
+                if 40000 <= sid <= 49999 and row.get("location_type", "").strip() == "1":
+                    stations[str(sid)] = {
+                        "name": row.get("stop_name", "").strip(),
+                        "lat":  float(row["stop_lat"].strip()),
+                        "lon":  float(row["stop_lon"].strip()),
+                    }
+            except (ValueError, KeyError):
                 continue
-            if 40000 <= sid <= 49999 and row.get("location_type", "").strip() == "1":
-                stations[str(sid)] = {
-                    "name": row.get("stop_name", "").strip(),
-                    "lat":  float(row["stop_lat"].strip()),
-                    "lon":  float(row["stop_lon"].strip()),
-                }
     return stations
 
 

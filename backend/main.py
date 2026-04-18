@@ -260,6 +260,48 @@ def _build_arrival_lookup(
     return lookup
 
 
+def _pick_wait(
+    dest_map: dict[str, int],
+    from_mapid: str,
+    to_mapid: str,
+) -> int | None:
+    """
+    Pick live wait minutes from a destination→minutes map using a dot-product
+    bearing test to resolve multi-direction stations. Returns None when
+    dest_map is empty (no live data).
+
+    When multiple arrival directions exist (e.g. Howard vs 95th/Dan Ryan on
+    the Red Line), selects the terminal whose vector from the boarding station
+    is most aligned with the boarding→exit vector. Falls back to earliest
+    arrival if coordinates are unavailable.
+    """
+    if not dest_map:
+        return None
+    if len(dest_map) == 1:
+        return next(iter(dest_map.values()))
+    from_coords = get_station_coords(from_mapid)
+    to_coords   = get_station_coords(to_mapid)
+    if not from_coords or not to_coords:
+        return min(dest_map.values())
+    dlat = to_coords[0] - from_coords[0]
+    dlon = to_coords[1] - from_coords[1]
+    if dlat == 0.0 and dlon == 0.0:
+        return min(dest_map.values())
+    best_score = float("-inf")
+    best_wait: int | None = None
+    for dest_name, minutes in dest_map.items():
+        term = get_station_by_name(dest_name)
+        if term is None:
+            continue
+        tlat = term[0] - from_coords[0]
+        tlon = term[1] - from_coords[1]
+        score = dlat * tlat + dlon * tlon
+        if score > best_score:
+            best_score = score
+            best_wait  = minutes
+    return best_wait if best_wait is not None else min(dest_map.values())
+
+
 def _rank_routes(
     routes: list,
     arrival_lookup: dict[tuple[str, str], dict[str, int]],
@@ -267,60 +309,16 @@ def _rank_routes(
     """
     Add live wait time to each route and sort by total (walk + wait + transit).
     Returns list of (total_with_wait, wait_minutes, route).
-
-    When multiple arrival directions exist at the boarding station (e.g. Howard
-    vs 95th/Dan Ryan on the Red Line), uses the direction of the transit leg to
-    select the correct one via a dot-product bearing test:
-      - Compute vector A→B where A = boarding station, B = exit station
-      - For each destNm, compute vector A→terminal
-      - Pick the terminal whose direction is closest to A→B (positive dot product)
-    Falls back to the earliest arrival if coordinates are unavailable.
+    Bearing-based direction selection is delegated to _pick_wait().
     """
     ranked = []
     for route in routes:
         first_transit = next((l for l in route.legs if isinstance(l, TransitLeg)), None)
-        # None = no live arrival data found; 0 = train/bus is Due right now
         wait: int | None = None
         if first_transit:
             key = (first_transit.line_code, first_transit.from_mapid)
             dest_map = arrival_lookup.get(key, {})
-
-            if not dest_map:
-                wait = None  # no live data for this station/line
-            elif len(dest_map) == 1:
-                # Only one direction at this station — no ambiguity
-                wait = next(iter(dest_map.values()))
-            else:
-                # Multiple directions — use bearing to pick the right one
-                from_coords = get_station_coords(first_transit.from_mapid)
-                to_coords   = get_station_coords(first_transit.to_mapid)
-                best_wait: int | None = None
-
-                if from_coords and to_coords:
-                    # Direction vector of this transit leg
-                    dlat = to_coords[0] - from_coords[0]
-                    dlon = to_coords[1] - from_coords[1]
-
-                    if dlat == 0.0 and dlon == 0.0:
-                        pass  # identical coords — fall through to min(dest_map.values()) below
-                    else:
-                        best_score = float("-inf")
-                        for dest_name, minutes in dest_map.items():
-                            term = get_station_by_name(dest_name)
-                            if term is None:
-                                continue
-                            # Vector from boarding station to this terminal
-                            tlat = term[0] - from_coords[0]
-                            tlon = term[1] - from_coords[1]
-                            # Dot product > 0 means terminal is ahead of us
-                            score = dlat * tlat + dlon * tlon
-                            if score > best_score:
-                                best_score = score
-                                best_wait  = minutes
-
-                # Fall back to earliest arrival if bearing test failed
-                wait = best_wait if best_wait is not None else min(dest_map.values())
-
+            wait = _pick_wait(dest_map, first_transit.from_mapid, first_transit.to_mapid)
         total = route.total_minutes_no_wait + (wait if wait is not None else 0)
         ranked.append((total, wait, route))
     ranked.sort(key=lambda x: x[0])
@@ -354,6 +352,74 @@ def _rank_bus_routes(
         result.append((float(total), normalised_wait, route))
     result.sort(key=lambda x: x[0])
     return result
+
+
+async def _empty() -> list:
+    """Coroutine that immediately returns an empty list. Used as a no-op placeholder
+    in asyncio.gather() when a transfer fetch is not needed."""
+    return []
+
+
+def _extract_transfer_stops(
+    ranked_routes: list[tuple],
+) -> tuple[list[dict], list[str]]:
+    """
+    Scan ranked_routes for transfer boarding legs (TransitLegs where an earlier
+    leg in the same route is also a TransitLeg). Returns two deduped collections:
+      - train_stations: [{mapid, name}] for train transfer stops
+      - bus_stop_ids: [stop_id] for bus transfer stops
+    """
+    train_stops: dict[str, dict] = {}
+    bus_stop_ids: list[str] = []
+    bus_seen: set[str] = set()
+    for _total, _wait, route in ranked_routes:
+        seen_transit = False
+        for leg in route.legs:
+            if isinstance(leg, TransitLeg):
+                if seen_transit:
+                    if leg.line_code in LINE_NAMES:
+                        if leg.from_mapid not in train_stops:
+                            train_stops[leg.from_mapid] = {
+                                "mapid": leg.from_mapid,
+                                "name": leg.from_station,
+                            }
+                    else:
+                        if leg.from_mapid not in bus_seen:
+                            bus_seen.add(leg.from_mapid)
+                            bus_stop_ids.append(leg.from_mapid)
+                seen_transit = True
+    return list(train_stops.values()), bus_stop_ids
+
+
+def _build_bus_transfer_lookup(
+    bus_arrivals: list[dict],
+) -> dict[tuple[str, str], int]:
+    """(route, stop_id) -> earliest arrival minutes for transfer bus stops."""
+    lookup: dict[tuple[str, str], int] = {}
+    for a in bus_arrivals:
+        key = (a.get("route", ""), a.get("stop_id", ""))
+        minutes = a["arrives_in_minutes"]
+        if key not in lookup or minutes < lookup[key]:
+            lookup[key] = minutes
+    return lookup
+
+
+def _format_transfer_arrivals(arrivals: list[dict]) -> str:
+    """Format combined train+bus transfer arrivals grouped by stop/station name."""
+    groups: dict[str, list[dict]] = {}
+    for a in arrivals:
+        stop = a.get("station") or a.get("stop_name", "Unknown stop")
+        groups.setdefault(stop, []).append(a)
+    lines = []
+    for stop, stop_arrivals in groups.items():
+        lines.append(f"{stop}:")
+        for a in sorted(stop_arrivals, key=lambda x: x["arrives_in_minutes"])[:3]:
+            route_label = a.get("line_code") or a.get("route", "?")
+            dest = a.get("destination", "")
+            mins = a["arrives_in_minutes"]
+            due_str = "Due" if mins == 0 else f"{mins} min"
+            lines.append(f"  {route_label} \u2192 {dest}: {due_str}")
+    return "\n".join(lines)
 
 
 def _is_simple_query(ranked_routes: list[tuple]) -> bool:
@@ -460,6 +526,7 @@ def build_prompt(
     ranked_routes: list[tuple] | None = None,
     bus_fullness: str = "All",
     alerts: list[dict] | None = None,
+    transfer_arrivals: list[dict] | None = None,
 ) -> str:
     mode_constraints = {
         "Train": "The rider wants TRAIN options only. Do not mention buses.",
@@ -489,6 +556,12 @@ def build_prompt(
         sections.append(
             "Calculated route options (sorted by total time: walk + wait + in-vehicle):\n"
             + routes_text
+        )
+
+    if transfer_arrivals:
+        sections.append(
+            "Live arrivals at transfer stop(s):\n"
+            + _format_transfer_arrivals(transfer_arrivals)
         )
 
     if not ranked_routes and bus_arrivals and transit_mode in ("Bus", "All"):
@@ -584,11 +657,11 @@ async def recommend(request: RouteRequest, http_request: Request):
     key = _cache_key(request.origin, request.destination, request.transit_mode, request.bus_fullness,
                      byok=bool(byok_key))
     cached = _response_cache.get(key)
-    if cached and time.monotonic() < cached[0]:
-        return {**cached[1], "cache_hit": True}
-    # Evict stale entry if present so we don't carry dead keys
     if cached:
-        del _response_cache[key]
+        if time.monotonic() < cached[0]:
+            return {**cached[1], "cache_hit": True}
+        # Evict stale entry so we don't carry dead keys
+        _response_cache.pop(key, None)
 
     loop = asyncio.get_running_loop()
     origin_stations, origin_bus_stops, origin_match = await loop.run_in_executor(
@@ -724,6 +797,57 @@ async def recommend(request: RouteRequest, http_request: Request):
             except Exception as exc:
                 print(f"[recommend] bus transfer routing error: {exc}")
 
+    # ── Feature D: Live arrivals at transfer stops ────────────────────────────
+    transfer_train_arrivals: list[dict] = []
+    transfer_bus_arrivals:   list[dict] = []
+    if ranked_routes:
+        transfer_train_stations, transfer_bus_stop_ids = _extract_transfer_stops(ranked_routes)
+        xfer_train_task = (
+            get_train_arrivals(transfer_train_stations, train_key)
+            if transfer_train_stations and train_key
+            else _empty()
+        )
+        xfer_bus_task = (
+            get_bus_arrivals(transfer_bus_stop_ids, bus_key)
+            if transfer_bus_stop_ids and bus_key
+            else _empty()
+        )
+        xfer_train_result, xfer_bus_result = await asyncio.gather(
+            xfer_train_task, xfer_bus_task
+        )
+        # get_train_arrivals returns (arrivals, n_errors); _empty() returns []
+        if isinstance(xfer_train_result, tuple):
+            transfer_train_arrivals = xfer_train_result[0]
+        elif isinstance(xfer_train_result, list):
+            transfer_train_arrivals = xfer_train_result
+        if isinstance(xfer_bus_result, tuple):
+            transfer_bus_arrivals = xfer_bus_result[0]
+        elif isinstance(xfer_bus_result, list):
+            transfer_bus_arrivals = xfer_bus_result
+
+        # Annotate transfer legs in-place with live wait data
+        train_xfer_lookup = _build_arrival_lookup(transfer_train_arrivals)
+        bus_xfer_lookup   = _build_bus_transfer_lookup(transfer_bus_arrivals)
+        for _total, _wait, route in ranked_routes:
+            seen_transit = False
+            for leg in route.legs:
+                if isinstance(leg, TransitLeg):
+                    if seen_transit:
+                        if leg.line_code in LINE_NAMES:
+                            dest_map = train_xfer_lookup.get(
+                                (leg.line_code, leg.from_mapid), {}
+                            )
+                            leg.transfer_wait_minutes = _pick_wait(
+                                dest_map, leg.from_mapid, leg.to_mapid
+                            )
+                        else:
+                            leg.transfer_wait_minutes = bus_xfer_lookup.get(
+                                (leg.line_code, leg.from_mapid)
+                            )
+                    seen_transit = True
+
+    transfer_arrivals_combined = transfer_train_arrivals + transfer_bus_arrivals
+
     # ── Alerts ────────────────────────────────────────────────────────────────
     alert_ids = _alert_ids_from_routes(ranked_routes)
     alerts: list[dict] = await get_alerts(alert_ids) if alert_ids else []
@@ -738,6 +862,7 @@ async def recommend(request: RouteRequest, http_request: Request):
         ranked_routes=ranked_routes or None,
         bus_fullness=request.bus_fullness,
         alerts=alerts,
+        transfer_arrivals=transfer_arrivals_combined or None,
     )
 
     # Model selection — Haiku for simple direct rides, Sonnet for everything else.
@@ -798,9 +923,10 @@ async def recommend(request: RouteRequest, http_request: Request):
                         "minutes": round(leg.minutes, 1),
                         **(
                             {
-                                "shape":       leg.shape_points,
-                                "from_coords": leg.shape_points[0]  if leg.shape_points else None,
-                                "to_coords":   leg.shape_points[-1] if leg.shape_points else None,
+                                "shape":                leg.shape_points,
+                                "from_coords":          leg.shape_points[0]  if leg.shape_points else None,
+                                "to_coords":            leg.shape_points[-1] if leg.shape_points else None,
+                                "transfer_wait_minutes": leg.transfer_wait_minutes,
                             }
                             if isinstance(leg, TransitLeg)
                             else {"path": leg.path_points, "directions": leg.directions, "exit_label": leg.exit_label}
@@ -814,10 +940,10 @@ async def recommend(request: RouteRequest, http_request: Request):
     }
 
     # ── Cache write ───────────────────────────────────────────────────────────
-    # Re-insert at end so existing keys move to the "newest" position.
-    if key in _response_cache:
-        del _response_cache[key]
+    # Assign then move_to_end so existing keys shift to the "newest" position
+    # without a separate membership test.
     _response_cache[key] = (time.monotonic() + _CACHE_TTL_SECONDS, response)
+    _response_cache.move_to_end(key)
     if len(_response_cache) > _CACHE_MAX_SIZE:
         _response_cache.popitem(last=False)   # O(1) — drops the oldest insertion
 

@@ -209,8 +209,8 @@ Users can supply their own Anthropic API key via an in-app settings panel. Their
 ## Known Pending Items
 
 - **CTA API limit:** 100,000 req/day (confirmed from Train Tracker docs). Plan caching strategy around 100k.
-- **Known bugs:** See `BUGS_TO_BE_FIXED.md` for open bugs (2 🔴 high, 0 🟡 medium, 1 🟢 low). Resolved bugs are logged in `BUGS_FIXED_HISTORY.md`. When a bug is fixed, delete it from `BUGS_TO_BE_FIXED.md` and add an entry to `BUGS_FIXED_HISTORY.md`.
-- **Future enhancements:** See `FEATURE_IMPLEMENTATION_PLANS.md` for chunked build plans. See `Feature_Prioritization.md` for bolt-on vs structural classification and full status. Key items: ~~Train Station Exit Guidance (Feature A, 5 chunks)~~ ✅ Complete, ~~Multi-Leg Bus Routing / bus+bus transfers (Feature C, 5 chunks)~~ ✅ Complete, ~~Intermodal Routing / train+bus combinations (Feature B, 6 chunks)~~ ✅ Complete (2026-04-16), Live Arrivals at Transfer Stop (Feature D, 4 chunks — Feature C dependency now satisfied), ~~Walk Leg Block-Count Distance Display (Feature E, 2 chunks)~~ ✅ Complete, ~~Street Abbreviation Normalization (Feature F, 1 chunk)~~ ✅ Complete, ~~Long/Short Block Classification (Feature G, 2 chunks)~~ ✅ Complete, ~~Deduplicate Same-Line Station Candidates (Feature H, bolt-on, 3 chunks)~~ ✅ Complete (2026-04-17), ~~CTA Alerts Integration (Feature I, bolt-on, 3 chunks)~~ ✅ Complete (2026-04-17), ~~Deprecate `find_bus_routes()` in Favor of Unified Graph (Feature J, bolt-on, 3 chunks)~~ ✅ Complete (2026-04-18). Beyond chunked features: ~~rate limiting~~ ✅ Code complete (activate with `RATE_LIMIT_ENABLED=true`), ~~BYOK~~ ✅ Code complete (activate with `BYOK_ENABLED=true` + `VITE_BYOK_ENABLED=true`), ~~response caching~~ ✅ Complete, Claude Haiku for simple queries. Multi-leg train routing accuracy gaps: (a) shared-track edge deduplication can mis-label the line on segments where multiple CTA lines share consecutive stations (e.g. Red/Brown between Belmont and Fullerton) — timing is correct but the route card may show the wrong line name; (b) ~~bus access to a better-positioned train station is never considered~~ ✅ Resolved by Feature B.
+- **Known bugs:** See `BUGS_TO_BE_FIXED.md` for open bugs (1 🔴 high, 0 🟡 medium, 1 🟢 low). Resolved bugs are logged in `BUGS_FIXED_HISTORY.md`. When a bug is fixed, delete it from `BUGS_TO_BE_FIXED.md` and add an entry to `BUGS_FIXED_HISTORY.md`.
+- **Future enhancements:** See `FEATURE_IMPLEMENTATION_PLANS.md` for chunked build plans. See `Feature_Prioritization.md` for bolt-on vs structural classification and full status. Key items: ~~Train Station Exit Guidance (Feature A, 5 chunks)~~ ✅ Complete, ~~Multi-Leg Bus Routing / bus+bus transfers (Feature C, 5 chunks)~~ ✅ Complete, ~~Intermodal Routing / train+bus combinations (Feature B, 6 chunks)~~ ✅ Complete (2026-04-16), ~~Live Arrivals at Transfer Stop (Feature D, 4 chunks)~~ ✅ Complete (2026-04-18), ~~Walk Leg Block-Count Distance Display (Feature E, 2 chunks)~~ ✅ Complete, ~~Street Abbreviation Normalization (Feature F, 1 chunk)~~ ✅ Complete, ~~Long/Short Block Classification (Feature G, 2 chunks)~~ ✅ Complete, ~~Deduplicate Same-Line Station Candidates (Feature H, bolt-on, 3 chunks)~~ ✅ Complete (2026-04-17), ~~CTA Alerts Integration (Feature I, bolt-on, 3 chunks)~~ ✅ Complete (2026-04-17), ~~Deprecate `find_bus_routes()` in Favor of Unified Graph (Feature J, bolt-on, 3 chunks)~~ ✅ Complete (2026-04-18). Beyond chunked features: ~~rate limiting~~ ✅ Code complete (activate with `RATE_LIMIT_ENABLED=true`), ~~BYOK~~ ✅ Code complete (activate with `BYOK_ENABLED=true` + `VITE_BYOK_ENABLED=true`), ~~response caching~~ ✅ Complete, Claude Haiku for simple queries. Multi-leg train routing accuracy gaps: (a) shared-track edge deduplication can mis-label the line on segments where multiple CTA lines share consecutive stations (e.g. Red/Brown between Belmont and Fullerton) — timing is correct but the route card may show the wrong line name; (b) ~~bus access to a better-positioned train station is never considered~~ ✅ Resolved by Feature B.
 - **API keys:** All four keys obtained and configured: CTA Train Tracker, CTA Bus Tracker, Anthropic, and Google Maps.
 - **Geocoding:** Google Maps Geocoding API implemented (`geocode_google()` in `gtfs_loader.py`). A temporary 9,500 calls/month cap is in place during testing — see HUMAN_TODO.md (Post-Deployment Cleanup) for removal instructions.
 
@@ -491,7 +491,7 @@ A comprehensive low-severity bug audit produced 22 fixes across backend and fron
 2. **Preview deployment URLs returned 401 on `manifest.webmanifest`** — Vercel Deployment Protection settings adjusted so PWA assets are accessible without authentication on preview URLs. PWA install prompts now work on preview deployments.
 
 **Backend bug fixes (`main.py`, `cta_client.py`, `gtfs_loader.py`, `transit_graph.py`, `walking.py`):**
-1. `_save_geocode_cache` — replaced write-through with a dirty-flag + background-flush (30s daemon thread + atexit handler). Expensive atomic-rename write now happens at most once per 30s.
+1. `_save_geocode_cache` — replaced write-through with a dirty-flag + background-flush (30s daemon thread + atexit handler). Expensive atomic-rename write now happens at most once per 30s. **Further optimized (OPT-003, resolved 2026-04-18):** the 30s flush now appends only new entries as JSONL to `geocode_cache.journal` (O(delta) instead of O(cache size)). A full snapshot rewrite is forced only every 3600s or once 500 journal entries accumulate; `_load_geocode_cache` replays the journal over the snapshot at startup.
 2. `_fetch_bus_chunk` — now returns a sentinel `[{"_bus_error": True}]` on exception instead of silently returning `[]`. `get_bus_arrivals` and `get_train_arrivals` both return `(arrivals, n_errors)` tuples.
 3. `_rank_routes` — removed dead `dest_lat`/`dest_lon` parameters from signature and call site.
 4. `_response_cache` — changed from `dict` to `collections.OrderedDict`; eviction now uses `popitem(last=False)` (O(1)) instead of `min()` over all entries.
@@ -499,9 +499,11 @@ A comprehensive low-severity bug audit produced 22 fixes across backend and fron
 6. BYOK cache collision — `_cache_key()` now appends `"byok"` suffix when a BYOK key is present; BYOK and shared-quota requests use separate cache pools.
 7. `prdctdn.isdigit()` — fixed `None` crash: `prd.get("prdctdn") or ""` instead of `prd.get("prdctdn", "")`.
 8. `find_nearest_train_stations` / `find_nearest_bus_stops` — replaced full-catalog Haversine scan with a grid/bucket spatial index (`_spatial_index`, `_candidates_within` in `gtfs_loader.py`). ~1-mile lat/lon cells, bounding-box prefilter, Haversine only on candidates inside the box. Built lazily per stop-kind, cached for process lifetime. Bit-exact with prior behavior; measured ~300× faster at 0.25-mi bus lookup, ~44× at 1.0-mi (was ~20k trig calls per `/recommend`). (OPT-001, resolved 2026-04-18.)
+8a. `_rank_routes` terminal-name memo — added a per-request `terminal_coords` dict around the existing `@lru_cache`d `get_station_by_name` call in the bearing-test loop, so repeated terminal names ("Howard", "95th/Dan Ryan") across the 5 ranked routes skip the cache's hash+lock dispatch. Behavior preserved; low impact (function was already cached). (OPT-002, resolved 2026-04-18.)
+8b. `_response_cache` hit/miss hash count — cache read now evicts stale entries via `pop(key, None)` nested under the `if cached:` branch; cache write drops the `if key in _response_cache: del` membership test and uses `_response_cache[key] = ...; move_to_end(key)` to produce the same LRU order in one fewer hash on the existing-key path. Eviction + TTL semantics unchanged. (OPT-005, resolved 2026-04-18.)
 9. `_save_geocode_counter` — added atomic rename pattern (write to `.tmp` then `replace()`); crash-safe.
 10. `_normalize_street_abbr` — added `(?=\s*(?:,|$))` lookahead to prevent false matches inside saint names (e.g. "St. Michael's").
-11. `fuzzy_match_neighborhood` — added `@lru_cache(maxsize=1024)`; repeated queries now return in O(1).
+11. `fuzzy_match_neighborhood` — added `@lru_cache(maxsize=1024)`; repeated queries now return in O(1). Cold queries further optimized via a precomputed word→keys inverted index (multi-word queries scan only keys sharing ≥1 meaningful word instead of all ~240), `SequenceMatcher` reuse with `query` set as `seq2` to leverage Python's `__chain_b` cache, a `quick_ratio()` upper-bound prefilter before the full `ratio()`, and a 0.99 early-exit. Match threshold (≥0.95) and semantics unchanged. (OPT-006, resolved 2026-04-18.)
 12. `min(G[u][v].values(), ...)` — changed `d.get("length", 0)` to `d.get("length", float("inf"))` in both `walk_directions` and `walk_path`; zero-length edges no longer win the `min()`.
 13. `walk_directions` fallback — fallback step now always uses `"long"` block type and `_LONG_BLOCK_METERS`; old comparison used total trip length against a per-edge threshold.
 14. `lru_cache` on mutable-return functions — added inline comments to `walk_minutes`, `walk_directions`, `walk_path` warning callers not to mutate cached return values.
@@ -543,7 +545,7 @@ CTA-Transit-PWA/
 ├── .gitignore
 ├── cta_app_handoff_prompt.md           ← This file
 ├── HUMAN_TODO.md                       ← Tasks only a human can do (accounts, keys, deploy steps, UI checks)
-├── BUGS_TO_BE_FIXED.md                 ← Open bugs only (2 🔴 high, 4 🟡 medium, 6 🟢 low); delete entry here and log fix in BUGS_FIXED_HISTORY.md when resolved
+├── BUGS_TO_BE_FIXED.md                 ← Open bugs only (1 🔴 high, 0 🟡 medium, 1 🟢 low); delete entry here and log fix in BUGS_FIXED_HISTORY.md when resolved
 ├── BUGS_FIXED_HISTORY.md               ← Log of all resolved bugs; add entry here when a bug from BUGS_TO_BE_FIXED.md is fixed
 ├── FEATURE_IMPLEMENTATION_PLANS.md     ← Chunked build plans + post-launch ideas: Feature A ✅ (Train Station Exit Guidance, 5 chunks), Feature B ✅ (Intermodal Routing, 6 chunks), Feature C ✅ (Multi-Leg Bus Routing, 5 chunks), Feature D (Live Arrivals at Transfer Stop, 4 chunks), Feature E ✅ (Walk Leg Block-Count Distance, 2 chunks), Feature F ✅ (Street Abbreviation Normalization, 1 chunk), Feature G ✅ (Long/Short Block Classification, 2 chunks), Feature H ✅ (Deduplicate Same-Line Station Candidates, bolt-on, 3 chunks), Feature I ✅ (CTA Alerts Integration, bolt-on, 3 chunks), Feature J ✅ (Deprecate find_bus_routes() in Favor of Unified Graph, bolt-on, 3 chunks)
 ├── Feature_Prioritization.md           ← Bolt-On vs Structural classification + status for all planned/pending features: Feature D (Live Arrivals at Transfer Stop, structural — Feature C dependency satisfied), Multi-Leg Train Routing Gap 1 (shared-track label accuracy, structural)
@@ -583,7 +585,8 @@ CTA-Transit-PWA/
 │   ├── railway.toml                    ← Railway deployment config (builder = "dockerfile", points to backend/Dockerfile)
 │   ├── Dockerfile                      ← Build recipe used by Railway (apt deps, pip install, COPY); curl-LFS step preserved as comments — see Feature K
 │   ├── requirements.txt
-│   ├── geocode_cache.json              ← Persistent geocoding results cache (gitignored, built at runtime)
+│   ├── geocode_cache.json              ← Persistent geocoding results cache snapshot (gitignored, built at runtime)
+│   ├── geocode_cache.journal           ← Append-only JSONL delta between snapshots (gitignored, compacted hourly or every 500 entries)
 │   ├── geocode_counter.json            ← Monthly Google Maps API call counter (gitignored; temporary — remove post-deployment)
 │   ├── gtfs_data/                      ← Downloaded GTFS files (gitignored, re-downloaded on deploy via fetch_gtfs.py)
 │   └── street_graph.graphml            ← Pre-built OSMnx street graph committed via Git LFS (bbox: Howard–20th St); present locally, NOT present in Railway image — runtime falls back to Haversine. See Feature K to restore.
@@ -648,17 +651,89 @@ CTA-Transit-PWA/
 
 ---
 
+## Phase 6.5 — Weather & Crowdedness Context
+
+**Status: ⬜ Not started** — gated on Phase 6 deployment being live and stable.
+
+Post-deployment enrichment phase. Adds two new live context streams (weather, crowdedness) to the `/recommend` pipeline and wires them into the Claude prompt + route ranking. All three features are documented in full chunk-by-chunk detail in [`FEATURE_IMPLEMENTATION_PLANS.md`](FEATURE_IMPLEMENTATION_PLANS.md) — the summary below is for phase-level orientation only.
+
+**Why this is its own phase:** These features are substantial enough (new backend modules, new external API integrations, new scoring logic) that they should not be mixed into Phase 6 housekeeping. They also have pending scoping decisions (API provider, holiday source, direction mapping, etc.) that must be resolved before implementation — they are not turn-the-key tasks.
+
+### Features in this phase
+
+1. **Feature Weather — Live Weather Integration** (Bolt-On, 3 chunks)
+   - New module: `backend/weather_service.py`. `WeatherContext` (current + forecast + alerts) fetched per-request and injected into `build_prompt()`.
+   - Pending decisions: weather API provider (NWS / OpenWeatherMap / Open-Meteo / Tomorrow.io), fallback provider yes/no, NWS contact email, visibility/humidity scope, cache library.
+
+2. **Feature Crowdedness — CTA Vehicle Crowdedness Estimation** (Bolt-On, 3 chunks)
+   - New module: `backend/crowdedness.py`. `TimePeriod` classification + heuristic `CrowdednessEstimate` per transit leg. Automatically prefers live `psgld` from Bus Tracker when non-empty (currently returning `""` since 2026-04-09).
+   - Pending decisions: holiday source (static set vs `holidays` lib), `rtdir` → inbound/outbound mapping strategy, high-traffic stop seeding, base-score calibration, prompt-only vs prompt+UI surfacing.
+
+3. **Feature Weather Scoring — Weather-Adjusted Route Ranking** (Structural, depends on the two above, 3 chunks)
+   - New module: `backend/route_scoring.py`. `adjust_weights_for_weather()` shifts scoring priorities based on live weather (heavy precipitation, dangerous cold, high gusts).
+   - Pending decisions: prompt-only hint vs numeric re-rank, default weight values, threshold deltas, module location.
+
+### Execution order
+- Feature Weather and Feature Crowdedness can proceed in parallel (no dependencies).
+- Feature Weather Scoring requires both to be complete before starting.
+
+### Entry criteria
+- Phase 6 deployment live on Railway + Vercel, end-to-end test passing.
+- Rate limiting activated before public launch if not already (`RATE_LIMIT_ENABLED=true` in Railway env vars) — cost-sensitivity increases once weather fetches add request-time latency and any downstream API.
+- All pending scoping decisions for the specific feature resolved. Each feature's "Scoping decisions — pending" block in `FEATURE_IMPLEMENTATION_PLANS.md` is a hard prerequisite — do not begin Chunk 1 before resolving them.
+
+### Exit criteria
+- All three features' chunks complete, moved from `FEATURE_IMPLEMENTATION_PLANS.md` into `FEATURES_IMPLEMENTED_HISTORY.md`.
+- Live `/recommend` response includes weather context in the Claude recommendation text on a test trip.
+- Per-route `[est. crowdedness: ...]` annotation visible in the prompt (verified via a debug log or local test).
+- No regression in `max_tokens=400` budget — Claude still responds in 3–4 sentences.
+
+---
+
 ## Where to Resume
 
 **Phase 6 deployment is complete.** The app is live on Railway (backend) and Vercel (frontend). Next steps:
 1. Source ≥10 transit photos for the map loading panel (see HUMAN_TODO.md)
 2. Run remaining UI checks: confirm 40/60 panel ratio on desktop, 300px/350px min-heights on mobile
 3. (Optional) Add a custom domain in Vercel dashboard → Settings → Domains
-4. Phase 7: Monetization (AdSense) — apply after confirming live app is stable
+4. **Phase 6.5: Weather & Crowdedness Context** — resolve pending scoping decisions for Features Weather, Crowdedness, and Weather Scoring in `FEATURE_IMPLEMENTATION_PLANS.md`, then implement. Gated on live app being stable.
+5. Phase 7: Monetization (AdSense) — apply after confirming live app is stable
 
-**Bug status:** 2 🔴 high + 4 🟡 medium + 6 🟢 low bugs open — see `BUGS_TO_BE_FIXED.md`. Full history of resolved bugs in `BUGS_FIXED_HISTORY.md`.
+**Bug status:** 1 🔴 high + 0 🟡 medium + 1 🟢 low bugs open — see `BUGS_TO_BE_FIXED.md`. Full history of resolved bugs in `BUGS_FIXED_HISTORY.md`.
 
-**Most recently completed:** Feature I — CTA Alerts Integration (2026-04-17). `get_alerts()`, `_fetch_alerts_for_route()`, `_TRAIN_LINE_TO_ALERT_ID` added to `cta_client.py`; `_alert_ids_from_routes()` helper + alerts fetch + `build_prompt()` alerts section added to `main.py`; `alerts` key added to `/recommend` response payload; alert banners rendered in `App.jsx` between recommendation and route cards (major = red border + bold, minor = yellow border); alert styles in `App.css`. No API key needed — CTA Alerts API is public. See completed entry in `FEATURE_IMPLEMENTATION_PLANS.md`.
+**Most recently completed:** Feature D — Live Arrivals at Transfer Stop (2026-04-18). `transfer_wait_minutes: int | None = None` added to `TransitLeg` dataclass. `_pick_wait()` extracted from `_rank_routes()` as a shared bearing-test helper. `_extract_transfer_stops()`, `_build_bus_transfer_lookup()`, `_format_transfer_arrivals()`, and `async def _empty()` added to `main.py`. Transfer arrivals fetched concurrently after routing finalization; legs annotated in-place; `"transfer_wait_minutes"` added to response serialization; "Live arrivals at transfer stop(s)" section added to Claude prompt. Frontend: `RouteLegs` detects transfer legs and renders `⏱ N min wait` / `⏱ Due` badge styled via `.transfer-wait-note` CSS. See completed entry in `FEATURES_IMPLEMENTED_HISTORY.md`.
+
+---
+
+### Notable changes (session — 2026-04-18, efficiency improvements OPT-012/013/014/018)
+
+Four low-overhead efficiency improvements implemented across `gtfs_loader.py` and `MapView.jsx`.
+
+1. **Persistent HTTP session for geocoding (OPT-012)** — `backend/gtfs_loader.py`: added module-level `_http_session = requests.Session()`. `geocode_google()` now calls `_http_session.get(...)` instead of `requests.get(...)`, reusing the keep-alive TCP/SSL connection across calls and eliminating per-call connection setup overhead.
+
+2. **`heapq.nsmallest` replaces full sort in nearest-stop finders (OPT-013)** — `backend/gtfs_loader.py`: `find_nearest_train_stations()` and `find_nearest_bus_stops()` now use `heapq.nsmallest(max_results, hits, key=...)` instead of `hits.sort(...) + hits[:max_results]`. Avoids sorting discarded candidates (O(n log k) vs O(n log n)). `import heapq` added to module imports.
+
+3. **Original query string preserved as `matched_name` (OPT-014)** — `backend/gtfs_loader.py` `resolve_location()`: `original_query = query.strip()` captured before lowercasing/normalization. Both the exact-match branch and the geocoding branch now return `original_query` as `matched_name` instead of the normalized `q`, preserving user capitalization (e.g. "Wrigley Field" not "wrigley field"). Internal cache lookups continue using the normalized `q`.
+
+4. **`legColor(leg)` computed once per transit leg in `renderRoute` (OPT-018)** — `frontend/src/MapView.jsx`: `const legColors = legs.map(...)` precomputed before the Pass 1 loop. Pass 1 and Pass 2 both read `legColors[i]` instead of calling `legColor(leg)` twice per leg. Two object-lookup chains per transit leg per render eliminated.
+
+---
+
+### Notable changes (session — 2026-04-18, Feature D — Live Arrivals at Transfer Stop)
+
+All 4 chunks of Feature D implemented. Transfer stops now show live arrival data in the route card and inform Claude's reasoning.
+
+1. **`transfer_wait_minutes` field added to `TransitLeg`** — `transit_graph.py`: new `transfer_wait_minutes: int | None = None` field on the `TransitLeg` dataclass. Defaults to `None` (no data) for legs that are not transfer boarding legs or have no live coverage.
+
+2. **`_pick_wait()` helper extracted** — `main.py`: the dot-product bearing-test logic that previously lived inline in `_rank_routes()` is now a standalone `_pick_wait(dest_map, from_mapid, to_mapid) -> int | None` helper. Both `_rank_routes()` (first-leg wait) and the new transfer annotation loop (transfer-leg wait) call it. Eliminates the only instance of duplicated direction-selection logic.
+
+3. **Transfer stop extraction and concurrent fetch** — `main.py`: `async def _empty()` no-op coroutine; `_extract_transfer_stops(ranked_routes)` scans all routes for transfer `TransitLeg`s (legs with an earlier transit leg in the same route), deduplicates across routes, returns `(train_station_dicts, bus_stop_id_strings)`. Called after ranking; results fed to `asyncio.gather(get_train_arrivals(...), get_bus_arrivals(...))` for ~300ms concurrent round-trip.
+
+4. **Transfer legs annotated in-place** — `main.py`: `_build_bus_transfer_lookup(arrivals) -> dict[(route, stop_id), int]` for bus transfer stops. After fetching, loops over all ranked routes and annotates each transfer `TransitLeg.transfer_wait_minutes` — train via `_build_arrival_lookup` + `_pick_wait`; bus via `_build_bus_transfer_lookup`. `"transfer_wait_minutes"` added to transit leg serialization in `/recommend` response.
+
+5. **Claude prompt extended** — `main.py`: `_format_transfer_arrivals(arrivals)` groups by stop name, shows up to 3 arrivals per stop (`"{line/route} → {dest}: N min"`). `build_prompt()` gained `transfer_arrivals: list[dict] | None = None`; injects a "Live arrivals at transfer stop(s):" section when non-empty. Omitted entirely for non-transfer routes.
+
+6. **Frontend transfer wait badge** — `App.jsx`: `RouteLegs` detects transfer boarding legs via `legs.slice(0, i).some(l => l.type === 'transit')`. Renders `<span className="transfer-wait-note">⏱ Due</span>` or `⏱ N min wait` as the first child of the transit leg `<li>`. `App.css`: `.transfer-wait-note { display: block; color: #888; font-size: 0.75rem }`.
 
 ---
 
@@ -669,6 +744,17 @@ Fixes the 🔴 "`_ABBR_MAP` contains duplicate keys — last value silently wins
 1. **`_ABBR_MAP` converted from dict literal to pair-tuple + built dict** — `gtfs_loader.py`: the 15 USPS suffix abbreviations are now defined as a `_ABBR_PAIRS: tuple[tuple[str, str], ...]` literal, with `_ABBR_MAP = dict(_ABBR_PAIRS)` derived from it. The dict-literal form silently kept the last value on duplicate keys; the pair-tuple form preserves every entry so duplicates remain detectable.
 2. **Import-time assertion added** — `assert len(_ABBR_MAP) == len(_ABBR_PAIRS)` immediately after the conversion now raises at module import if any abbreviation is listed twice, with a diagnostic message listing the offending keys. This prevents a future typo (e.g., `("blvd", "bolevard")` after the correct entry) from silently overriding a correct expansion.
 3. **Downstream usage unchanged** — `_sorted_abbrs`, `_STREET_ABBR_RE`, and `_expand()` all continue to read from `_ABBR_MAP`, which is still the same 15-entry dict. No behavior change at runtime on the current (de-duplicated) data; only the failure mode for future edits is hardened.
+
+---
+
+### Notable changes (session — 2026-04-18, bug fix batch 5 — BUG-001/002/008 + BUG-003 investigation)
+
+Three bugs fixed; one bug-report false positive investigated and closed.
+
+1. **BUG-001 fixed** — `backend/fetch_station_exits.py`: expanded the existing `try` block to cover the full row body, including `float(stop_lat)` / `float(stop_lon)` and the dict assignment. `except` now catches `(ValueError, KeyError)` so malformed or missing lat/lon columns are skipped with `continue` instead of aborting the function.
+2. **BUG-002 fixed** — `backend/fetch_gtfs.py`: changed `rows = sum(1 for _ in fh) - 1` to `rows = max(0, sum(1 for _ in fh) - 1)`. Empty GTFS files now print `0 rows` instead of `-1 rows` in the validation report.
+3. **BUG-008 fixed** — `frontend/src/App.jsx`: added `|| ""` guard at the `renderMarkdown` call site. Prevents `TypeError` crash when the backend returns `null` or omits the `recommendation` field.
+4. **BUG-003 investigated, no fix applied** — `backend/walking.py` `_cardinal()`: the existing `math.atan2(dlon, dlat)` is mathematically correct for clockwise compass bearing from north (North→0°, East→90°, South→180°, West→270°). The bug report's suggested fix `atan2(dlat, dlon)` would swap North and East, introducing the very 90° rotation it claimed to fix. Bug closed as false positive.
 
 ---
 

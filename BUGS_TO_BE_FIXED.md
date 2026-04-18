@@ -16,11 +16,31 @@ Known issues catalogued for future fixing. Severity: 🔴 High · 🟡 Medium ·
 
 ---
 
-## 🟢 Transit photos missing — broken images on production
+## Bug Scan — 2026-04-18 (`backend/fetch_station_exits.py`, `backend/fetch_gtfs.py`, `backend/fetch_street_graph.py`)
 
-**Files:** `frontend/public/transit-photos/`; `frontend/src/App.jsx` (PHOTOS array)
+---
 
-**What happens:** The `frontend/public/transit-photos/` directory contains no image files. The app references photos like `blue-line-ohare.jpg` which return 404 on production, showing broken images in the background photo feature. This is a pre-existing blocking item from Phase 6 setup, not a code bug.
+
+### BUG-007 · Transit photos missing from production
+
+- **File**: `frontend/public/transit-photos/` (directory), `frontend/src/App.jsx` (`PHOTOS` array)
+- **Severity**: Low
+
+**What happens:** The `frontend/public/transit-photos/` directory contains no image files. The app references photos like `blue-line-ohare.jpg` which return 404 on production, showing broken images in the background photo feature. This is a pre-existing asset gap from Phase 6 setup, not a code bug.
 
 **Fix:** Add ≥10 transit photos to `frontend/public/transit-photos/` and update the `PHOTOS` array in `frontend/src/App.jsx` to match the filenames. Then commit and let Vercel redeploy.
 
+---
+
+## Bug Scan — 2026-04-18 (`frontend/src/`)
+
+> Scanned: `frontend/src/App.jsx`, `frontend/src/MapView.jsx`, `frontend/src/main.jsx`
+> Found: 1 bug
+
+---
+
+
+## Bug Scan — 2026-04-18 (`backend/gtfs_loader.py`)
+
+> Scanned: `backend/gtfs_loader.py`
+> Found: 3 bug(s) — all fixed 2026-04-18

@@ -2,62 +2,12 @@
 
 Known efficiency improvements catalogued for future improvement. Impact: 🔴 High · 🟡 Medium · 🟢 Low.
 
-> **Process:** When an efficiency in this file is implemented, **delete its entry from this file** and add a corresponding entry to [`Efficiency_Improvement_History.md`](Efficiency_Improvement_History.md) documenting what was changed and how. This file should only ever contain efficiencys that have not yet been implemented.
+> **Process:** When an efficiency in this file is implemented, **delete its entry from this file** and add a corresponding entry to [`Efficiency_Improvement_History.md`](Efficiency_Improvement_History.md) documenting what was changed and how. This file should only ever contain improvements that have not yet been implemented.
 
 ## Efficiency Scan — 2026-04-18 (backend/)
 
 > Scanned: `backend/main.py`, `backend/gtfs_loader.py`, `backend/transit_graph.py`
-> Found: 6 opportunities (1 resolved → see `Efficiency_Improvement_History.md`)
-
----
-
-### OPT-002 · Repeated `get_station_by_name` lookups inside ranking hot path
-- **File**: `backend/main.py`
-- **Line(s)**: 308–319 (`_rank_routes`)
-- **Category**: Redundant Computation
-- **Impact**: Low
-- **Description**: For each candidate route with multiple arrival directions, the inner loop calls `get_station_by_name(dest_name)` once per destination name. Across 5 ranked routes × up to ~4 directions, the same terminal names (e.g. "Howard", "95th/Dan Ryan") get resolved repeatedly within a single request.
-- **Suggested Improvement**: Cache terminal-name → coords either via `functools.lru_cache` on `get_station_by_name` (if not already cached in `transit_graph.py`) or build a local `{dest_name: coords}` dict before entering the route loop. ⚠️ Unsure: may already be cached in `transit_graph.py` — verify first.
-
----
-
-### OPT-003 · Full JSON rewrite on every geocode-cache flush
-- **File**: `backend/gtfs_loader.py`
-- **Line(s)**: 126–140, 152–175 (`_save_geocode_cache`, flush thread)
-- **Category**: Inefficient I/O
-- **Impact**: Low
-- **Description**: The 30-second flush thread serialises the **entire** geocode cache to JSON and atomically renames it, even when only one new key was added since the last tick. As the cache grows (months of production queries), flush cost grows linearly while the delta is typically tiny.
-- **Suggested Improvement**: Either (a) switch the backing store to SQLite / a tiny key-value file that supports incremental writes, or (b) keep JSON but track a `pending_writes` set and append-only journal, rewriting the full file less often (e.g. once per hour or at N pending entries). For the current call volumes this is Low impact — worth doing before it grows.
-
----
-
-### OPT-004 · Per-request closure for route fingerprinting
-- **File**: `backend/main.py`
-- **Line(s)**: 718–733 (`_route_fingerprint` defined inside `/recommend`)
-- **Category**: Redundant Computation
-- **Impact**: Low
-- **Description**: `_route_fingerprint` is a pure function defined inside the request handler, so a new function object is allocated on every `/recommend` call. The `seen_fps` dedup loop also performs a full O(n²ish) reconstruction of `ranked_routes` into `deduped` after already sorting.
-- **Suggested Improvement**: Lift `_route_fingerprint` to module scope. Dedup in-place while building the sorted list — or fold dedup into the `sorted(...)[:5]` step by tracking seen fingerprints in a single pass.
-
----
-
-### OPT-005 · Double dict lookup on cache hit/miss
-- **File**: `backend/main.py`
-- **Line(s)**: 572–577, 821–823 (response cache)
-- **Category**: Redundant Computation
-- **Impact**: Low
-- **Description**: Cache read does `_response_cache.get(key)` followed by `del _response_cache[key]` (two hashes). Cache write does `if key in _response_cache: del _response_cache[key]` then `_response_cache[key] = ...` (up to three hashes). Minor, but hot path.
-- **Suggested Improvement**: Use `_response_cache.pop(key, None)` for eviction in both places; for write, `_response_cache.move_to_end(key, last=True)` after assignment (or `_response_cache[key] = ...; _response_cache.move_to_end(key)`) achieves the same reorder without the membership test.
-
----
-
-### OPT-006 · `fuzzy_match_neighborhood` scans all keys even after finding a high score
-- **File**: `backend/gtfs_loader.py`
-- **Line(s)**: 663–691
-- **Category**: Redundant Computation
-- **Impact**: Low
-- **Description**: The fuzzy matcher iterates **all** ~240 `NEIGHBORHOOD_COORDS` keys with `SequenceMatcher` on every cache miss, even once a near-perfect score (≥0.99) is found. `SequenceMatcher.ratio()` is not cheap. Results are `lru_cache`d (maxsize=1024), so repeat queries are fine, but cold queries (every new user typo) pay full cost.
-- **Suggested Improvement**: Short-circuit the loop when `best_score >= 0.99` — unlikely to be beaten and would skip ~half the work on average for strong matches. Also consider building a word-based inverted index (first significant word → candidate keys) so most queries only compare against a handful of keys rather than all 240.
+> Found: 6 opportunities (6 resolved → see `Efficiency_Improvement_History.md`)
 
 ---
 
@@ -77,6 +27,23 @@ Known efficiency improvements catalogued for future improvement. Impact: 🔴 Hi
   - `consolidate_intersections` on a continent-scale `walk` bbox for Chicago takes minutes; fine as an offline step, do NOT move it to runtime.
   - `dead_ends=False` avoids collapsing cul-de-sacs that share a stub with a main road; keep this default unless profiling shows otherwise.
 - **Estimated effort**: 1–2 hours (one code change + regenerate + commit LFS file + measure).
+
+---
+
+### OPT-009 · Cache shortest path computation to avoid redundant routing
+
+- **File**: [backend/walking.py](backend/walking.py)
+- **Line(s)**: [walking.py:75-97](backend/walking.py#L75-L97) (`walk_minutes`), [walking.py:99-199](backend/walking.py#L99-199) (`walk_directions`), [walking.py:201-267](backend/walking.py#L201-267) (`walk_path`)
+- **Category**: Redundant Computation
+- **Impact**: 🟡 Medium
+- **Context**: `walk_minutes`, `walk_directions`, and `walk_path` all independently compute `nx.shortest_path` for the same origin/dest points, leading to duplicate routing calculations when multiple functions are called.
+- **Description**: Add a cached helper function `_get_shortest_path` that computes and caches the node path list. Modify the three functions to use this cached path, computing length or directions from it as needed.
+- **Suggested Improvement**:
+  1. Add `@lru_cache(maxsize=512)` decorated `_get_shortest_path(origin_lat, origin_lon, dest_lat, dest_lon) -> list[int]` that loads graph, finds nodes, computes `nx.shortest_path`.
+  2. In `walk_minutes`, call `_get_shortest_path` and sum edge lengths from the path.
+  3. In `walk_directions` and `walk_path`, use the cached path directly.
+- **Risk / Caveats**: Ensure the cache handles exceptions consistently; path computation is the expensive part, so minimal risk.
+- **Estimated effort**: 1 hour.
 
 ---
 
@@ -119,4 +86,83 @@ Known efficiency improvements catalogued for future improvement. Impact: 🔴 Hi
 - **Dependency ordering**: OPT-007 should land **before** OPT-008b — a smaller graph makes the benchmark (OPT-008a) cheaper and the parity test faster, and the two optimizations compound multiplicatively.
 
 ---
+
+## Efficiency Scan — 2026-04-18 (backend/fetch*)
+
+> Scanned: `backend/fetch_station_exits.py`, `backend/fetch_gtfs.py`, `backend/fetch_street_graph.py`
+> Found: 2 opportunities (2 Low)
+
+---
+
+### OPT-010 · Pre-compute entrance trig before inner station loop in `build_exits`
+- **File**: [backend/fetch_station_exits.py](backend/fetch_station_exits.py)
+- **Line(s)**: [fetch_station_exits.py:128-131](backend/fetch_station_exits.py#L128-L131) (inner loop); [fetch_station_exits.py:44-47](backend/fetch_station_exits.py#L44-L47) (`_haversine_miles`)
+- **Category**: Redundant Computation
+- **Impact**: 🟢 Low
+- **Description**: In `build_exits`, for each entrance node the inner loop calls `_haversine_miles(lat, lon, ...)` once per station (~150 stations). Inside `_haversine_miles`, `math.cos(math.radians(lat1))` is recomputed every call even though `lat1` (the entrance latitude) is constant across all station comparisons. This produces ~150 redundant `radians` + `cos` calls per entrance — roughly 75,000 extra trig operations across the full dataset.
+- **Suggested Improvement**: Pre-compute `cos_lat = math.cos(math.radians(lat))` before the inner `for mapid, info in stations.items()` loop and pass it into a refactored `_haversine_miles`. Similarly, pre-compute `math.radians(lat)` for each station when building the `stations` dict so station-side trig is computed once rather than per entrance.
+
+---
+
+### OPT-011 · Avoid full-file row iteration for `stop_times.txt` in `validate_and_report`
+- **File**: [backend/fetch_gtfs.py](backend/fetch_gtfs.py)
+- **Line(s)**: [fetch_gtfs.py:91-93](backend/fetch_gtfs.py#L91-L93)
+- **Category**: Redundant Computation
+- **Impact**: 🟢 Low
+- **Description**: `validate_and_report` opens every GTFS file and iterates every line to count rows (`sum(1 for _ in fh)`). `stop_times.txt` typically contains 8–10 million rows; reading all of them just to print a count adds several seconds of unnecessary I/O at the end of an already-slow download+extract step.
+- **Suggested Improvement**: Replace the full-iteration row count with a fast binary chunk scan counting `\n` bytes, or report an estimated count derived from file size ÷ average row length. Alternatively, drop the row count and display file size only — size is the actionable signal for whether the download succeeded.
+
+---
+
+## Efficiency Scan — 2026-04-18 (`frontend/src/`)
+
+> Scanned: `frontend/src/App.jsx`, `frontend/src/MapView.jsx`, `frontend/src/main.jsx`, `frontend/vite.config.js`, `frontend/package.json`
+> Found: 4 opportunities (3 remaining · 1 resolved → see `Efficiency_Improvement_History.md`)
+
+---
+
+### OPT-015 · Deduplicate LINE_COLORS and BUS_DIRECTION_COLORS constants
+- **File**: [frontend/src/App.jsx](frontend/src/App.jsx#L14-L30), [frontend/src/MapView.jsx](frontend/src/MapView.jsx#L16-L32)
+- **Line(s)**: App.jsx 14–30 · MapView.jsx 16–32
+- **Category**: Unnecessary Duplication
+- **Impact**: 🟡 Medium
+- **Description**: `LINE_COLORS` and `BUS_DIRECTION_COLORS` are defined identically in both files. Any color change must be made in two places; a mismatch would silently produce different colors on the card vs. the map layer.
+- **Suggested Improvement**: Extract both objects into `frontend/src/constants.js` and import from there in both files. Zero runtime impact, eliminates the drift risk.
+
+---
+
+### OPT-016 · Precompute `isTransferLeg` before the `.map()` in `RouteLegs`
+- **File**: [frontend/src/App.jsx](frontend/src/App.jsx#L149)
+- **Line(s)**: 149
+- **Category**: Redundant Computation
+- **Impact**: 🟢 Low
+- **Description**: Inside the `legs.map()`, `legs.slice(0, i).some(l => l.type === "transit")` creates a new sliced array and scans it for every leg rendered. This is O(n²) in the number of legs. For a typical 4-leg route that's 10 slice+scan operations per render; small today but unnecessary.
+- **Suggested Improvement**: Compute a `Set` or boolean flag once before the map call:
+  ```js
+  let seenTransit = false;
+  legs.map((leg, i) => {
+    const isTransferLeg = seenTransit;
+    if (leg.type === "transit") seenTransit = true;
+    ...
+  })
+  ```
+
+---
+
+### OPT-017 · Replace persistent `map.on("data", …)` with a one-shot listener after style errors clear
+- **File**: [frontend/src/MapView.jsx](frontend/src/MapView.jsx#L322-L326)
+- **Line(s)**: 322–326
+- **Category**: Rendering / DOM Inefficiency
+- **Impact**: 🟡 Medium
+- **Description**: The `"data"` event fires for every tile, source, and style load throughout the map's lifetime. On an active map session this can run hundreds of times per minute. The current handler checks `e.dataType === "style" && e.isSourceLoaded` before acting, but the event callback overhead accumulates across all tile loads. The listener was added to clear the `styleError` banner — once the style is confirmed loaded, the listener is no longer needed.
+- **Suggested Improvement**: Remove the persistent listener and instead register a `map.once("styledata", () => setStyleError(false))` immediately after `setStyleError(true)` is set inside the `"error"` handler. This fires exactly once when the style recovers and never again, so there is zero ongoing per-tile overhead.
+
+---
+
+---
+
+## Efficiency Scan — 2026-04-18 (`backend/gtfs_loader.py`)
+
+> Scanned: `backend/gtfs_loader.py`
+> Found: 3 opportunities (3 resolved → see `Efficiency_Improvement_History.md`)
 

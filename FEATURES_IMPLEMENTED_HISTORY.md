@@ -13,18 +13,19 @@ A log of features that have been designed and fully implemented. Entries are mov
 
 1. Feature A — Train Station Exit Guidance — **Bolt-On**
 2. Feature C — Multi-Leg Bus Routing (Bus + Bus Transfers) — **Bolt-On**
-3. Feature E — Walk Leg Street-Level Distance Detail — **Bolt-On**
-4. Feature F — Street Abbreviation Normalization — **Bolt-On**
-5. Feature G — Long/Short Block Classification — **Bolt-On** (Dependency on Feature E)
-6. Feature B — Intermodal Routing (Train + Bus) — **Structural** (Dependency on Feature C)
-7. Feature H — Deduplicate Same-Line Station Candidates — **Bolt-On** (Dependency on Feature B)
-8. Feature I — CTA Alerts Integration — **Bolt-On**
-9. Rate Limiting — **Bolt-On**
-10. BYOK (Bring Your Own API Key) — **Bolt-On**
-11. Claude Response Caching — **Bolt-On**
-12. Multi-Leg Train Routing Gap 2 (Bus First/Last Mile) — **Structural** (Resolved by Feature B)
-13. Feature J — Deprecate `find_bus_routes()` in Favor of Unified Graph — **Bolt-On** (Dependency on Feature B)
-14. Claude Haiku for Simple Queries — **Bolt-On**
+3. Feature D — Live Arrivals at Transfer Stop — **Structural** (Dependency on Feature C)
+4. Feature E — Walk Leg Street-Level Distance Detail — **Bolt-On**
+5. Feature F — Street Abbreviation Normalization — **Bolt-On**
+6. Feature G — Long/Short Block Classification — **Bolt-On** (Dependency on Feature E)
+7. Feature B — Intermodal Routing (Train + Bus) — **Structural** (Dependency on Feature C)
+8. Feature H — Deduplicate Same-Line Station Candidates — **Bolt-On** (Dependency on Feature B)
+9. Feature I — CTA Alerts Integration — **Bolt-On**
+10. Rate Limiting — **Bolt-On**
+11. BYOK (Bring Your Own API Key) — **Bolt-On**
+12. Claude Response Caching — **Bolt-On**
+13. Multi-Leg Train Routing Gap 2 (Bus First/Last Mile) — **Structural** (Resolved by Feature B)
+14. Feature J — Deprecate `find_bus_routes()` in Favor of Unified Graph — **Bolt-On** (Dependency on Feature B)
+15. Claude Haiku for Simple Queries — **Bolt-On**
 
 ---
 
@@ -55,6 +56,20 @@ A log of features that have been designed and fully implemented. Entries are mov
 - **Chunk 3 (Algorithm):** `find_bus_transfer_routes()` — Pass 1 collects candidate transfer stops via haversine only (forward-progress filter, max 3 per live arrival). Pass 2 builds 5-leg `Route` objects via OSMnx for surviving candidates. Sort by `total + wait_A + 7.5`, return top `n_routes`.
 - **Chunk 4 (Integration):** `find_bus_transfer_routes` imported in `main.py`. Called as fallback when `find_bus_routes()` returns empty results. No format changes to the response.
 - **Chunk 5 (Frontend — verification):** 5-leg route cards, zero-minute transfer walk legs, and map dual-color bus segments all confirmed working.
+
+---
+
+# Feature D — Live Arrivals at Transfer Stop
+
+**Completed: 2026-04-18**
+
+**Overview:** Fetches live arrival data for the connecting service at each transfer stop and displays it inline on the route card. Replaces the fixed 7.5-minute estimate used by Feature C with real-time data. Also threads transfer arrival data into the Claude prompt so Claude can give accurate wait-time advice for transfer trips (e.g., "the Brown Line at Belmont is 4 min away — good connection").
+
+**What was implemented (4 chunks):**
+- **Chunk 1 (`backend/main.py`):** `async def _empty()` no-op coroutine used as a placeholder in `asyncio.gather` when transfer fetch is not needed. `_extract_transfer_stops(ranked_routes)` scans all routes for transfer `TransitLeg`s (legs where an earlier leg in the same route is also a `TransitLeg`), deduplicates across routes, and returns two collections: train station dicts `[{mapid, name}]` and bus `stop_id` strings. Called after routing finalization; results fed to `asyncio.gather(get_train_arrivals(...), get_bus_arrivals(...))` concurrently — one extra round-trip, ~300ms added latency.
+- **Chunk 2 (`backend/transit_graph.py`, `backend/main.py`):** Added `transfer_wait_minutes: int | None = None` to `TransitLeg` dataclass. Added `_build_bus_transfer_lookup(bus_arrivals)` returning `{(route, stop_id): earliest_minutes}`. Extracted `_pick_wait(dest_map, from_mapid, to_mapid) -> int | None` helper containing the dot-product bearing test previously inlined in `_rank_routes()` — both call sites now use the shared helper. Transfer legs annotated in-place: train transfers via `_build_arrival_lookup` + `_pick_wait`; bus transfers via `_build_bus_transfer_lookup`. `"transfer_wait_minutes"` added to transit leg serialization in `/recommend` response.
+- **Chunk 3 (`backend/main.py`):** `_format_transfer_arrivals(arrivals)` groups combined train+bus arrivals by stop name, shows up to 3 arrivals per stop in `"{line_code/route} → {destination}: {N} min"` format. `build_prompt()` gained `transfer_arrivals: list[dict] | None = None` parameter; when non-empty, inserts a "Live arrivals at transfer stop(s):" section after the route options block. Combined list passed as `transfer_train_arrivals + transfer_bus_arrivals`.
+- **Chunk 4 (`frontend/src/App.jsx`, `frontend/src/App.css`):** `RouteLegs` detects transfer boarding legs via `legs.slice(0, i).some(l => l.type === 'transit')`. When `isTransferLeg && transfer_wait_minutes` is set, renders a `<span className="transfer-wait-note">⏱ Due</span>` or `⏱ N min wait` inline above the transit leg pill. Added `.transfer-wait-note` CSS rule (`display: block; color: #888; font-size: 0.75rem`). Non-transfer legs and legs with no live data are unaffected.
 
 ---
 

@@ -81,6 +81,9 @@ function renderRoute(map, route, originCoords, destCoords, layerIds, sourceIds) 
   // Accumulate every coordinate for auto-fit bounds (in GeoJSON [lon, lat] order)
   const allGeoCoords = [];
 
+  // Precompute per-leg colors once so Pass 2 doesn't re-invoke legColor.
+  const legColors = legs.map(leg => leg.type === "transit" ? legColor(leg) : null);
+
   // ── Pass 1: polylines ────────────────────────────────────────────────────
 
   legs.forEach((leg, i) => {
@@ -105,7 +108,7 @@ function renderRoute(map, route, originCoords, destCoords, layerIds, sourceIds) 
       if (coords.length < 2) return;
       coords.forEach(c => allGeoCoords.push(c));
 
-      const color = legColor(leg);
+      const color = legColors[i];
       _trackSource(map, `route-transit-${i}`, {
         type: "geojson",
         data: { type: "Feature", geometry: { type: "LineString", coordinates: coords } },
@@ -124,7 +127,7 @@ function renderRoute(map, route, originCoords, destCoords, layerIds, sourceIds) 
 
   legs.forEach((leg, i) => {
     if (leg.type === "transit") {
-      const color = legColor(leg);
+      const color = legColors[i];
 
       // Board / exit stop markers
       const boardExit = [];

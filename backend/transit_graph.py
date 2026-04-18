@@ -121,6 +121,7 @@ class TransitLeg:
     minutes: float    # scheduled in-vehicle time (no wait time)
     shape_points: list = field(default_factory=list)  # [[lat, lon], ...] clipped GTFS shape
     leg_type: str = "transit"
+    transfer_wait_minutes: int | None = None           # Feature D: live wait at transfer boarding stop
 
 
 @dataclass

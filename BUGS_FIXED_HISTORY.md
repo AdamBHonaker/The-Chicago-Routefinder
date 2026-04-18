@@ -1,8 +1,93 @@
 # Bugs Fixed History
 
+---
+
+# 2026-04-18 Bug Scan Fixes (`fetch_station_exits.py`, `fetch_gtfs.py`, `App.jsx`) + BUG-003 False-Positive Investigation
+
+---
+
+## 🟡 BUG-001 · Unguarded `float()` calls crash `load_parent_stations` on bad GTFS data — FIXED
+
+**File:** `backend/fetch_station_exits.py`
+
+**What was happening:** The `try/except ValueError` block only wrapped `int(row["stop_id"].strip())`. The `float(row["stop_lat"].strip())` and `float(row["stop_lon"].strip())` calls that immediately follow were outside the `try` block. A blank, non-numeric, or missing lat/lon column in any parent-station row would raise `ValueError` or `KeyError` and abort the entire `load_parent_stations()` function.
+
+**Fixed in:** Expanded the `try` block to cover the entire per-row processing block — the `sid` int parse, the range/type check, and the dict assignment with `float()` calls. The `except` clause now catches `(ValueError, KeyError)` so missing or malformed lat/lon columns are skipped gracefully with `continue`, mirroring how malformed `stop_id` rows were already handled.
+
+---
+
+## 🟢 BUG-002 · Negative row count printed for empty GTFS files — FIXED
+
+**File:** `backend/fetch_gtfs.py`
+
+**What was happening:** `rows = sum(1 for _ in fh) - 1` subtracts 1 to account for the header. If a GTFS file is empty (0 bytes), this produces `rows = -1`, printing a misleading negative row count in the validation report.
+
+**Fixed in:** Changed to `rows = max(0, sum(1 for _ in fh) - 1)`. An empty file now prints `0 rows` instead of `-1 rows`.
+
+---
+
+## 🔴 BUG-008 · Unguarded `renderMarkdown` call crashes on non-string recommendation — FIXED
+
+**File:** `frontend/src/App.jsx`
+
+**What was happening:** `renderMarkdown(data.recommendation)` was called without a null/undefined guard. `renderMarkdown` calls `.replace()` immediately on its argument, so a backend response with `"recommendation": null` or a missing field caused an uncaught `TypeError`, crashing the React component tree.
+
+**Fixed in:** Changed call site to `renderMarkdown(data.recommendation || "")`. If `data.recommendation` is `null`, `undefined`, `0`, or any other falsy value, an empty string is passed instead, preventing the `TypeError`.
+
+---
+
+## 🟡 BUG-003 · `_cardinal` bearing calculation — INVESTIGATED, NO BUG FOUND
+
+**File:** `backend/walking.py`
+
+**What was reported:** Bug scan claimed `math.atan2(dlon, dlat)` should be `math.atan2(dlat, dlon)` for correct compass bearing from north.
+
+**Investigation result:** The existing code `math.atan2(dlon, dlat)` is mathematically correct for clockwise compass bearing from north. `math.atan2(y, x)` in Python gives the angle from the positive x-axis; here x=dlat (north component) and y=dlon (east component), producing:
+- North travel (dlat>0, dlon=0) → atan2(0, +) = 0° → "N" ✓
+- East travel (dlat=0, dlon>0) → atan2(+, 0) = 90° → "E" ✓
+- South travel → 180° → "S" ✓, West travel → 270° → "W" ✓
+
+The proposed "fix" `atan2(dlat, dlon)` would swap north and east (North travel → 90° → "E"), introducing the very 90° rotation error the report claimed to fix. No code change made.
+
+---
+
 A log of bugs that have been identified and resolved. Entries are moved here from `BUGS_TO_BE_FIXED.md` when fixed.
 
 Severity: 🔴 High · 🟡 Medium · 🟢 Low.
+
+---
+
+# 2026-04-18 `backend/gtfs_loader.py` — Geocode Cache Durability and CSV Parsing Fixes
+
+---
+
+## 🟡 BUG-004 · Transient geocode failures cached as permanent misses — FIXED
+
+**File:** `backend/gtfs_loader.py` — `geocode_google()`
+
+**What was happening:** Any failure path in `geocode_google()` unconditionally wrote `_geocode_cache[query] = None`, including transient network errors, timeouts, and non-OK API statuses like `OVER_QUERY_LIMIT` or `REQUEST_DENIED`. A temporary outage could therefore turn into a permanent miss that persisted until the process restarted, causing any affected query to always return no geocode result.
+
+**Fixed in:** The `None` cache write is now gated on `status == "ZERO_RESULTS"` only — the one case that deterministically means the address does not exist. All other non-OK statuses and all exception paths return `None` without caching, so subsequent requests will retry the Google Maps API.
+
+---
+
+## 🟡 BUG-005 · Pending geocode cache entries lost on failed compaction — FIXED
+
+**File:** `backend/gtfs_loader.py` — `_flush_geocode_cache_if_dirty()` and `_save_geocode_cache()`
+
+**What was happening:** `_flush_geocode_cache_if_dirty()` moved pending entries into a local variable and cleared `_geocode_pending` **before** calling `_save_geocode_cache()`. If the snapshot write failed (disk full, permissions error, etc.), the cleared pending entries were silently dropped and never written to disk.
+
+**Fixed in:** `_save_geocode_cache()` now returns `bool` (`True` on success, `False` on failure). In `_flush_geocode_cache_if_dirty()`, the compaction path only clears journal counters and advances `_geocode_last_compact` when the save succeeds. On failure, `_geocode_pending.update(pending)` restores the entries so they will be retried on the next flush interval.
+
+---
+
+## 🟢 BUG-006 · `_load_stops()` opened `stops.txt` without `newline=""` — FIXED
+
+**File:** `backend/gtfs_loader.py` — `_load_stops()`
+
+**What was happening:** `stops.txt` was opened with `open(stops_file, encoding="utf-8-sig")` and passed directly to `csv.DictReader`. Python's universal newline translation is active by default, so on Windows (or with CRLF-encoded GTFS files) the `csv` module could mis-parse rows that contain embedded carriage returns — a known Python caveat documented in the `csv` module docs.
+
+**Fixed in:** Changed to `open(stops_file, newline="", encoding="utf-8-sig")`, which disables universal newline translation and lets `csv.DictReader` handle line endings correctly on all platforms.
 
 ---
 

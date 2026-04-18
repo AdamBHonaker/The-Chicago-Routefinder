@@ -40,13 +40,13 @@ Claude cannot do these. Check them off as you go.
 
 ---
 
-## Map UI — Pre-Deployment Checks
+## Map UI — Post-Launch Checks
 
 - [ ] **Confirm desktop split-panel width ratio** — currently set to 40% route cards / 60% map. Check this on a real desktop screen before deployment and adjust if needed.
 
 - [ ] **Confirm mobile minimum heights** — currently set to route card panel min-height: 300px, map min-height: 350px. Test on a real mobile device before deployment and adjust if needed.
 
-- [ ] **Source and provide transit location photos** — at least 10 photos needed for the loading/no-routes map panel. Decide on sourcing approach:
+- [ ] **Source and provide transit location photos** (see [BUG-007 in BUGS_TO_BE_FIXED.md](BUGS_TO_BE_FIXED.md)) — at least 10 photos needed for the loading/no-routes map panel. Decide on sourcing approach:
   - Option A: Take your own photos at CTA locations
   - Option B: Free stock photos from Unsplash or Wikimedia Commons (verify license per image)
   - Option C: Combination of both

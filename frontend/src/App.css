@@ -452,6 +452,12 @@
   font-size: 0.82rem;
 }
 
+.transfer-wait-note {
+  display: block;
+  color: #888;
+  font-size: 0.75rem;
+}
+
 .leg-walk-body {
   display: flex;
   flex-direction: column;
