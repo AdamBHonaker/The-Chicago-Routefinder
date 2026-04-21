@@ -27,6 +27,155 @@ Entry template — copy this block when moving an item from EFFICIENCY_IMPROVEME
 
 -->
 
+# 2026-04-20 Replace NetworkX MultiDiGraph with igraph + scipy cKDTree in walking.py
+
+---
+
+## 🔴 OPT-008 · Replace NetworkX MultiDiGraph with compact igraph representation — IMPLEMENTED
+
+**Files:** `backend/walking.py`, `backend/fetch_street_graph.py`, `backend/requirements.txt`
+
+**Category:** Memory Footprint
+
+**What was inefficient:** `walking.py` loaded the OSMnx pedestrian street graph as a `nx.MultiDiGraph` via `ox.load_graphml()`. NetworkX stores graphs as nested Python dicts (~200+ bytes of overhead per node/edge), so a ~120 MB GraphML file on disk balloons to several hundred MB in RAM — the primary cause of the deferred street-graph load on Railway (Feature K blocked). Additionally, `ox.nearest_nodes()` used a scikit-learn KDTree and accepted the full NetworkX graph object, tying nearest-node lookup to the heavy osmnx dependency at runtime.
+
+**Implemented in:** Three coordinated changes:
+
+1. **`walking.py` fully rewritten** — `import networkx as nx` and `import osmnx as ox` removed entirely from runtime walking logic. New module-level state: `_graph_cache: ig.Graph | None`, `_coord_kdtree: cKDTree | None`, `_vertex_lats: np.ndarray | None`, `_vertex_lons: np.ndarray | None`. `_load_graph()` tries the pre-built igraph pickle (`street_graph_igraph.pkl`) first; falls back to `ig.Graph.Read_GraphML()` on the `.graphml` if the pickle is absent; logs and returns None on any failure (Haversine fallback preserved unchanged). After loading, builds a `scipy.spatial.cKDTree` from `np.column_stack([lons, lats])` and stores vertex coordinate NumPy arrays — all set before `_graph_cache` is assigned so the double-checked locking pattern is safe under the GIL. `_get_nearest_node()` replaced: `ox.nearest_nodes(G, X=lon, Y=lat)` → `_coord_kdtree.query([lon, lat])` returning an igraph vertex index directly (no OSM-ID translation needed since KDTree and igraph share the same 0-based vertex ordering). `_get_shortest_path()` return type changed from `tuple[int,...] | None` to `tuple[tuple[int,...], tuple[int,...]] | None` (vpath, epath); calls `G.get_shortest_paths(orig, to=dest, weights="length", output="epath")` once and reconstructs vpath from epath (`e.target if e.source == prev else e.source` — robust for both directed and undirected). `walk_minutes()` now sums `G.es[e]["length"] or 0.0` over epath directly — one list comprehension, no per-hop edge-dict lookup. `_walk_directions_impl()` and `_walk_path_impl()` use `zip(epath, vpath, vpath[1:])` for per-edge access; node coordinates read from `_vertex_lats[idx]` / `_vertex_lons[idx]` (O(1) array lookup replacing `G.nodes[n]["y"]` dict traversal). Edge geometry stored as `[(lon, lat), ...]` lists (not Shapely objects) — direction check and deduplication logic preserved unchanged.
+
+2. **`fetch_street_graph.py` extended with `_save_igraph_artifact(G_nx)`** — called at the end of `download_and_save()` and also in the `__main__` block when the graphml exists but the pickle is missing. Iterates `G_nx.edges(data=True)` (all parallel edges), builds `igraph.Graph(n, edges, directed=True, vertex_attrs={x, y}, edge_attrs={length, name, geometry})` where geometry is pre-parsed to `[(lon, lat), ...]` lists via Shapely. Pickled with `protocol=HIGHEST_PROTOCOL` to `street_graph_igraph.pkl`. At runtime, loading the pickle skips GraphML parsing and NetworkX/osmnx entirely — faster cold start.
+
+3. **`requirements.txt`** — added `igraph>=0.11` and `scipy>=1.7`. `networkx` and `osmnx` retained (networkx for `transit_graph.py`; osmnx for `fetch_street_graph.py` offline script).
+
+**Behavior preserved:** All three public functions (`walk_minutes`, `walk_directions`, `walk_path`) return identical semantics. Haversine fallback triggers on the same conditions (graph absent, routing fails). lru_cache sizes, thread-safety locking pattern, and the immutable-tuple TD-012 fix are all preserved. The `_get_shortest_path` shared-cache OPT-009 optimization is preserved — a single Dijkstra run still serves all three public functions.
+
+---
+
+# 2026-04-20 One-shot `styledata` listener replaces persistent `data` listener
+
+---
+
+## 🟡 OPT-017 · Replace persistent `map.on("data", …)` with a one-shot listener after style errors clear — IMPLEMENTED
+
+**File:** `frontend/src/MapView.jsx`
+
+**Category:** Rendering / DOM Inefficiency
+
+**What was inefficient:** A persistent `map.on("data", …)` listener was registered unconditionally on map init to clear the `styleError` banner when a style loaded. MapLibre fires the `"data"` event for every tile, source, and style load throughout the map's lifetime — potentially hundreds of times per minute on an active session. The handler only acted when `e.dataType === "style" && e.isSourceLoaded`, but the JS callback dispatch and conditional evaluation ran on every single tile load regardless, accumulating overhead for as long as the map existed.
+
+**Implemented in:** Removed the persistent `map.on("data", …)` block entirely. Inside the existing `"error"` handler, immediately after `setStyleError(true)` is set, added `map.once("styledata", () => setStyleError(false))`. This one-shot listener is only registered when a style error actually occurs and fires exactly once when the style recovers — zero ongoing per-tile overhead in the normal (no-error) path, and self-cleaning on recovery. No behavior change: the `styleError` banner still clears as soon as the style reloads successfully.
+
+---
+
+# 2026-04-20 O(n) `seenTransit` flag replaces O(n²) slice+scan in `RouteLegs`
+
+---
+
+## 🟢 OPT-016 · Precompute `isTransferLeg` before the `.map()` in `RouteLegs` — IMPLEMENTED
+
+**File:** `frontend/src/App.jsx`
+
+**Category:** Redundant Computation
+
+**What was inefficient:** Inside `RouteLegs`, the expression `legs.slice(0, i).some(l => l.type === "transit")` was evaluated once per transit leg during the `.map()` render. Each call allocates a new sliced array of length `i` and then scans it linearly, making the overall complexity O(n²) in the number of legs. For a typical 4-leg route this produces ~6 wasted slice+scan operations per render; it grows with longer routes.
+
+**Implemented in:** Declared `let seenTransit = false` in the `RouteLegs` function body (before the `return`). Inside the `.map()` callback, `isTransferLeg` is now assigned `seenTransit` directly (O(1)), then `seenTransit = true` is set unconditionally for every transit leg (walk legs return early before this line). The entire determination is now a single boolean read per leg — O(n) total. No behavior change: `isTransferLeg` is `false` for the first transit leg encountered and `true` for all subsequent ones, identical to the prior `slice(0, i).some(...)` semantics. `cta_app_handoff_prompt.md` updated to reflect the new implementation.
+
+---
+
+# 2026-04-20 Pre-computed entrance and station trig in `build_exits`
+
+---
+
+## 🟢 OPT-010 · Pre-compute entrance trig before inner station loop in `build_exits` — IMPLEMENTED
+
+**File:** `backend/fetch_station_exits.py`
+
+**Category:** Redundant Computation
+
+**What was inefficient:** In `build_exits`, for each entrance node the inner loop called `_haversine_miles(lat, lon, info["lat"], info["lon"])` once per station (~150 stations). Inside `haversine_miles()` (in `utils.py`), `math.radians(lat1)`, `math.radians(lon1)`, and `math.cos(math.radians(lat1))` were recomputed on every call even though the entrance coordinates are constant across the entire inner loop. Station-side trig (`radians(lat2)`, `radians(lon2)`, `cos(lat2)`) was also recomputed on every entrance-station pair even though station coordinates never change. Across ~500 entrance nodes × ~150 stations, this produced ~225k redundant entrance-side trig ops and ~225k redundant station-side trig ops per full dataset run.
+
+**Implemented in:** Three coordinated changes:
+1. **`load_parent_stations()` extended** — each station dict now stores `rlat`, `rlon`, and `cos_lat` pre-computed at load time (3 trig ops per station, done once at startup).
+2. **Entrance trig pre-computed before the inner loop** — `rlat1 = math.radians(lat)`, `rlon1 = math.radians(lon)`, and `cos_lat1 = math.cos(rlat1)` computed once per entrance node, before the `for mapid, info in stations.items()` loop.
+3. **Local `_haversine_precomputed` helper** — new module-level function accepting pre-converted `(rlat1, cos_lat1, rlon1, rlat2, cos_lat2, rlon2)` and performing only the haversine arithmetic. Replaces the `from utils import haversine_miles` import; shared `utils.haversine_miles` is unchanged and still used by `SpatialGrid` and other callers. `import math` added to file imports; `_EARTH_RADIUS_MILES = 3958.8` defined locally. Output of `build_exits` is identical; no behavior change.
+
+---
+
+# 2026-04-20 Drop row-count loop in `validate_and_report`
+
+---
+
+## 🟢 OPT-011 · Avoid full-file row iteration for `stop_times.txt` in `validate_and_report` — IMPLEMENTED
+
+**File:** `backend/fetch_gtfs.py`
+
+**Category:** Redundant Computation
+
+**What was inefficient:** `validate_and_report` opened every GTFS file and iterated every line (`sum(1 for _ in fh)`) just to print a row count. `stop_times.txt` is ~354 MB / 5.8M rows; streaming it front-to-back purely for a diagnostic count added several seconds of unnecessary I/O at the end of an already-slow download+extract step. Every other file in `EXPECTED_FILES` was read the same way, though the cost was dominated by `stop_times.txt`.
+
+**Implemented in:** Removed the `with open(path) as fh: rows = ...` block entirely. `validate_and_report` now calls `path.stat().st_size` only (a single kernel stat call, no file reads) and prints file size in KB. The `rows` variable and its format token were deleted from the print statement. File presence check and the missing-file warning are unchanged. File size is the actionable signal for a successful download — a truncated or empty file is immediately visible.
+
+---
+
+# 2026-04-20 Deduplicate LINE_COLORS and BUS_DIRECTION_COLORS into shared constants
+
+---
+
+## 🟡 OPT-015 · Deduplicate LINE_COLORS and BUS_DIRECTION_COLORS constants — IMPLEMENTED
+
+**File:** `frontend/src/constants.js` (new), `frontend/src/App.jsx`, `frontend/src/MapView.jsx`
+
+**Category:** Unnecessary Duplication
+
+**What was inefficient:** `LINE_COLORS` and `BUS_DIRECTION_COLORS` were defined identically in both `App.jsx` (lines 14–30) and `MapView.jsx` (lines 16–32). Any color change required editing two places; a mismatch would silently produce different colors on route cards vs. map layers with no runtime error.
+
+**Implemented in:** Extracted both objects into `frontend/src/constants.js` as named exports. Both `App.jsx` and `MapView.jsx` now import from that shared module. Zero runtime behavior change — the objects are identical to before, just defined once.
+
+---
+
+# 2026-04-20 Shared shortest-path and nearest-node cache across walk functions
+
+---
+
+## 🟡 OPT-009 · Cache shortest path computation to avoid redundant routing — IMPLEMENTED
+
+**File:** `backend/walking.py`
+
+**Category:** Redundant Computation
+
+**What was inefficient:** `walk_minutes`, `_walk_directions_impl`, and `_walk_path_impl` each independently called `ox.nearest_nodes()` (twice per function — once for origin, once for dest) and `nx.shortest_path()` / `nx.shortest_path_length()`. Each function had its own `@lru_cache`, so repeat calls to the *same* function were free, but when a single request triggers multiple functions for the same origin/dest pair — e.g., `walk_minutes` + `walk_directions` for a walk leg — the full Dijkstra run plus two nearest-node KD-tree queries were repeated independently per function. A typical `/recommend` response calls at least two walk functions per walk leg.
+
+**Implemented in:** Added two new shared `@lru_cache` helpers at module level, between `_load_graph()` and `walk_minutes()`:
+- `_get_nearest_node(lat, lon) -> int | None` — `lru_cache(maxsize=2048)`: wraps `ox.nearest_nodes()` for a single coordinate. Returns `None` on graph unavailability or exception (never raises, so the cache always stores a result). Size 2048 because a single origin or dest coordinate is reused across all walk legs in a request.
+- `_get_shortest_path(origin_lat, origin_lon, dest_lat, dest_lon) -> tuple[int, ...] | None` — `lru_cache(maxsize=512)`: calls `_get_nearest_node` for both endpoints, then `nx.shortest_path(..., weight="length")` returning a tuple (immutable for cache safety). Returns `None` on any failure.
+
+`walk_minutes` now calls `_get_shortest_path` and sums `min(G[u][v].values(), key=lambda d: d.get("length", float("inf"))).get("length", 0.0)` over consecutive node pairs — equivalent to the previous `nx.shortest_path_length` result on a MultiDiGraph. `_walk_directions_impl` and `_walk_path_impl` each replaced their `ox.nearest_nodes` + `nx.shortest_path` calls with a single `_get_shortest_path` call. All three functions check for a `None` return and raise into their existing `except Exception` → Haversine fallback. No behavior changes; fallback semantics identical.
+
+---
+
+# 2026-04-20 Consolidate OSMnx intersections before saving street_graph.graphml
+
+---
+
+## 🟡 OPT-007 · Consolidate street-graph intersections to shrink `street_graph.graphml` — IMPLEMENTED
+
+**File:** `backend/fetch_street_graph.py`
+
+**Category:** Memory Footprint / Asset Size
+
+**What was inefficient:** `fetch_street_graph.py` saved the raw OSMnx pedestrian graph without any simplification. OSM models most intersections as 4–8 distinct nodes (one per approach lane / turn pocket), producing a ~120 MB `.graphml` on disk that ballooned to several hundred MB in RAM when loaded by NetworkX. This overprovisioning of intersection nodes was the contributing factor to the Railway OOM crash (see commit `954c7fa`) and is part of why street-graph loading is currently deferred (Feature K).
+
+**Implemented in:** Added an intersection-consolidation pass inside `download_and_save()` in [backend/fetch_street_graph.py](backend/fetch_street_graph.py), between `ox.graph_from_bbox` and `ox.save_graphml`:
+1. `ox.project_graph(G)` — reprojects the downloaded WGS-84 graph to a metric UTM CRS so the 10-metre tolerance is applied in real-world distance units.
+2. `ox.consolidate_intersections(G_proj, tolerance=10, rebuild_graph=True, dead_ends=False)` — merges nearby intersection nodes within 10 m; `rebuild_graph=True` reconnects edges through the consolidated nodes, preserving `length` and `geometry` attributes; `dead_ends=False` keeps cul-de-sacs intact.
+3. `ox.project_graph(G_proj, to_crs="epsg:4326")` — reprojects back to WGS-84 before saving, so `walking.py` consumers (which call `ox.nearest_nodes` with lat/lon coordinates) continue to work without modification.
+4. Before/after node and edge counts are logged to stdout as percentage reductions.
+
+Expected reduction: 20–40% fewer nodes and proportional edge count drop, producing a materially smaller `.graphml` file and a correspondingly smaller in-memory `MultiDiGraph` at runtime. **Next step:** re-run `python fetch_street_graph.py --force` locally to regenerate `street_graph.graphml`, commit the smaller file via Git LFS, and record measured RSS delta in this entry. Edge attribute `length` (used at [walking.py:137](backend/walking.py#L137)) should be verified to remain numeric after consolidation on the real graph.
+
+---
+
 # 2026-04-18 Persistent HTTP session, heapq partial sort, display-name preservation, cached legColor
 
 ---

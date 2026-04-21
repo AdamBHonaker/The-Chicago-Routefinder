@@ -1,6 +1,9 @@
 import { useState, useRef, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import "./App.css";
 import MapView from "./MapView.jsx";
+import { LINE_COLORS, BUS_DIRECTION_COLORS } from "./constants.js";
+import { SUPPORTED } from "./i18n.js";
 
 const BACKEND_URL  = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
 
@@ -10,24 +13,6 @@ const BACKEND_URL  = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000"
 // The backend must also have BYOK_ENABLED=true to honour the key.
 // ---------------------------------------------------------------------------
 const BYOK_ENABLED = import.meta.env.VITE_BYOK_ENABLED === "true";
-
-const LINE_COLORS = {
-  "Red Line":    "#c60c30",
-  "Blue Line":   "#00a1de",
-  "Brown Line":  "#62361b",
-  "Green Line":  "#009b3a",
-  "Orange Line": "#f9461c",
-  "Purple Line": "#522398",
-  "Pink Line":   "#e27ea6",
-  "Yellow Line": "#f9e300",
-};
-
-const BUS_DIRECTION_COLORS = {
-  Northbound: "#1565c0",
-  Southbound: "#4e342e",
-  Eastbound:  "#00695c",
-  Westbound:  "#ef6c00",
-};
 
 // ---------------------------------------------------------------------------
 // Transit photo manifest — add entries here once photos are sourced (HUMAN_TODO)
@@ -40,6 +25,34 @@ const PHOTOS = [
   { src: "/transit-photos/state-lake.jpg",         caption: "State/Lake — The Loop" },
   { src: "/transit-photos/wrigley-addison.jpg",    caption: "Addison — Wrigley Field" },
 ];
+
+// Native-script names shown in the language selector so speakers can find their language.
+const LANGUAGE_NAMES = {
+  en:  "English",
+  es:  "Español",
+  fr:  "Français",
+  it:  "Italiano",
+  pl:  "Polski",
+  ro:  "Română",
+  uk:  "Українська",
+  ru:  "Русский",
+  zh:  "中文（普通话）",
+  yue: "粤语",
+  ja:  "日本語",
+  ko:  "한국어",
+  tl:  "Filipino",
+  vi:  "Tiếng Việt",
+  hi:  "हिंदी",
+  gu:  "ગુજરાતી",
+  pa:  "ਪੰਜਾਬੀ",
+  ne:  "नेपाली",
+  ur:  "اردو",
+  ar:  "العربية",
+  ps:  "پښتو",
+  yo:  "Yorùbá",
+};
+
+const RTL_LANGS = new Set(["ar", "ur", "ps"]);
 
 function TransitPhoto({ fading }) {
   const [photo] = useState(
@@ -75,22 +88,23 @@ function renderMarkdown(text) {
     .trim();
 }
 
-function formatBlocks(b, blockType) {
-  if (!blockType) return b === 1 ? "1 block" : `${b} blocks`;
-  const label = blockType === "long" ? "long block" : "short block";
-  return `${b} ${b === 1 ? label : label + "s"}`;
+function formatBlocks(b, blockType, t) {
+  if (!blockType) return b === 1 ? `1 ${t("block_singular")}` : `${b} ${t("block_plural")}`;
+  if (blockType === "long") return `${b} ${b === 1 ? t("long_block_singular") : t("long_block_plural")}`;
+  return `${b} ${b === 1 ? t("short_block_singular") : t("short_block_plural")}`;
 }
 
 function WalkLegItem({ leg, index }) {
+  const { t } = useTranslation();
   const [stepsOpen, setStepsOpen] = useState(false);
   const hasSteps = leg.directions && leg.directions.length > 1;
 
   const label =
     leg.from === "Your location"
-      ? `Walk ${leg.minutes} min to ${leg.to}`
+      ? t("walk_from_origin", { minutes: leg.minutes, to: leg.to })
       : leg.to === "Your destination"
-      ? `Walk ${leg.minutes} min to your destination`
-      : `Transfer — walk ${leg.minutes} min`;
+      ? t("walk_to_destination", { minutes: leg.minutes })
+      : t("walk_transfer", { minutes: leg.minutes });
 
   const showExit = leg.exit_label && leg.to === "Your destination";
 
@@ -100,7 +114,7 @@ function WalkLegItem({ leg, index }) {
       <span className="leg-walk-body">
         <span className="leg-text">{label}</span>
         {showExit && (
-          <span className="leg-exit-label">Exit: {leg.exit_label}</span>
+          <span className="leg-exit-label">{t("exit_label_prefix")} {leg.exit_label}</span>
         )}
         {hasSteps && (
           <button
@@ -108,7 +122,7 @@ function WalkLegItem({ leg, index }) {
             onClick={() => setStepsOpen((v) => !v)}
             aria-expanded={stepsOpen}
           >
-            {stepsOpen ? "Hide steps" : "Steps"}
+            {stepsOpen ? t("steps_hide") : t("steps_show")}
           </button>
         )}
         {stepsOpen && (
@@ -116,12 +130,12 @@ function WalkLegItem({ leg, index }) {
             {leg.directions.map((step, si) => (
               <li key={si} className="leg-step">
                 <span className="leg-step-text">
-                  {si === 0 ? "Walk" : "Head"}
+                  {si === 0 ? t("step_walk") : t("step_head")}
                   {step.direction_full ? ` ${step.direction_full}` : ""}
-                  {" along "}
+                  {` ${t("step_along")} `}
                   <span className="leg-step-street">{step.street}</span>
-                  {" for "}
-                  {formatBlocks(step.blocks ?? 1, step.block_type)}
+                  {` ${t("step_for")} `}
+                  {formatBlocks(step.blocks ?? 1, step.block_type, t)}
                 </span>
               </li>
             ))}
@@ -133,6 +147,7 @@ function WalkLegItem({ leg, index }) {
 }
 
 function RouteLegs({ legs }) {
+  let seenTransit = false;
   return (
     <ol className="route-legs">
       {legs.map((leg, i) => {
@@ -146,7 +161,8 @@ function RouteLegs({ legs }) {
         const pillLabel = isBus
           ? leg.line_code
           : leg.line?.replace(" Line", "");
-        const isTransferLeg = legs.slice(0, i).some(l => l.type === "transit");
+        const isTransferLeg = seenTransit;
+        seenTransit = true;
         const xferWait = leg.transfer_wait_minutes;
         const xferNote =
           isTransferLeg && xferWait !== undefined && xferWait !== null
@@ -170,17 +186,18 @@ function RouteLegs({ legs }) {
 }
 
 function RouteCard({ route, index, isFirst, isSelected, onSelect }) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(isFirst);
   const waitNote =
     route.wait_minutes === null ? ""
-    : route.wait_minutes === 0  ? " · Due now"
-    : ` · ${route.wait_minutes} min wait`;
+    : route.wait_minutes === 0  ? ` · ${t("wait_due")}`
+    : ` · ${t("wait_minutes", { minutes: route.wait_minutes })}`;
   const xferNote =
     route.transfers === 0
-      ? "No transfers"
+      ? t("label_no_transfers")
       : route.transfers === 1
-      ? "1 transfer"
-      : `${route.transfers} transfers`;
+      ? t("label_1_transfer")
+      : t("label_n_transfers", { count: route.transfers });
 
   return (
     <div className={`route-card${isFirst ? " route-card--best" : ""}${isSelected ? " route-card--selected" : ""}`}>
@@ -190,8 +207,8 @@ function RouteCard({ route, index, isFirst, isSelected, onSelect }) {
         aria-expanded={expanded}
       >
         <div className="route-card-summary">
-          {isFirst && <span className="route-badge">Best</span>}
-          <span className="route-total">{route.total_minutes} min total</span>
+          {isFirst && <span className="route-badge">{t("badge_best")}</span>}
+          <span className="route-total">{t("label_min_total", { minutes: route.total_minutes })}</span>
           <span className="route-meta">{xferNote}{waitNote}</span>
         </div>
         <span className="route-chevron">{expanded ? "▲" : "▼"}</span>
@@ -206,63 +223,80 @@ function RouteCard({ route, index, isFirst, isSelected, onSelect }) {
 // Only rendered when BYOK_ENABLED === true and the user opens the panel.
 // ---------------------------------------------------------------------------
 
-function SettingsPanel({ apiKey, onSave, onClose }) {
+function SettingsPanel({ apiKey, onSave, onClose, aiEnabled, onAiChange }) {
+  const { t } = useTranslation();
   const [draft, setDraft] = useState(apiKey);
   const isValid = !draft.trim() || draft.trim().startsWith("sk-ant-");
 
   return (
-    <div className="settings-panel" role="dialog" aria-label="Settings">
+    <div className="settings-panel" role="dialog" aria-label={t("settings_title")}>
       <div className="settings-header">
-        <h2 className="settings-title">Settings</h2>
-        <button className="settings-close" onClick={onClose} aria-label="Close settings">
+        <h2 className="settings-title">{t("settings_title")}</h2>
+        <button className="settings-close" onClick={onClose} aria-label={t("aria_close_settings")}>
           ✕
         </button>
       </div>
-      <div className="settings-warning" role="alert">
-        <strong>⚠ Security notice:</strong> Your key is stored in this browser. Only use this feature on trusted personal devices.
-      </div>
-      <label className="settings-label">
-        <span className="settings-label-text">Your Anthropic API Key</span>
-        <span className="settings-hint">
-          Provide your own key and your usage won't count against the app's shared quota.
-        </span>
+
+      <label className="setting-row">
+        <span>AI Explanation</span>
         <input
-          type="password"
-          className={`settings-input${!isValid ? " settings-input--error" : ""}`}
-          placeholder="sk-ant-…"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          autoComplete="off"
-          spellCheck={false}
+          type="checkbox"
+          checked={aiEnabled}
+          onChange={(e) => onAiChange(e.target.checked)}
         />
-        {!isValid && (
-          <span className="settings-error">Key must start with "sk-ant-"</span>
-        )}
       </label>
-      <div className="settings-actions">
-        <button
-          className="settings-save"
-          onClick={() => { onSave(draft.trim()); onClose(); }}
-          disabled={!isValid}
-        >
-          Save
-        </button>
-        {apiKey && (
-          <button
-            className="settings-clear"
-            onClick={() => { onSave(""); onClose(); }}
-          >
-            Remove key
-          </button>
-        )}
-      </div>
+      <span className="settings-hint">
+        When on, Claude adds a plain-English summary of your route options.
+      </span>
+
+      {BYOK_ENABLED && (
+        <>
+          <div className="settings-warning" role="alert">
+            <strong>⚠ Security notice:</strong> Your key is stored in this browser. Only use this feature on trusted personal devices.
+          </div>
+          <label className="settings-label">
+            <span className="settings-label-text">{t("settings_label_api_key")}</span>
+            <span className="settings-hint">{t("settings_hint_api_key")}</span>
+            <input
+              type="password"
+              className={`settings-input${!isValid ? " settings-input--error" : ""}`}
+              placeholder="sk-ant-…"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              autoComplete="off"
+              spellCheck={false}
+            />
+            {!isValid && (
+              <span className="settings-error">{t("settings_error_key_format")}</span>
+            )}
+          </label>
+          <div className="settings-actions">
+            <button
+              className="settings-save"
+              onClick={() => { onSave(draft.trim()); onClose(); }}
+              disabled={!isValid}
+            >
+              {t("settings_btn_save")}
+            </button>
+            {apiKey && (
+              <button
+                className="settings-clear"
+                onClick={() => { onSave(""); onClose(); }}
+              >
+                {t("settings_btn_remove_key")}
+              </button>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }
 
 function LoadingSkeleton() {
+  const { t } = useTranslation();
   return (
-    <div className="skeleton-wrapper" aria-busy="true" aria-label="Finding your route">
+    <div className="skeleton-wrapper" aria-busy="true" aria-label={t("aria_loading")}>
       <div className="skeleton skeleton-line skeleton-line--long" />
       <div className="skeleton skeleton-line skeleton-line--medium" />
       <div className="skeleton skeleton-line skeleton-line--short" />
@@ -272,6 +306,8 @@ function LoadingSkeleton() {
 }
 
 export default function App() {
+  const { t, i18n } = useTranslation();
+
   const [origin, setOrigin] = useState("");
   const [destination, setDestination] = useState("");
   const [transitMode, setTransitMode] = useState("All");
@@ -288,6 +324,23 @@ export default function App() {
     BYOK_ENABLED ? (sessionStorage.getItem("byok_api_key") || "") : ""
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // AI toggle — persisted to localStorage so it survives page reloads.
+  // Defaults to false (off) so new users get faster route cards without AI latency.
+  const [aiEnabled, setAiEnabled] = useState(
+    () => localStorage.getItem("cta_ai_enabled") === "true"
+  );
+
+  // RTL support — flip document direction when an RTL language is selected.
+  useEffect(() => {
+    document.documentElement.dir = RTL_LANGS.has(i18n.language) ? "rtl" : "ltr";
+    document.documentElement.lang = i18n.language;
+  }, [i18n.language]);
+
+  function handleAiChange(value) {
+    setAiEnabled(value);
+    localStorage.setItem("cta_ai_enabled", String(value));
+  }
 
   function handleSaveByokKey(key) {
     setByokKey(key);
@@ -345,6 +398,8 @@ export default function App() {
           origin:       origin.trim(),
           destination:  destination.trim(),
           transit_mode: transitMode,
+          ai_enabled:   aiEnabled,
+          language:     i18n.language,
           ...(BYOK_ENABLED && byokKey ? { anthropic_api_key: byokKey } : {}),
         }),
         signal: abortRef.current.signal,
@@ -365,7 +420,7 @@ export default function App() {
       const routes = data.routes || [];
 
       setResult({
-        recommendation: renderMarkdown(data.recommendation || ""),
+        recommendation: data.recommendation != null ? renderMarkdown(data.recommendation) : null,
         routes,
         alerts: data.alerts || [],
         originCoords: data.origin_coords,
@@ -382,7 +437,7 @@ export default function App() {
 
     } catch (err) {
       if (err.name === "AbortError") return;
-      setError(err.message || "Something went wrong. Please try again.");
+      setError(err.message || t("error_generic"));
       // Also fade photo on errors so it doesn't block map interaction
       setPhotoFading(true);
       photoFadeTimer.current = setTimeout(() => {
@@ -400,26 +455,33 @@ export default function App() {
         <div className="panel-cards">
           <header className="header">
             <div className="header-top">
-              <h1>CTA Transit</h1>
+              <h1>{t("app_title")}</h1>
               <div className="filters">
-                {BYOK_ENABLED && (
-                  <button
-                    className={`settings-trigger${byokKey ? " settings-trigger--active" : ""}`}
-                    onClick={() => setSettingsOpen((v) => !v)}
-                    aria-label={byokKey ? "Settings (using your API key)" : "Settings"}
-                    title={byokKey ? "Using your own Anthropic API key" : "Settings"}
-                  >
-                    ⚙
-                  </button>
-                )}
+                <button
+                  className={`settings-trigger${byokKey ? " settings-trigger--active" : ""}`}
+                  onClick={() => setSettingsOpen((v) => !v)}
+                  aria-label={byokKey ? t("aria_settings_active") : t("aria_settings")}
+                  title={byokKey ? t("aria_settings_active") : t("aria_settings")}
+                >
+                  ⚙
+                </button>
                 <select
                   value={transitMode}
                   onChange={(e) => setTransitMode(e.target.value)}
-                  aria-label="Transit mode"
+                  aria-label={t("aria_transit_mode")}
                 >
-                  <option value="All">All modes</option>
-                  <option value="Train">Train</option>
-                  <option value="Bus">Bus</option>
+                  <option value="All">{t("mode_all")}</option>
+                  <option value="Train">{t("mode_train")}</option>
+                  <option value="Bus">{t("mode_bus")}</option>
+                </select>
+                <select
+                  value={i18n.language}
+                  onChange={(e) => i18n.changeLanguage(e.target.value)}
+                  aria-label={t("aria_language")}
+                >
+                  {SUPPORTED.map((code) => (
+                    <option key={code} value={code}>{LANGUAGE_NAMES[code]}</option>
+                  ))}
                 </select>
                 {/* Bus fullness filter — hidden until CTA populates the psgld field
                     in Bus Tracker API responses. All current responses return psgld=""
@@ -440,26 +502,28 @@ export default function App() {
                 */}
               </div>
             </div>
-            <p className="tagline">Stop thinking about how to get there. Just go.</p>
+            <p className="tagline">{t("tagline")}</p>
           </header>
 
-          {BYOK_ENABLED && settingsOpen && (
+          {settingsOpen && (
             <SettingsPanel
               apiKey={byokKey}
               onSave={handleSaveByokKey}
               onClose={() => setSettingsOpen(false)}
+              aiEnabled={aiEnabled}
+              onAiChange={handleAiChange}
             />
           )}
 
           <main className="main">
             <form className="form" onSubmit={handleSubmit}>
               <label>
-                <span>From</span>
+                <span>{t("label_from")}</span>
                 <input
                   type="search"
                   inputMode="search"
                   enterKeyHint="go"
-                  placeholder="Neighborhood, address, or building"
+                  placeholder={t("placeholder_location")}
                   value={origin}
                   onChange={(e) => setOrigin(e.target.value)}
                   autoComplete="off"
@@ -469,12 +533,12 @@ export default function App() {
               </label>
 
               <label>
-                <span>To</span>
+                <span>{t("label_to")}</span>
                 <input
                   type="search"
                   inputMode="search"
                   enterKeyHint="go"
-                  placeholder="Neighborhood, address, or building"
+                  placeholder={t("placeholder_location")}
                   value={destination}
                   onChange={(e) => setDestination(e.target.value)}
                   autoComplete="off"
@@ -484,7 +548,7 @@ export default function App() {
               </label>
 
               <button type="submit" disabled={loading}>
-                {loading ? "Finding your route…" : "Get Route"}
+                {loading ? t("btn_finding_route") : t("btn_get_route")}
               </button>
             </form>
 
@@ -498,14 +562,16 @@ export default function App() {
 
             {result && !loading && (
               <div className="results">
+                {result.recommendation != null && (
                 <div className="recommendation">
                   <p>{result.recommendation}</p>
-                  {result.busDataPartial && (
-                    <p className="data-warning">
-                      Bus arrival data partially unavailable — some results may be missing.
-                    </p>
-                  )}
                 </div>
+              )}
+              {result.busDataPartial && (
+                <p className="data-warning">
+                  {t("bus_data_partial")}
+                </p>
+              )}
 
                 {result.alerts?.length > 0 && (
                   <div className="alerts-section">
@@ -522,13 +588,12 @@ export default function App() {
                     ))}
                     {result.alerts.length > 3 && (
                       <p className="alerts-more">
-                        and{" "}
                         <a
                           href="https://www.transitchicago.com/travel-information/alerts/"
                           target="_blank"
                           rel="noreferrer"
                         >
-                          {result.alerts.length - 3} more
+                          {t("alerts_more", { count: result.alerts.length - 3 })}
                         </a>
                       </p>
                     )}
@@ -537,7 +602,7 @@ export default function App() {
 
                 {result.routes.length > 0 && (
                   <section className="routes-section">
-                    <h2 className="routes-heading">Route options</h2>
+                    <h2 className="routes-heading">{t("route_options_heading")}</h2>
                     {result.routes.map((route, i) => (
                       <RouteCard
                         key={`${searchIdRef.current}-${i}`}

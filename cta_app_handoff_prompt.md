@@ -51,7 +51,9 @@ Accuracy is essential. The routing engine must:
 **Routing Engine (Python libraries)**
 - `networkx` — graph-based route calculation
 - `osmnx` — walking distance via real street network data
-- `scikit-learn` — required by `osmnx.nearest_nodes()` for spatial indexing on unprojected graphs
+- `igraph` — C-backed graph library used by `walking.py` for the street routing graph (OPT-008); ~10× lower RAM than NetworkX
+- `scipy` — `cKDTree` used by `walking.py` for nearest-node lookup, replacing `osmnx.nearest_nodes()` (OPT-008)
+- `scikit-learn` — transitive dep of osmnx; retained in requirements.txt for compatibility
 - `requests` — CTA API HTTP calls + Google Maps geocoding
 - `aiohttp` — simultaneous async API calls for speed
 
@@ -59,7 +61,7 @@ Accuracy is essential. The routing engine must:
 
 **AI Integration**
 - `anthropic` (official Python SDK) — Claude API calls from backend
-- Model: `claude-sonnet-4-6` by default; `claude-haiku-4-5-20251001` for simple single-option/single-leg queries (see cost reduction strategies below)
+- Model: `claude-sonnet-4-6` by default; `claude-haiku-4-5-20251001` for simple single-option/single-leg queries (see cost reduction strategies below). Both model IDs are overridable via `CLAUDE_COMPLEX_MODEL` / `CLAUDE_SIMPLE_MODEL` Railway env vars.
 
 **Database** *(not planned for V1 or V2)*
 - No database required. Phase 7 is ad monetization (AdSense). User accounts and saved routes are not currently planned.
@@ -111,7 +113,8 @@ Accuracy is essential. The routing engine must:
 **Cost reduction strategies to implement from the start:**
 - Limit free requests per user per day to control API costs
 - Cache Claude responses for identical or near-identical queries
-- Claude Haiku for simple queries ✅ implemented 2026-04-18: `/recommend` picks `claude-haiku-4-5-20251001` when `ranked_routes` has exactly one route with exactly one `TransitLeg` (direct ride, no transfer); all other queries keep `claude-sonnet-4-6`. Response includes `"model_used": "haiku"|"sonnet"` for observability.
+- Claude Haiku for simple queries ✅ implemented 2026-04-18: `/recommend` picks `claude-haiku-4-5-20251001` when `ranked_routes` has exactly one route with exactly one `TransitLeg` (direct ride, no transfer); all other queries keep `claude-sonnet-4-6`. Response includes `"model_used": "haiku"|"sonnet"` for observability. Both model IDs are configurable via `CLAUDE_SIMPLE_MODEL` / `CLAUDE_COMPLEX_MODEL` Railway env vars (TD-004, resolved 2026-04-20).
+- AI Toggle (Feature AI Toggle) ✅ implemented 2026-04-20: Claude recommendation layer is now **opt-in** (off by default). Frontend settings panel (gear icon, always visible) has an "AI Explanation" checkbox persisted to `localStorage["cta_ai_enabled"]`. Frontend sends `ai_enabled: bool` in the request body. Backend skips `_call_claude()` entirely when `false` — returns `recommendation: null`, no token spend. Paywall-ready: add an auth check inside `if request.ai_enabled:` in `main.py`. See `FEATURES_IMPLEMENTED_HISTORY.md` for full details.
 
 > **Rate limiting status:** Code complete — OFF by default. Activate with `RATE_LIMIT_ENABLED=true` in Railway env vars before enabling for public traffic.
 
@@ -209,10 +212,10 @@ Users can supply their own Anthropic API key via an in-app settings panel. Their
 ## Known Pending Items
 
 - **CTA API limit:** 100,000 req/day (confirmed from Train Tracker docs). Plan caching strategy around 100k.
-- **Known bugs:** See `BUGS_TO_BE_FIXED.md` for open bugs (1 🔴 high, 0 🟡 medium, 1 🟢 low). Resolved bugs are logged in `BUGS_FIXED_HISTORY.md`. When a bug is fixed, delete it from `BUGS_TO_BE_FIXED.md` and add an entry to `BUGS_FIXED_HISTORY.md`.
-- **Future enhancements:** See `FEATURE_IMPLEMENTATION_PLANS.md` for chunked build plans. See `Feature_Prioritization.md` for bolt-on vs structural classification and full status. Key items: ~~Train Station Exit Guidance (Feature A, 5 chunks)~~ ✅ Complete, ~~Multi-Leg Bus Routing / bus+bus transfers (Feature C, 5 chunks)~~ ✅ Complete, ~~Intermodal Routing / train+bus combinations (Feature B, 6 chunks)~~ ✅ Complete (2026-04-16), ~~Live Arrivals at Transfer Stop (Feature D, 4 chunks)~~ ✅ Complete (2026-04-18), ~~Walk Leg Block-Count Distance Display (Feature E, 2 chunks)~~ ✅ Complete, ~~Street Abbreviation Normalization (Feature F, 1 chunk)~~ ✅ Complete, ~~Long/Short Block Classification (Feature G, 2 chunks)~~ ✅ Complete, ~~Deduplicate Same-Line Station Candidates (Feature H, bolt-on, 3 chunks)~~ ✅ Complete (2026-04-17), ~~CTA Alerts Integration (Feature I, bolt-on, 3 chunks)~~ ✅ Complete (2026-04-17), ~~Deprecate `find_bus_routes()` in Favor of Unified Graph (Feature J, bolt-on, 3 chunks)~~ ✅ Complete (2026-04-18). Beyond chunked features: ~~rate limiting~~ ✅ Code complete (activate with `RATE_LIMIT_ENABLED=true`), ~~BYOK~~ ✅ Code complete (activate with `BYOK_ENABLED=true` + `VITE_BYOK_ENABLED=true`), ~~response caching~~ ✅ Complete, Claude Haiku for simple queries. Multi-leg train routing accuracy gaps: (a) shared-track edge deduplication can mis-label the line on segments where multiple CTA lines share consecutive stations (e.g. Red/Brown between Belmont and Fullerton) — timing is correct but the route card may show the wrong line name; (b) ~~bus access to a better-positioned train station is never considered~~ ✅ Resolved by Feature B.
+- **Known bugs:** See `BUGS_TO_BE_FIXED.md` for open bugs (0 🔴 high, 0 🟡 medium, 1 🟢 low). Resolved bugs are logged in `BUGS_FIXED_HISTORY.md`. When a bug is fixed, delete it from `BUGS_TO_BE_FIXED.md` and add an entry to `BUGS_FIXED_HISTORY.md`.
+- **Future enhancements:** See `FEATURE_IMPLEMENTATION_PLANS.md` for chunked build plans. See `Feature_Prioritization.md` for bolt-on vs structural classification and full status. Key items: ~~Train Station Exit Guidance (Feature A, 5 chunks)~~ ✅ Complete, ~~Multi-Leg Bus Routing / bus+bus transfers (Feature C, 5 chunks)~~ ✅ Complete, ~~Intermodal Routing / train+bus combinations (Feature B, 6 chunks)~~ ✅ Complete (2026-04-16), ~~Live Arrivals at Transfer Stop (Feature D, 4 chunks)~~ ✅ Complete (2026-04-18), ~~Walk Leg Block-Count Distance Display (Feature E, 2 chunks)~~ ✅ Complete, ~~Street Abbreviation Normalization (Feature F, 1 chunk)~~ ✅ Complete, ~~Long/Short Block Classification (Feature G, 2 chunks)~~ ✅ Complete, ~~Deduplicate Same-Line Station Candidates (Feature H, bolt-on, 3 chunks)~~ ✅ Complete (2026-04-17), ~~CTA Alerts Integration (Feature I, bolt-on, 3 chunks)~~ ✅ Complete (2026-04-17), ~~Deprecate `find_bus_routes()` in Favor of Unified Graph (Feature J, bolt-on, 3 chunks)~~ ✅ Complete (2026-04-18), ~~Multi-Language Support / i18n (Feature Language, 6 chunks)~~ ✅ Complete (2026-04-20). Beyond chunked features: ~~rate limiting~~ ✅ Code complete (activate with `RATE_LIMIT_ENABLED=true`), ~~BYOK~~ ✅ Code complete (activate with `BYOK_ENABLED=true` + `VITE_BYOK_ENABLED=true`), ~~response caching~~ ✅ Complete, Claude Haiku for simple queries. ~~Multi-leg train routing accuracy gaps: (a) shared-track edge deduplication can mis-label the line on segments where multiple CTA lines share consecutive stations (e.g. Red/Purple between Howard and Belmont) — timing is correct but the route card may show the wrong line name~~ ✅ Fixed 2026-04-20 (see FEATURES_IMPLEMENTED_HISTORY.md); (b) ~~bus access to a better-positioned train station is never considered~~ ✅ Resolved by Feature B.
 - **API keys:** All four keys obtained and configured: CTA Train Tracker, CTA Bus Tracker, Anthropic, and Google Maps.
-- **Geocoding:** Google Maps Geocoding API implemented (`geocode_google()` in `gtfs_loader.py`). A temporary 9,500 calls/month cap is in place during testing — see HUMAN_TODO.md (Post-Deployment Cleanup) for removal instructions.
+- **Geocoding:** Google Maps Geocoding API implemented (`geocode_google()` in `gtfs_loader.py`). A monthly call cap (default 9,500) is enforced as a production cost guard, configurable via `GEOCODE_MONTHLY_LIMIT` env var (set to `0` to disable).
 
 ### Notable changes (session — 2026-04-06)
 Three bugs in `backend/main.py` were fixed before deployment:
@@ -363,7 +366,7 @@ All four remaining 🟢 deferred bugs fixed. No known bugs remain.
 
 ### Notable changes (session — 2026-04-09, Google Maps geocoding)
 1. **Google Maps Geocoding API implemented** — `gtfs_loader.py`: `geocode_nominatim()` replaced with `geocode_google()`. Nominatim-specific rate-limit lock/timer removed (not needed for Google Maps). API call uses Chicago bounding box bias + `components=country:US`. Persistent disk cache unchanged.
-2. **Temporary monthly rate limiter added** — `_GEOCODE_CALL_LIMIT = 9_500` calls/month caps API spend during testing. Counter persisted to `geocode_counter.json`, resets automatically each calendar month. Only actual API hits count — cache hits are free. Full removal instructions (exact symbols to delete) in HUMAN_TODO.md under "Post-Deployment Cleanup."
+2. **Monthly geocode rate limiter added** — `_GEOCODE_CALL_LIMIT` defaults to 9,500 calls/month to cap API spend. Counter persisted to `geocode_counter.json`, resets automatically each calendar month. Only actual API hits count — cache hits are free. *(Promoted from temporary scaffolding to a proper env-var config in TD-003, 2026-04-20: set `GEOCODE_MONTHLY_LIMIT` Railway env var to change the limit or set to `0` to disable.)*
 
 ---
 
@@ -492,7 +495,7 @@ A comprehensive low-severity bug audit produced 22 fixes across backend and fron
 
 **Backend bug fixes (`main.py`, `cta_client.py`, `gtfs_loader.py`, `transit_graph.py`, `walking.py`):**
 1. `_save_geocode_cache` — replaced write-through with a dirty-flag + background-flush (30s daemon thread + atexit handler). Expensive atomic-rename write now happens at most once per 30s. **Further optimized (OPT-003, resolved 2026-04-18):** the 30s flush now appends only new entries as JSONL to `geocode_cache.journal` (O(delta) instead of O(cache size)). A full snapshot rewrite is forced only every 3600s or once 500 journal entries accumulate; `_load_geocode_cache` replays the journal over the snapshot at startup.
-2. `_fetch_bus_chunk` — now returns a sentinel `[{"_bus_error": True}]` on exception instead of silently returning `[]`. `get_bus_arrivals` and `get_train_arrivals` both return `(arrivals, n_errors)` tuples.
+2. `_fetch_bus_chunk` — now returns a sentinel `[{"_error": True, "exc": str, "mode": "bus"}]` on exception instead of silently returning `[]`. Train errors use the same sentinel shape with `"mode": "train"` (TD-007). `get_bus_arrivals` and `get_train_arrivals` both return `(arrivals, n_errors)` tuples.
 3. `_rank_routes` — removed dead `dest_lat`/`dest_lon` parameters from signature and call site.
 4. `_response_cache` — changed from `dict` to `collections.OrderedDict`; eviction now uses `popitem(last=False)` (O(1)) instead of `min()` over all entries.
 5. `_rate_store` — empty deques now deleted after eviction to prevent unbounded growth.
@@ -521,6 +524,22 @@ A comprehensive low-severity bug audit produced 22 fixes across backend and fron
 
 ---
 
+### Notable changes (session — 2026-04-20, technical debt payoff — TD-010 through TD-014)
+
+All five remaining technical debt items resolved. No open technical debt remains.
+
+1. **`SpatialGrid` class extracted to `utils.py` (TD-010)** — Generic cell-based spatial index. Stores `(lat, lon, value)` triples, provides `add()` and `query(lat, lon, radius_miles) → [(dist, value)]` with bounding-box prefilter + Haversine postfilter. Replaces two independent implementations: `gtfs_loader.py`'s `_spatial_key` + `_spatial_index` dict + 40-line `_candidates_within` (now a one-liner); `transit_graph.py`'s 16-line `_stops_near` with hard-coded `0.005°` cell logic (now also a one-liner). `_bus_stop_coords` retained in `transit_graph.py` for direct stop-id coordinate lookups.
+
+2. **Magic numbers named and moved to module level (TD-011)** — `main.py`: `(0.001 ** 2)` named `_SAME_LOCATION_THRESHOLD_DEG2` with `# degrees²` annotation. `transit_graph.py`: seven function-local constants moved to module level in two named sections ("Intermodal walk-edge tuning constants" and "Bus-to-bus transfer candidate scoring"). Score factor `26.0` named `_TRANSFER_SCORE_WALK_FACTOR` with derivation comment.
+
+3. **`lru_cache` mutable-list latent bug fixed (TD-012)** — `walk_directions` and `walk_path` in `walking.py` renamed to private `_walk_directions_impl` / `_walk_path_impl` (still `@lru_cache`); these now return immutable tuples. Public wrappers `walk_directions` / `walk_path` (not cached) return a fresh list on every call (`list(impl(...))` / `[list(pt) for pt in impl(...)]`). The cache now stores immutable data; callers may freely mutate the returned lists. No call sites changed.
+
+4. **Module-level globals lifecycle documented (TD-013)** — Added "Module-level state — initialization contract" comment block to `transit_graph.py` enumerating all six module globals, their single initializer, and their lifecycle phase. No behavior change.
+
+5. **Street-graph bounding-box expansion TODO replaced with actionable checklist (TD-014)** — `utils.py`: bare TODO comment replaced with a four-step expansion guide documenting current coverage bounds, target expansion coordinates, and the Railway memory check required before expanding.
+
+---
+
 ## Geocoding Strategy
 
 Location resolution uses a three-step fallback (implemented in `gtfs_loader.py`):
@@ -533,7 +552,7 @@ Location resolution uses a three-step fallback (implemented in `gtfs_loader.py`)
 - `geocode_google(query)` in `gtfs_loader.py` — signature `(query: str) -> tuple[float, float] | None`
 - Results persisted to `geocode_cache.json` (disk cache survives restarts; cache hits are free)
 - API call counter persisted to `geocode_counter.json` — resets each calendar month
-- Free tier: ~40,000 calls/month. A temporary 9,500/month cap is in place during testing. See HUMAN_TODO.md (Post-Deployment Cleanup) for what to remove before launch.
+- Free tier: ~40,000 calls/month. A production call cap defaults to 9,500/month (configurable via `GEOCODE_MONTHLY_LIMIT` env var; set to `0` to disable).
 - Requires `GOOGLE_MAPS_API_KEY` in `backend/.env` AND in Railway environment variables ✅
 
 ---
@@ -545,7 +564,7 @@ CTA-Transit-PWA/
 ├── .gitignore
 ├── cta_app_handoff_prompt.md           ← This file
 ├── HUMAN_TODO.md                       ← Tasks only a human can do (accounts, keys, deploy steps, UI checks)
-├── BUGS_TO_BE_FIXED.md                 ← Open bugs only (1 🔴 high, 0 🟡 medium, 1 🟢 low); delete entry here and log fix in BUGS_FIXED_HISTORY.md when resolved
+├── BUGS_TO_BE_FIXED.md                 ← Open bugs only (0 🔴 high, 0 🟡 medium, 1 🟢 low); delete entry here and log fix in BUGS_FIXED_HISTORY.md when resolved
 ├── BUGS_FIXED_HISTORY.md               ← Log of all resolved bugs; add entry here when a bug from BUGS_TO_BE_FIXED.md is fixed
 ├── FEATURE_IMPLEMENTATION_PLANS.md     ← Chunked build plans + post-launch ideas: Feature A ✅ (Train Station Exit Guidance, 5 chunks), Feature B ✅ (Intermodal Routing, 6 chunks), Feature C ✅ (Multi-Leg Bus Routing, 5 chunks), Feature D (Live Arrivals at Transfer Stop, 4 chunks), Feature E ✅ (Walk Leg Block-Count Distance, 2 chunks), Feature F ✅ (Street Abbreviation Normalization, 1 chunk), Feature G ✅ (Long/Short Block Classification, 2 chunks), Feature H ✅ (Deduplicate Same-Line Station Candidates, bolt-on, 3 chunks), Feature I ✅ (CTA Alerts Integration, bolt-on, 3 chunks), Feature J ✅ (Deprecate find_bus_routes() in Favor of Unified Graph, bolt-on, 3 chunks)
 ├── Feature_Prioritization.md           ← Bolt-On vs Structural classification + status for all planned/pending features: Feature D (Live Arrivals at Transfer Stop, structural — Feature C dependency satisfied), Multi-Leg Train Routing Gap 1 (shared-track label accuracy, structural)
@@ -559,24 +578,40 @@ CTA-Transit-PWA/
 │   │                                      _rank_routes (dot-product bearing test) + _rank_bus_routes();
 │   │                                      bus routing calls find_bus_transfer_routes() unconditionally (Feature J);
 │   │                                      OrderedDict response cache (45s TTL, 500 entries);
+│   │                                      _store_lock (asyncio.Lock) protects both _rate_store and _response_cache against concurrent-request races;
 │   │                                      rate limiting (off by default — RATE_LIMIT_ENABLED=true to activate);
-│   │                                      BYOK (off by default — BYOK_ENABLED=true + VITE_BYOK_ENABLED=true to activate)
+│   │                                      BYOK (off by default — BYOK_ENABLED=true + VITE_BYOK_ENABLED=true to activate);
+│   │                                      recommend() decomposed into focused helpers (TD-002): _validate_api_keys(),
+│   │                                      _resolve_locations(), _fetch_arrivals(), _run_routing(),
+│   │                                      _fetch_transfer_arrivals(), _call_claude(), _format_response()
+│   ├── utils.py                        ← Shared backend utilities: haversine_miles(lat1, lon1, lat2, lon2) → float;
+│   │                                      SpatialGrid class (generic cell-based spatial index — TD-010; shared by gtfs_loader + transit_graph);
+│   │                                      CHICAGO_BBOX_{GOOGLE,OVERPASS,OSMNX} + STREET_GRAPH_BBOX_OSMNX constants (TD-006);
+│   │                                      _MILES_PER_DEG_LAT / _MILES_PER_DEG_LON geographic constants
 │   ├── gtfs_loader.py                  ← 3-step location resolver + _normalize_street_abbr() (USPS suffix expansion) +
 │   │                                      fuzzy_match_neighborhood() shared helper +
-│   │                                      Google Maps geocoding + persistent cache + monthly call counter (temporary)
+│   │                                      Google Maps geocoding + persistent cache + monthly call counter;
+│   │                                      spatial index uses SpatialGrid (TD-010 — _spatial_index returns SpatialGrid, _candidates_within is a one-liner)
 │   ├── transit_graph.py                ← Unified NetworkX graph (Feature B: ~11k bus nodes, ~50k bus transit edges,
 │   │                                      ~3k train↔bus walk edges); thread-local G_base copy per executor thread;
 │   │                                      find_routes() (ORIGIN→bus_stop virtual edges; n_routes=3 default, called with 5;
 │   │                                      Feature H: _dedup_stations_by_line() applied to origin+dest candidates);
 │   │                                      find_bus_transfer_routes() (Feature J removed legacy find_bus_routes()); _resolve_node();
 │   │                                      _path_to_route() handles edge_type="walk" for intermodal transfers;
-│   │                                      _bus_stop_grid + _stops_near() (Feature C); _build_stop_to_routes() (Feature C);
+│   │                                      _bus_stop_grid (SpatialGrid — TD-010) + _stops_near() (Feature C); _build_stop_to_routes() (Feature C);
 │   │                                      get_bus_stop_sequences(); _build_shape_lookup(); get_shape(); clip_shape();
-│   │                                      _station_exits + best_exit() (Feature A); WalkLeg.path_points; TransitLeg.shape_points
-│   ├── walking.py                      ← OSMnx walking: walk_minutes() (time) + walk_path() (street geometry) + walk_directions() (step-by-step; each step dict includes blocks + direction_full)
+│   │                                      _station_exits + best_exit() (Feature A); WalkLeg.path_points; TransitLeg.shape_points;
+│   │                                      module-level tuning constants (TD-011): intermodal walk-edge constants + bus transfer scoring constants;
+│   │                                      module-level initialization contract comment for all globals (TD-013)
+│   ├── walking.py                      ← igraph walking (OPT-008): walk_minutes() (time) + walk_path() (street geometry, fresh list each call — TD-012) +
+│   │                                      walk_directions() (step-by-step; each step dict includes blocks + direction_full; fresh list each call — TD-012);
+│   │                                      lru_cache on private _walk_path_impl/_walk_directions_impl (return immutable tuples — TD-012);
+│   │                                      shared _get_shortest_path() + _get_nearest_node() lru_cache helpers (OPT-009) avoid redundant Dijkstra + nearest-node calls across all three functions;
+│   │                                      loads street_graph_igraph.pkl (pre-built igraph artifact, OPT-008c) first; falls back to ig.Graph.Read_GraphML on street_graph.graphml; falls back to Haversine;
+│   │                                      _coord_kdtree (scipy cKDTree) replaces ox.nearest_nodes; _vertex_lats/_vertex_lons NumPy arrays for O(1) coord lookup; no osmnx/networkx at runtime
 │   ├── cta_client.py                   ← Async Train Tracker + Bus Tracker API clients; batched bus stop fetching; psgld normalization; get_alerts() + _TRAIN_LINE_TO_ALERT_ID + _fetch_alerts_for_route() (Feature I)
 │   ├── fetch_gtfs.py                   ← Script to download/update CTA GTFS data
-│   ├── fetch_street_graph.py           ← Script to download/cache OSMnx street graph
+│   ├── fetch_street_graph.py           ← Script to download/cache OSMnx street graph; applies ox.consolidate_intersections(tolerance=10, rebuild_graph=True, dead_ends=False) after download (OPT-007); also emits street_graph_igraph.pkl (igraph pickle with geometry pre-parsed as coord lists — OPT-008c)
 │   ├── active_routes.py                ← Standalone diagnostic script: prints all active CTA bus routes
 │   │                                      and train lines right now. Bus routes via Bus Tracker /getroutes
 │   │                                      (only returns in-service routes); train lines via Train Tracker
@@ -587,9 +622,10 @@ CTA-Transit-PWA/
 │   ├── requirements.txt
 │   ├── geocode_cache.json              ← Persistent geocoding results cache snapshot (gitignored, built at runtime)
 │   ├── geocode_cache.journal           ← Append-only JSONL delta between snapshots (gitignored, compacted hourly or every 500 entries)
-│   ├── geocode_counter.json            ← Monthly Google Maps API call counter (gitignored; temporary — remove post-deployment)
+│   ├── geocode_counter.json            ← Monthly Google Maps API call counter (gitignored; resets each calendar month)
 │   ├── gtfs_data/                      ← Downloaded GTFS files (gitignored, re-downloaded on deploy via fetch_gtfs.py)
-│   └── street_graph.graphml            ← Pre-built OSMnx street graph committed via Git LFS (bbox: Howard–20th St); present locally, NOT present in Railway image — runtime falls back to Haversine. See Feature K to restore.
+│   ├── street_graph.graphml            ← Pre-built OSMnx street graph committed via Git LFS (bbox: Howard–20th St); present locally, NOT present in Railway image — runtime falls back to Haversine. See Feature K to restore.
+│   └── street_graph_igraph.pkl         ← Pre-built igraph artifact (gitignored); produced by fetch_street_graph.py (OPT-008c); loaded by walking.py in preference to the graphml for faster cold start and lower RAM.
 └── frontend/
     ├── index.html                      ← PWA meta tags, theme color, apple-touch-icon
     ├── package.json                    ← includes maplibre-gl dependency
@@ -603,6 +639,8 @@ CTA-Transit-PWA/
     │   │                                  selectedRouteIndex state; RouteCard selection; photo fade lifecycle
     │   ├── App.css                     ← layout--split, panel-cards, panel-map, transit-photo, map-view styles;
     │   │                                  800px mobile breakpoint (stacked, 300px/350px min-heights)
+    │   ├── constants.js                ← LINE_COLORS, BUS_DIRECTION_COLORS — single source of truth; imported by
+    │   │                                  App.jsx and MapView.jsx (OPT-015)
     │   └── MapView.jsx                 ← MapLibre GL JS map; locked by default; unlock button; route rendering:
     │                                      walk dashes, transit polylines, board/exit/origin/dest markers,
     │                                      intermediate stop dots; fitBounds on route change (animate: false)
@@ -699,9 +737,21 @@ Post-deployment enrichment phase. Adds two new live context streams (weather, cr
 4. **Phase 6.5: Weather & Crowdedness Context** — resolve pending scoping decisions for Features Weather, Crowdedness, and Weather Scoring in `FEATURE_IMPLEMENTATION_PLANS.md`, then implement. Gated on live app being stable.
 5. Phase 7: Monetization (AdSense) — apply after confirming live app is stable
 
-**Bug status:** 1 🔴 high + 0 🟡 medium + 1 🟢 low bugs open — see `BUGS_TO_BE_FIXED.md`. Full history of resolved bugs in `BUGS_FIXED_HISTORY.md`.
+**Bug status:** 0 🔴 high + 0 🟡 medium + 1 🟢 low bugs open — see `BUGS_TO_BE_FIXED.md`. Full history of resolved bugs in `BUGS_FIXED_HISTORY.md`.
 
 **Most recently completed:** Feature D — Live Arrivals at Transfer Stop (2026-04-18). `transfer_wait_minutes: int | None = None` added to `TransitLeg` dataclass. `_pick_wait()` extracted from `_rank_routes()` as a shared bearing-test helper. `_extract_transfer_stops()`, `_build_bus_transfer_lookup()`, `_format_transfer_arrivals()`, and `async def _empty()` added to `main.py`. Transfer arrivals fetched concurrently after routing finalization; legs annotated in-place; `"transfer_wait_minutes"` added to response serialization; "Live arrivals at transfer stop(s)" section added to Claude prompt. Frontend: `RouteLegs` detects transfer legs and renders `⏱ N min wait` / `⏱ Due` badge styled via `.transfer-wait-note` CSS. See completed entry in `FEATURES_IMPLEMENTED_HISTORY.md`.
+
+---
+
+### Notable changes (session — 2026-04-20, efficiency improvement OPT-010)
+
+Pre-computed entrance and station trig in `build_exits` (`fetch_station_exits.py`).
+
+1. **Station trig pre-computed at load time (OPT-010a)** — `load_parent_stations()` now stores `rlat`, `rlon`, and `cos_lat` alongside each station's `lat`/`lon`. Each of the ~150 stations pays `radians` + `cos` once instead of once per entrance.
+2. **Entrance trig pre-computed before inner loop (OPT-010b)** — In `build_exits`, `math.radians(lat)`, `math.radians(lon)`, and `math.cos(rlat1)` are computed once per entrance node, before the inner `for mapid, info in stations.items()` loop. Previously these were recomputed inside `haversine_miles()` on every iteration.
+3. **Local `_haversine_precomputed` helper** — replaces the `haversine_miles` import with a fast variant that accepts pre-converted radians and `cos(lat)` directly, skipping all `math.radians`/`math.cos` overhead in the inner loop. The shared `utils.haversine_miles` is unchanged and still used by `SpatialGrid` and other callers. `import math` added to file imports.
+
+Eliminates ~450k redundant trig operations across a full dataset run (~500 entrances × ~150 stations × 3 operations saved each way).
 
 ---
 
@@ -733,7 +783,38 @@ All 4 chunks of Feature D implemented. Transfer stops now show live arrival data
 
 5. **Claude prompt extended** — `main.py`: `_format_transfer_arrivals(arrivals)` groups by stop name, shows up to 3 arrivals per stop (`"{line/route} → {dest}: N min"`). `build_prompt()` gained `transfer_arrivals: list[dict] | None = None`; injects a "Live arrivals at transfer stop(s):" section when non-empty. Omitted entirely for non-transfer routes.
 
-6. **Frontend transfer wait badge** — `App.jsx`: `RouteLegs` detects transfer boarding legs via `legs.slice(0, i).some(l => l.type === 'transit')`. Renders `<span className="transfer-wait-note">⏱ Due</span>` or `⏱ N min wait` as the first child of the transit leg `<li>`. `App.css`: `.transfer-wait-note { display: block; color: #888; font-size: 0.75rem }`.
+6. **Frontend transfer wait badge** — `App.jsx`: `RouteLegs` detects transfer boarding legs via a `seenTransit` boolean declared before the `.map()` call, set to `true` when the first transit leg is encountered (O(n) pass instead of the previous O(n²) `legs.slice(0, i).some(...)` per leg). Renders `<span className="transfer-wait-note">⏱ Due</span>` or `⏱ N min wait` as the first child of the transit leg `<li>`. `App.css`: `.transfer-wait-note { display: block; color: #888; font-size: 0.75rem }`.
+
+---
+
+### Notable changes (session — 2026-04-20, TD-002 — `recommend()` decomposed into focused helpers)
+
+Resolved 🔴 TD-002. The `/recommend` handler was 325 lines doing 10+ distinct tasks in a single function body.
+
+1. **Seven focused helpers extracted to `backend/main.py`** — A new "recommend() sub-steps" section defines:
+   - `_validate_api_keys(request, byok_key)` — raises HTTP 500 if any required key is absent
+   - `_resolve_locations(loop, request)` — resolves origin/destination to stations + coords; same-location guard
+   - `_fetch_arrivals(request, origin_stations, origin_bus_stops)` — fetches train + bus arrivals; applies fullness filter
+   - `_run_routing(request, origin_coords, dest_coords, ...)` — unified graph routing + bus-transfer routing; merges and sorts
+   - `_fetch_transfer_arrivals(ranked_routes)` — Feature D transfer-stop arrivals; annotates legs in-place
+   - `_call_claude(claude_client, prompt, ranked_routes)` — model selection, Claude API call, returns `(text, model_label)`
+   - `_format_response(...)` — assembles the final JSON-serialisable response dict
+
+2. **`recommend()` is now an ~85-line thin coordinator** — rate-limit check → BYOK client selection → cache check → sequential calls to each helper → cache write → return response. No logic was changed; behaviour is identical.
+
+---
+
+### Notable changes (session — 2026-04-20, `_rate_store` + `_response_cache` race condition fixed)
+
+Resolved 🔴 "`_rate_store` and `_response_cache` race condition under concurrent requests" from `BUGS_TO_BE_FIXED.md`.
+
+1. **`_store_lock = asyncio.Lock()` added to `main.py`** — a single module-level `asyncio.Lock` protects both `_rate_store` and `_response_cache`. `threading.Lock` would be wrong here because all I/O happens on the asyncio event loop; `asyncio.Lock` integrates with `async with` and releases correctly at every `await` point.
+
+2. **Rate-limit check + cache read wrapped in `async with _store_lock:`** — in `recommend()`, the `_check_rate_limit(ip)` call and the `_response_cache.get(key)` / `pop()` read are now inside a single locked block. This prevents two concurrent requests with the same cache key from both seeing a miss and both launching the full expensive pipeline (stampede). It also ensures the rate-limit timestamp is written to `_rate_store` before any `await` yields control.
+
+3. **Cache write wrapped in a second `async with _store_lock:`** — the `_response_cache[key] = ...`, `move_to_end(key)`, and `popitem()` eviction are wrapped in a second locked block. This prevents two concurrent responses both seeing `len > _CACHE_MAX_SIZE` and each evicting a different entry (double-pop).
+
+4. **`_check_rate_limit` docstring updated** — replaced the now-incorrect "No locking needed" comment with "Callers must hold `_store_lock` before calling this function."
 
 ---
 
@@ -772,7 +853,7 @@ Fixes the 🟡 "Bus-only filter suppresses multi-leg bus routing when any direct
 
 All 3 chunks of Feature I implemented. Active CTA service alerts are now fetched, surfaced to Claude, and displayed in the UI.
 
-1. **`get_alerts()` + helpers added to `cta_client.py`** — `ALERTS_BASE`, `_TRAIN_LINE_TO_ALERT_ID` (maps internal line_code values to Alerts API route ids), `_fetch_alerts_for_route()` (single-route async fetch; timeout 5s; returns `[]` on any error), and `get_alerts()` (concurrent gather, dedup by `alert_id`, sort by `severity_score` descending). No API key required — CTA Alerts API is public.
+1. **`get_alerts()` + helpers added to `cta_client.py`** — `ALERTS_BASE`, `_TRAIN_LINE_TO_ALERT_ID` (maps internal line_code values to Alerts API route ids), `_fetch_alerts_for_route()` (single-route async fetch; timeout 5s; logs WARNING then returns `[]` on any error — TD-008), and `get_alerts()` (concurrent gather, dedup by `alert_id`, sort by `severity_score` descending). No API key required — CTA Alerts API is public.
 
 2. **Alerts wired into `/recommend` in `main.py`** — `_alert_ids_from_routes()` helper extracts deduplicated Alerts API ids from all `TransitLeg`s in `ranked_routes` (train codes mapped through `_TRAIN_LINE_TO_ALERT_ID`; bus route numbers used directly). `get_alerts()` called after routing finalization. `build_prompt()` gained `alerts: list[dict] | None = None` parameter — alerts with `severity_score >= 5` appended as an "Active service alerts" block (major alerts prefixed "⚠ MAJOR"). `alerts` key added to response payload with 7 fields per alert (`alert_id`, `headline`, `impact`, `severity_score`, `is_major`, `event_end`, `affected_routes`).
 
@@ -818,7 +899,8 @@ Bus route cards are fully implemented and confirmed working as of 2026-04-09. Al
 **Bus+bus transfer routing** (`transit_graph.py` — `find_bus_transfer_routes()`)
 - Handles the itineraries the unified graph does not model: bus A → walk → bus B, where the transfer is a short walk between stops rather than a same-stop boarding.
 - Called unconditionally from `main.py` whenever `transit_mode` is `"Bus"` or `"All"` and live bus arrivals + origin stops are present. `n_routes=2`.
-- Sorting key includes a fixed 7.5-min leg-2 wait estimate (not added to `walk_minutes_total`/`transit_minutes`). Feature D will replace this with live transfer-stop arrivals.
+- Sorting key includes a fixed 7.5-min leg-2 wait estimate (not added to `walk_minutes_total`/`transit_minutes`).
+- Internally split into two private helpers (TD-009, resolved 2026-04-20): `_select_transfer_candidates()` (Pass 1 — haversine/spatial filtering only, returns `candidate_map` + `board_index`) and `_build_transfer_routes()` (Pass 2 — OSMnx walk calls + Route assembly). `find_bus_transfer_routes()` is now a thin coordinator.
 
 **`main.py` integration**
 - `origin_coords` and `dest_coords` resolved unconditionally (needed by both train and bus routing)

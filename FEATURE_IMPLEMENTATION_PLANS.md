@@ -15,11 +15,12 @@ Chunked plans for upcoming major features, followed by ideas deferred until post
 1. Feature Weather — Live Weather Integration — **Bolt-On**
 2. Feature Crowdedness — CTA Vehicle Crowdedness Estimation — **Bolt-On**
 3. Feature Weather Scoring — Weather-Adjusted Route Ranking — **Structural** (depends on Feature Weather + Feature Crowdedness)
-4. Multi-Leg Train Routing — Shared-Track Edge Deduplication — **Structural** (Dependency on Feature B, now complete)
-5. Feature Language — Multi-Language Support (i18n) — **Bolt-On**
-6. Feature K — Restore Street-Network Walking Graph in Production — **Bolt-On**
+4. Multi-Leg Train Routing — Shared-Track Edge Deduplication — **Structural** (✅ Complete 2026-04-20)
+5. Feature K — Restore Street-Network Walking Graph in Production — **Bolt-On**
+6. Feature Trip — Live Trip-in-Progress Routing — **Bolt-On**
+7. Feature Favorites — Saved Locations & Routes — **Bolt-On**
 
-> Items 1–3 are prioritized chunked plans. Items 4–6 appear in the **Future Enhancements** section below — post-launch, implement based on user feedback.
+> Items 1–3 are prioritized chunked plans. Items 4–8 appear in the **Future Enhancements** section below — post-launch, implement based on user feedback.
 
 ---
 
@@ -320,6 +321,172 @@ Per scoping decision 1:
 - Regression-check a mild-weather trip: no visible change vs. pre-feature behavior.
 - Verify Claude's response still fits within `max_tokens=400` (3–4 sentences).
 
+# Feature Trip — Live Trip-in-Progress Routing
+
+## Overview
+
+Once a rider selects a route, the app currently goes silent — it has no awareness of whether the user is walking to the stop, waiting on the platform, riding the vehicle, or has missed their transfer. This feature activates GPS-based position tracking after the user taps "Start Trip," follows their progress through each route leg, highlights the active leg in the UI and on the map, and detects when they have meaningfully deviated from the planned route so they can be offered a re-route from their current position.
+
+**Why it matters:** The routing recommendation is only half the job. A rider who misses a stop or takes the wrong bus has no in-app recovery path today — they must re-enter their query from scratch. Trip-in-progress mode closes that loop and makes the app genuinely useful for the entire journey, not just the planning step.
+
+**Type: Bolt-On** — primarily a frontend feature. The backend `/recommend` endpoint already accepts arbitrary `origin` coordinates, so re-routing from current GPS position requires no new backend endpoint. No dependency on any other planned feature.
+
+**Status: ⬜ Not started**
+
+**Prerequisites:**
+- Railway + Vercel deployment live (Phase 6 complete ✅).
+- All scoping decisions below resolved before Chunk 1 begins.
+
+---
+
+## Scoping decisions — pending
+
+These must be resolved before Chunk 1 begins.
+
+1. **Trip activation: manual or automatic.**
+   - **Manual (recommended):** After a route card is selected, a "Start Trip" button appears. The user taps it to activate GPS tracking. Clear, predictable, zero battery drain until the user explicitly opts in.
+   - **Automatic:** GPS activates as soon as a route card is selected. Simpler UX, but GPS starts without a user consent-to-battery gesture and may fire on users just browsing routes.
+   - Recommendation: manual button. Also show a "Stop Trip" button while active so the user can end tracking at any time.
+
+2. **Leg detection algorithm.** Given the user's current GPS position, how do we determine which route leg they're on?
+   - For walk legs: user is "on" the walk leg if they are within ~100 m of the leg's start or end stop, or within ~50 m of the walk path's bounding corridor.
+   - For transit legs: user is "on" the leg once they've passed the boarding stop and have not yet reached the alighting stop.
+   - Simpler fallback: advance the active leg when the user comes within 60 m of the leg's **end point** (alighting stop or destination). This avoids requiring shape lookup on the frontend.
+   - Recommendation: simpler distance-to-endpoint rule for v1. Shape proximity can be added in a future iteration.
+
+3. **Re-route deviation threshold.** What distance from the planned route triggers a re-route prompt?
+   - Candidate thresholds: 300 m (~1 city block), 500 m, 800 m.
+   - Must distinguish "slightly off the walk path" (common) from "clearly on the wrong vehicle."
+   - Recommendation: 400 m from the nearest leg endpoint in the current route. Do not prompt during an active transit leg — wait until the user should have alighted and hasn't.
+
+4. **GPS polling rate strategy.**
+   - `watchPosition` with `maximumAge: 15000, timeout: 10000` gives a position fix every ~15 s.
+   - Adaptive polling (lower rate on transit legs) adds complexity with marginal battery gain for typical 20–40 min trips.
+   - Recommendation: single `watchPosition` call with `enableHighAccuracy: true` and `maximumAge: 15000` for all legs. Do not implement adaptive polling in v1.
+
+5. **Re-route experience: prompted or automatic.**
+   - **Prompted (recommended):** Show a banner — "You appear to be off your planned route. Re-route from here?" — and only call `/recommend` if the user taps "Re-route." Avoids surprise API calls and token spend.
+   - **Automatic:** Silently call `/recommend` with current position and replace the route. Unexpected behavior; wastes Claude tokens if the user momentarily stepped off the path.
+   - Recommendation: prompted. Suppress re-prompting for 90 seconds after the user dismisses the banner.
+
+6. **Walk step completion tracking in v1.**
+   - Marking individual walk steps complete as the user moves through them adds meaningful value for riders navigating an unfamiliar area.
+   - Requires comparing GPS position to each step's start coordinate (already in the `walk_directions` response payload).
+   - Recommendation: include in Chunk 2 — position data is already flowing by then and no additional API calls are needed.
+
+---
+
+## Chunk 1 — GPS tracking, trip activation UI, and map position dot
+
+**Files:** `frontend/src/App.jsx`, `frontend/src/MapView.jsx`, `frontend/src/App.css`
+
+**What to build:**
+
+**App.jsx:**
+- Add `tripActive` boolean state (default `false`) and `userPosition` state (`{ lat, lng } | null`).
+- After a route card is selected (`selectedRouteIndex` is non-null), render a "Start Trip" button in the route card footer. On click: call `navigator.geolocation.watchPosition(...)`, set `tripActive = true`, store the `watchId` in a `useRef`.
+- Render a "Stop Trip" button while `tripActive` is true. On click: `clearWatch(watchId)`, reset `tripActive = false`, `userPosition = null`.
+- `watchPosition` options: `{ enableHighAccuracy: true, maximumAge: 15000, timeout: 10000 }`.
+- On each position callback: update `userPosition`. On error: log to console only — do not crash or alert (GPS errors are transient).
+- On route card change or new query submit: call `clearWatch(watchId)` and reset trip state.
+- Pass `userPosition` and `tripActive` as props to `MapView`.
+
+**MapView.jsx:**
+- Accept `userPosition` and `tripActive` props.
+- When `tripActive` is true and `userPosition` is non-null, add a GeoJSON source `"user-position"` with a Point at `[userPosition.lng, userPosition.lat]`. Render as a circle layer (`circle-color: "#4A90E2"`, `circle-radius: 10`, `circle-stroke-width: 2`, `circle-stroke-color: "#fff"`).
+- Track `"user-position-source"` and `"user-position-layer"` in the existing source/layer tracking refs. When `tripActive` becomes false, set `visibility: "none"` rather than removing the layer (avoids MapLibre source-still-in-use errors).
+- Center the map on `userPosition` on the first GPS fix after trip activation (one-time `flyTo`; do not re-center on subsequent position updates).
+
+**App.css:**
+- Style the "Start Trip" / "Stop Trip" button in the `.route-card` footer. "Start Trip" uses the app's primary action color; "Stop Trip" uses a muted/destructive variant.
+
+**Notes:**
+- `navigator.geolocation` requires HTTPS. Satisfied by Vercel in production; `localhost` is also a secure context.
+- Do not request geolocation until the user taps "Start Trip" — premature permission prompts are commonly denied.
+- `watchId` must be in a `useRef`, not state, so cleanup in both the stop button and any `useEffect` teardown closes the correct watch.
+
+---
+
+## Chunk 2 — Active leg tracking and walk step completion
+
+**Files:** `frontend/src/App.jsx`, `frontend/src/App.css`, `backend/main.py` (if alight coords missing), `backend/walking.py` (if step start coords missing)
+
+**What to build:**
+
+**Leg advancement logic:**
+- Add `activeLegIndex` state (default `null`; set to `0` on trip activation).
+- On each `userPosition` update, call a pure helper `advanceLeg(pos, route, currentLegIdx)`:
+  ```js
+  function advanceLeg(pos, route, idx) {
+    const leg = route.legs[idx];
+    if (!leg) return idx;
+    const end = legEndCoord(leg); // alighting stop or destination {lat, lng}
+    if (haversineMeters(pos, end) < 60)
+      return Math.min(idx + 1, route.legs.length - 1);
+    return idx;
+  }
+  ```
+- `haversineMeters(a, b)` — ~5 lines of inline Haversine, no library.
+- `legEndCoord(leg)` — returns `{ lat, lng }` from `alight_lat`/`alight_lon` on `TransitLeg`, or destination coords on `WalkLeg`. If `alight_lat`/`alight_lon` are absent from the API response, add them to `TransitLeg` serialization in `backend/main.py`.
+
+**Active leg UI highlighting:**
+- Apply `.leg-active` to the leg at `activeLegIndex` (e.g. left border accent — must not clash with `.leg-pill` colors).
+- Apply `.leg-complete` to legs at index < `activeLegIndex`: 50% opacity + ✓ icon before the leg icon.
+- Future legs remain unstyled.
+
+**Walk step completion (scoping decision 6):**
+- Add `completedSteps` state: `Set<string>` of `"legIdx-stepIdx"` keys.
+- On each `userPosition` update, for the active `WalkLeg`, check `haversineMeters(pos, stepStart) < 30` for each step. On match, add the step's key to `completedSteps`.
+- In the expanded walk step list, render completed steps with a ✓ and reduced opacity.
+- Confirm `start_lat`/`start_lon` are present on each walk direction step object. If not, add them in `backend/walking.py`'s `walk_directions()` output.
+- `completedSteps` resets to `new Set()` on trip stop or new route submission.
+
+---
+
+## Chunk 3 — Off-route detection and re-route prompt
+
+**Files:** `frontend/src/App.jsx`, `frontend/src/App.css`, `backend/gtfs_loader.py` (fast-path for coordinate strings)
+
+**What to build:**
+
+**Off-route detection:**
+- Add `isOffRoute` boolean state (default `false`) and `suppressRerouteUntil` `useRef` (timestamp, default `0`).
+- On each `userPosition` update: compute distance to every leg endpoint in the selected route. If the minimum exceeds **400 m** and `Date.now() > suppressRerouteUntil.current`, set `isOffRoute = true`.
+- If the user returns within 400 m before tapping the banner, clear `isOffRoute = false` silently.
+- Gate: only fire when the active leg is a walk leg, or when the expected transit arrival time has passed by more than 5 minutes (indicating a missed vehicle). Do not fire mid-transit-leg.
+
+**Re-route banner:**
+- When `isOffRoute` is true, render a full-width dismissible banner above the route cards:
+  ```
+  You appear to be off your planned route.
+  [Re-route from here]   [Dismiss]
+  ```
+- "Dismiss": `isOffRoute = false`, `suppressRerouteUntil.current = Date.now() + 90_000`.
+- "Re-route from here": call `handleSubmit()` with `origin` replaced by `"${userPosition.lat},${userPosition.lng}"` and the same `destination` already in state. After submission resolves: `activeLegIndex = 0`, `completedSteps = new Set()`, `isOffRoute = false`. GPS watch remains active.
+
+**Backend fast-path for coordinate strings:**
+- In `backend/gtfs_loader.py`'s `resolve_location()`, add a fast-path at the top before any fuzzy matching or geocoding:
+  ```python
+  import re
+  _COORD_RE = re.compile(r"^(-?\d{1,3}\.?\d*),\s*(-?\d{1,3}\.?\d*)$")
+  m = _COORD_RE.match(location.strip())
+  if m:
+      return float(m.group(1)), float(m.group(2))
+  ```
+  This prevents GPS coordinate strings (e.g. `"41.893,-87.631"`) from falling through to `geocode_google()`, which would add latency and API cost.
+
+**App.css:**
+- Banner: full-width strip between header and route cards; `background: #FFF3CD`; dark text; buttons right-aligned. Use `border-left: 4px solid #D97706` to distinguish from existing CTA alert banners (which share the amber palette).
+
+---
+
+## Future iteration ideas (not in scope above)
+
+- **Live arrival countdown.** Poll arrivals every 30 s during the transit wait phase; surface "Your Blue Line arrives in 2 min" as a status line on the active leg.
+- **Adaptive GPS polling.** Lower `maximumAge` to 5 s during walk legs; raise to 60 s during transit legs.
+- **Shape-based deviation.** Use `clip_shape` polyline from the route response to compute true off-path distance rather than distance to endpoints.
+- **Haptic / notification alerts.** Browser Notification or Vibration API for "Time to board" nudges.
+
 ---
 
 # Future Enhancements
@@ -327,389 +494,6 @@ Per scoping decision 1:
 Post-launch ideas and improvements. These are not bugs — the app works correctly without them. Prioritize after Phase 6 deployment based on user feedback and real usage patterns.
 
 ---
-
-## Multi-Leg Train Routing — Shared-Track Edge Deduplication (Route Label Accuracy)
-
-**What happens:** For each `(from_station, to_station)` edge, `_build_graph()` keeps only the single fastest route_id. On segments where multiple CTA lines share the same track and stations (e.g. Red/Brown between Belmont and Fullerton, or Red/Purple between Howard and Belmont), the edge is labelled with whichever line was fastest in the representative GTFS trip. If a rider transfers to the other line at the shared-track start station, `_path_to_route()` sees no route_id change on the shared segment and cannot detect the correct line.
-
-**Practical effect:** Route cards on shared-track trips may show the wrong line name for the shared segment (e.g. "Red Line" when the rider is on the "Brown Line" through the shared section). Timing is still correct — only the label can be wrong.
-
-**Future fix:** Retain separate edges per route_id for shared-track pairs in `_build_graph()`, then handle deduplication during `_path_to_route()` using incoming line context.
-
-> **Note:** The original approach of storing `all_routes` metadata on edges was removed in the 2026-04-15 audit (`G.add_edge(..., all_routes=candidates)` removed as dead code — the field was never read). Any implementation of this fix must use the alternative approach: store multiple edges per shared-track pair and select the correct one in `_path_to_route()` based on the incoming `TransitLeg`'s `line_code`.
-
-**Type: Structural** — modifies `_path_to_route()`. Feature B is complete — any fix here must be written against the post-B version of `_path_to_route()` (which uses `_resolve_node()` for all node metadata). No additional dependency blockers remain.
-
-**Status: ⬜ Not started**
-
----
-
-### Verification — confirm the bug before implementing
-
-Before any code changes, run these test queries and inspect leg labels in the JSON response:
-
-| Trip | Shared segment to watch |
-|---|---|
-| Linden → Evanston/Davis (Purple Exp → Red) | Howard → Belmont: should say "Purple Line", not "Red Line" |
-| O'Hare → Howard, then Howard → Belmont | If routed via Red, shared segment should say "Red Line" |
-| Kimball → Merchandise Mart (Brown, all-elevated) | Belmont → Fullerton segment, if applicable |
-
-Log the `line` field on each `TransitLeg` in the returned route. If mis-labelling is absent or rare, the fix may not be worth the complexity. If it fires consistently on the Purple/Red shared segment, proceed.
-
----
-
-### Chunk 1 — Fix `_path_to_route()` to use incoming line context
-
-**File:** `backend/transit_graph.py`
-
-**What to change:**
-
-The transit-leg grouping block always uses `edge.get("route_id")` and `edge.get("line")` as the canonical label for the leg. The fix: before committing to that label, check whether the incoming line (from the previous `TransitLeg`) is also a valid candidate for this edge, and prefer it if so.
-
-```python
-def _last_transit_leg(legs: list) -> TransitLeg | None:
-    for leg in reversed(legs):
-        if isinstance(leg, TransitLeg):
-            return leg
-    return None
-```
-
-In the transit-leg grouping block, after reading `group_route = edge.get("route_id", "")`:
-
-> **Important:** `all_routes` is NOT available on edges — it was removed as dead code in the 2026-04-15 audit. The correct approach is to first update `_build_graph()` to store multiple edges per shared-track station pair (one per route_id), then use incoming line context in `_path_to_route()` to select the right one.
-
-```python
-incoming = _last_transit_leg(legs)
-if incoming and incoming.line_code == edge.get("route_id"):
-    pass  # already on the right edge — no override needed
-elif incoming:
-    # check if there is a parallel edge for the incoming line_code
-    # (implementation depends on chosen graph storage approach)
-    pass
-```
-
-The while-loop that merges consecutive edges uses `next_edge.get("route_id") != group_route` as the break condition — this is unchanged.
-
-Shape lookup at the end of the block calls `get_shape(group_route, group_dir)`. After the override, `group_route` and `group_dir` should carry the correct incoming-line values.
-
-**Edge cases:**
-- First transit leg (no `incoming`): no override needed; stored label is used as-is.
-- Same-station transfer WalkLeg between two transit legs: `_last_transit_leg` finds the previous `TransitLeg` correctly because it searches backward past walk legs.
-
-**Test after:** Re-run the verification queries above. Purple Line through the Howard–Belmont segment should now label as "Purple Line".
-
----
-
-# Feature Language — Multi-Language Support (i18n)
-
-## Overview
-
-Chicago is one of the most linguistically diverse cities in the US. Many transit riders speak languages beyond English as their primary language — including Spanish, Polish, Mandarin, Tagalog, Arabic, Urdu, Vietnamese, Pashto, Hindi, Korean, and others. Mainstream transit apps often support only English, or English plus a handful of Western European languages, leaving many Chicago residents underserved.
-
-This feature adds full internationalization (i18n) to the frontend UI and Claude's AI-generated recommendation text, with a language selector that persists across sessions. The goal is to support a broad, community-representative set of languages — not just common Western ones.
-
-**Why it matters:** The app's value proposition ("stop thinking about how to get there") is only fully realized for riders who can read it. Translating both the static UI text and the AI recommendation opens the app to a much larger share of Chicago's actual transit-riding population.
-
-**Type: Bolt-On** — self-contained change to the frontend and the Claude prompt. No dependency on any routing feature.
-
-**Status: ⬜ Not started**
-
----
-
-## Scoping decisions — resolved
-
-1. **i18n library:** Use `react-i18next` + `i18next`. This is the standard React i18n stack, well-maintained, supports RTL via HTML `dir` attribute, and handles dynamic string interpolation (e.g. "Walk {minutes} min") cleanly.
-
-2. **Languages to support at launch.** Chosen to reflect Chicago's actual spoken-language demographics per census and community data:
-
-   | Code | Language |
-   |---|---|
-   | `en` | English |
-   | `es` | Spanish |
-   | `fr` | French |
-   | `it` | Italian |
-   | `pl` | Polish |
-   | `ro` | Romanian |
-   | `uk` | Ukrainian |
-   | `ru` | Russian |
-   | `zh` | Chinese (Mandarin, Simplified) |
-   | `yue` | Chinese (Cantonese, Simplified) |
-   | `ja` | Japanese (Standard; furigana parenthetical notation — see decision 11) |
-   | `ko` | Korean |
-   | `tl` | Tagalog |
-   | `vi` | Vietnamese |
-   | `hi` | Hindi |
-   | `gu` | Gujarati |
-   | `pa` | Punjabi |
-   | `ne` | Nepali |
-   | `ur` | Urdu (RTL) |
-   | `ar` | Arabic (RTL) |
-   | `ps` | Pashto (RTL) |
-   | `yo` | Yoruba |
-
-   This list can be extended without structural changes — adding a language is just adding a translation JSON file and a menu entry.
-
-3. **What gets translated.** All static UI strings in `App.jsx` are extracted into translation keys. The AI-generated `recommendation` text from Claude is handled separately (see decision 4). Station names, line names, and street names in leg data are **not** translated — they are proper nouns that must remain in their canonical CTA form for geographic accuracy.
-
-4. **Claude recommendation language.** The `/recommend` backend accepts an optional `language` field in the request body. When present, `build_prompt()` appends a one-line instruction: `"Respond in {language_name}."` This causes Claude to write its recommendation in the user's language. No translation library is needed server-side — Claude handles it natively. The language code is mapped to a full language name (e.g. `"ur"` → `"Urdu"`) before being inserted into the prompt.
-
-5. **Language selector placement.** A `<select>` in the existing header filters bar, next to the transit mode selector. Defaults to the browser's `navigator.language` if it matches a supported language; otherwise defaults to `"en"`. Persists to `localStorage` under key `"cta_language"`.
-
-6. **RTL layout.** Arabic, Urdu, and Pashto are RTL scripts. When one of these languages is selected, set `document.documentElement.dir = "rtl"` and `document.documentElement.lang = langCode`. The existing CSS uses flexbox throughout; RTL flip requires only `direction: rtl` on `.app` plus a few targeted `margin-inline-start/end` adjustments (no full CSS rewrite needed). Test against Arabic at minimum.
-
-7. **Translation files.** One JSON file per language at `frontend/public/locales/{code}/translation.json`. `i18next-http-backend` loads them on demand — only the active language is fetched. English (`en`) is the fallback: if a key is missing from a translation, the English string is shown.
-
-8. **Translation source.** Machine-translate the English strings to seed all other language files (use any translation API or Claude directly during development). The translations do not need to be perfect for launch — native speakers can refine them in future PRs. Mark machine-translated files with a comment `// machine-translated, review welcome` at the top.
-
-9. **Interpolation.** Dynamic strings (e.g. `"Walk {minutes} min to {destination}"`) use i18next's interpolation syntax: `"walk_to": "Walk {{minutes}} min to {{to}}"`. This is already how i18next works; no custom logic required.
-
-10. **Scope of translated strings.** All strings visible to the user in `App.jsx`: form labels, placeholders, button text, status messages, error messages, route card metadata labels, leg descriptions, alerts copy, settings panel text. Strings that are CTA data (station names, line names, alert headlines from the CTA API) are not translated.
-
-11. **Japanese furigana.** For the Claude recommendation text, use parenthetical furigana notation (`漢字（かんじ）`) rather than HTML `<ruby>` tags. This is a widely understood convention in Japanese texts aimed at general audiences, requires no HTML rendering changes on the frontend, and is safe to pass through the existing `renderMarkdown()` function. The Claude prompt instruction for Japanese is: `"Respond in Japanese. Use standard Japanese (a natural mix of hiragana, katakana, and kanji). Add furigana in parentheses after each kanji compound to aid readability — for example: 電車（でんしゃ）."` For static UI translation strings in `ja/translation.json`, include parenthetical furigana inline in the translated values for any kanji-heavy terms.
-
----
-
-## Chunk 1 — Install i18n library and set up translation infrastructure
-
-**Files:** `frontend/package.json`, `frontend/src/i18n.js` (new), `frontend/public/locales/en/translation.json` (new), `frontend/src/main.jsx`
-
-**What to build:**
-
-- Run: `npm install i18next react-i18next i18next-http-backend i18next-browser-languagedetector`
-- Create `frontend/src/i18n.js`:
-  ```js
-  import i18n from "i18next";
-  import { initReactI18next } from "react-i18next";
-  import HttpBackend from "i18next-http-backend";
-  import LanguageDetector from "i18next-browser-languagedetector";
-
-  const SUPPORTED = ["en","es","fr","it","pl","ro","uk","ru","zh","yue","ja","ko","tl","vi","hi","gu","pa","ne","ur","ar","ps","yo"];
-
-  i18n
-    .use(HttpBackend)
-    .use(LanguageDetector)
-    .use(initReactI18next)
-    .init({
-      fallbackLng: "en",
-      supportedLngs: SUPPORTED,
-      backend: { loadPath: "/locales/{{lng}}/translation.json" },
-      detection: {
-        order: ["localStorage", "navigator"],
-        caches: ["localStorage"],
-        lookupLocalStorage: "cta_language",
-      },
-      interpolation: { escapeValue: false },
-    });
-
-  export default i18n;
-  export { SUPPORTED };
-  ```
-- In `frontend/src/main.jsx`, import `"./i18n.js"` before rendering `<App />`. Wrap `<App />` with `<Suspense fallback={null}>` to handle async locale loading.
-- Create `frontend/public/locales/en/translation.json` with all English strings extracted (see Chunk 2 for the full string inventory).
-
-**Notes:**
-- `i18next-browser-languagedetector` reads `localStorage["cta_language"]` first, then `navigator.language`. This gives the language selector (Chunk 3) automatic persistence for free.
-- Do not add translations for other languages in this chunk — just the English baseline.
-
----
-
-## Chunk 2 — Extract all UI strings into translation keys
-
-**Files:** `frontend/src/App.jsx`, `frontend/public/locales/en/translation.json`
-
-**What to build:**
-
-Replace every hardcoded user-visible string in `App.jsx` with `t("key")` calls using the `useTranslation` hook (or `Trans` component for interpolated strings). Below is the complete inventory:
-
-| Key | English value |
-|---|---|
-| `app_title` | `CTA Transit` |
-| `tagline` | `Stop thinking about how to get there. Just go.` |
-| `label_from` | `From` |
-| `label_to` | `To` |
-| `placeholder_location` | `Neighborhood, address, or building` |
-| `btn_get_route` | `Get Route` |
-| `btn_finding_route` | `Finding your route…` |
-| `route_options_heading` | `Route options` |
-| `badge_best` | `Best` |
-| `label_min_total` | `{{minutes}} min total` |
-| `label_no_transfers` | `No transfers` |
-| `label_1_transfer` | `1 transfer` |
-| `label_n_transfers` | `{{count}} transfers` |
-| `wait_due` | `Due now` |
-| `wait_minutes` | `{{minutes}} min wait` |
-| `walk_from_origin` | `Walk {{minutes}} min to {{to}}` |
-| `walk_to_destination` | `Walk {{minutes}} min to your destination` |
-| `walk_transfer` | `Transfer — walk {{minutes}} min` |
-| `exit_label_prefix` | `Exit:` |
-| `steps_show` | `Steps` |
-| `steps_hide` | `Hide steps` |
-| `step_walk` | `Walk` |
-| `step_head` | `Head` |
-| `step_along` | `along` |
-| `step_for` | `for` |
-| `block_singular` | `block` |
-| `block_plural` | `blocks` |
-| `long_block_singular` | `long block` |
-| `long_block_plural` | `long blocks` |
-| `short_block_singular` | `short block` |
-| `short_block_plural` | `short blocks` |
-| `error_generic` | `Something went wrong. Please try again.` |
-| `bus_data_partial` | `Bus arrival data partially unavailable — some results may be missing.` |
-| `alerts_more` | `and {{count}} more` |
-| `settings_title` | `Settings` |
-| `settings_label_api_key` | `Your Anthropic API Key` |
-| `settings_hint_api_key` | `Provide your own key and your usage won't count against the app's shared quota.` |
-| `settings_error_key_format` | `Key must start with "sk-ant-"` |
-| `settings_btn_save` | `Save` |
-| `settings_btn_remove_key` | `Remove key` |
-| `aria_close_settings` | `Close settings` |
-| `aria_transit_mode` | `Transit mode` |
-| `aria_language` | `Language` |
-| `aria_settings_active` | `Settings (using your API key)` |
-| `aria_settings` | `Settings` |
-| `aria_loading` | `Finding your route` |
-| `mode_all` | `All modes` |
-| `mode_train` | `Train` |
-| `mode_bus` | `Bus` |
-
-Add each key to `frontend/public/locales/en/translation.json`. In `App.jsx`, call `const { t } = useTranslation()` at the top of each component that uses translated strings.
-
-**Notes:**
-- `formatBlocks()` becomes a call to `t()` with appropriate singular/plural keys — i18next's built-in plural handling (`_one`, `_other` suffixes) can be used, but for simplicity in Chunk 2, just use separate singular/plural keys as listed above.
-- The `"and X more"` alerts string uses `Trans` or a simple template: `t("alerts_more", { count: result.alerts.length - 3 })`.
-- Do not yet add the language selector in this chunk — just wire up `t()` calls against English strings and verify the app still works identically.
-
----
-
-## Chunk 3 — Add language selector to header
-
-**Files:** `frontend/src/App.jsx`
-
-**What to build:**
-
-- Import `{ useTranslation }` and `{ SUPPORTED }` from `./i18n.js`.
-- Add a `<select>` in the `.filters` div, adjacent to the transit mode selector:
-  ```jsx
-  const { i18n, t } = useTranslation();
-
-  <select
-    value={i18n.language}
-    onChange={(e) => i18n.changeLanguage(e.target.value)}
-    aria-label={t("aria_language")}
-  >
-    {SUPPORTED.map((code) => (
-      <option key={code} value={code}>{LANGUAGE_NAMES[code]}</option>
-    ))}
-  </select>
-  ```
-- Add `LANGUAGE_NAMES` constant in `App.jsx` (not in a translation file — these are the native-script names displayed to speakers of each language):
-  ```js
-  const LANGUAGE_NAMES = {
-    en: "English",    es: "Español",      fr: "Français",    it: "Italiano",
-    pl: "Polski",     ro: "Română",       uk: "Українська",  ru: "Русский",
-    zh: "中文（普通话）",  yue: "粤语",         ja: "日本語",       ko: "한국어",
-    tl: "Filipino",   vi: "Tiếng Việt",   hi: "हिंदी",        gu: "ગુજરાતી",
-    pa: "ਪੰਜਾਬੀ",     ne: "नेपाली",        ur: "اردو",         ar: "العربية",
-    ps: "پښتو",        yo: "Yorùbá",
-  };
-  ```
-- Wire RTL: add a `useEffect` that watches `i18n.language` and sets `document.documentElement.dir` and `document.documentElement.lang`:
-  ```js
-  const RTL_LANGS = new Set(["ar", "ur", "ps"]);
-  useEffect(() => {
-    document.documentElement.dir = RTL_LANGS.has(i18n.language) ? "rtl" : "ltr";
-    document.documentElement.lang = i18n.language;
-  }, [i18n.language]);
-  ```
-- `i18n.changeLanguage()` automatically persists to `localStorage["cta_language"]` via the detector config in Chunk 1.
-
-**Notes:**
-- Native-script language names (العربية, 中文, etc.) must appear in the `<option>` elements — not English names — so a speaker of that language can find their own language in the list.
-- At this point, switching to a non-English language will show English strings (fallback) because other translation files don't exist yet. That is expected. Test that the selector persists across page refreshes and that RTL flip works for Arabic.
-
----
-
-## Chunk 4 — Create translation files for all supported languages
-
-**Files:** `frontend/public/locales/{es,fr,it,pl,ro,uk,ru,zh,yue,ja,ko,tl,vi,hi,gu,pa,ne,ur,ar,ps,yo}/translation.json`
-
-**What to build:**
-
-For each language code, create `frontend/public/locales/{code}/translation.json` containing translations of every key from the English file. Seed using machine translation (use Claude or any translation API).
-
-Guidelines for each translation:
-- Keep dynamic placeholders (`{{minutes}}`, `{{to}}`, `{{count}}`) exactly as they appear in the English source — i18next requires them to match.
-- Transit-specific terms like "Bus", "Train" should be translated naturally in context.
-- "CTA Transit" in `app_title` should not be translated — it is a proper name.
-- For RTL languages (ar, ur, ps): the JSON values themselves are RTL text, but the JSON file format and keys remain LTR. No special file encoding needed.
-
-Add a comment at the top of each non-English file (as a `"_comment"` key): `"machine-translated, review welcome"`.
-
-**Notes:**
-- 22 languages × ~45 keys = ~990 string translations total. Seed in one or two Claude sessions, grouping by script family for consistency.
-- For `ja/translation.json`: include parenthetical furigana inline in values for kanji-heavy terms (e.g. `"btn_get_route": "経路（けいろ）を取得（しゅとく）"`) — no special tooling needed.
-- After seeding, do a spot-check on at least 3 languages by switching the selector and reading through the UI.
-- RTL languages: verify that Arabic, Urdu, and Pashto text renders correctly in-browser and that the layout flips properly (form labels on the right, chevron on the left, etc.).
-
----
-
-## Chunk 5 — Backend: Pass language to Claude prompt
-
-**Files:** `backend/main.py`
-
-**What to build:**
-
-- In the `/recommend` endpoint, read `language: str | None = None` from the request body (add to the request schema).
-- Add a `LANGUAGE_NAMES` dict in `main.py` mapping all 22 language codes to their full English names. English names are used in the prompt because that is Claude's instruction language:
-  ```python
-  LANGUAGE_NAMES = {
-      "en": "English",           "es": "Spanish",            "fr": "French",
-      "it": "Italian",           "pl": "Polish",             "ro": "Romanian",
-      "uk": "Ukrainian",         "ru": "Russian",            "zh": "Mandarin Chinese",
-      "yue": "Cantonese Chinese","ja": "Japanese",           "ko": "Korean",
-      "tl": "Filipino (Tagalog)","vi": "Vietnamese",         "hi": "Hindi",
-      "gu": "Gujarati",          "pa": "Punjabi",            "ne": "Nepali",
-      "ur": "Urdu",              "ar": "Arabic",             "ps": "Pashto",
-      "yo": "Yoruba",
-  }
-  ```
-- In `build_prompt()`, add an optional `language: str | None = None` parameter. If non-null and not `"en"`, construct the closing instruction based on the language:
-  - For Japanese (`language == "ja"`): append `"Respond in Japanese. Use standard Japanese (a natural mix of hiragana, katakana, and kanji). Add furigana in parentheses after each kanji compound to aid readability — for example: 電車（でんしゃ）."`
-  - For all other non-English languages: append `"Respond in {LANGUAGE_NAMES[language]}."`
-- In `main.py`, pass `language=language` (the raw code from the request) directly to `build_prompt()`.
-- In the frontend `handleSubmit`, include `language: i18n.language` in the request body alongside `origin`, `destination`, and `transit_mode`.
-
-**Notes:**
-- If `language` is `"en"` or absent, do not append any instruction — Claude defaults to English already, and adding it wastes tokens.
-- This is the only backend change for this feature. No translation library, no additional dependencies.
-- Claude handles all listed scripts (Arabic, Urdu, Pashto, Cyrillic, Devanagari, CJK, etc.) natively.
-- Test manually: set language to Urdu in the selector, submit a query, and verify that the recommendation text is in Urdu script. Set to Japanese and verify parenthetical furigana appears.
-
----
-
-## Chunk 6 — CSS: RTL layout adjustments
-
-**Files:** `frontend/src/App.css`
-
-**What to build:**
-
-Audit the existing CSS for properties that break under RTL and replace with logical properties or add `[dir="rtl"]` overrides. Key areas to check:
-
-- Any `margin-left` / `margin-right` or `padding-left` / `padding-right` on flex children that creates visual asymmetry under RTL. Replace with `margin-inline-start` / `margin-inline-end` where safe, or add targeted `[dir="rtl"]` overrides.
-- `.leg-pill` — floated or flex-start positioned; verify it aligns correctly when the row direction flips.
-- `.route-chevron` — `▲` / `▼` chevrons don't flip; `◄` / `►` would need to, but these aren't used. No change needed.
-- `.alerts-more` link — verify text alignment under RTL.
-- Form layout — `<label>` spans should right-align under RTL; `text-align: start` (already logical) handles this if used.
-
-**Acceptance criteria:**
-- No text or element visually overlaps under Arabic, Urdu, or Pashto.
-- Form inputs, buttons, and route cards all read correctly right-to-left.
-- LTR layout (English and all other languages) is unchanged.
-
-**Notes:**
-- Do not rewrite the entire CSS file. Only change properties where a visual bug is confirmed in-browser.
-- Test by selecting Arabic, Urdu, and Pashto in the language selector and visually inspecting the full app flow: form → submit → route cards → walk steps.
 
 ---
 
@@ -774,3 +558,187 @@ Audit the existing CSS for properties that break under RTL and replace with logi
 - If memory becomes the limiting factor again at runtime (graph load is ~300 MB resident), revisit the bbox in `fetch_street_graph.py:36` rather than abandoning street routing.
 - Feature K is purely operational; once the file is reachable from the build, all routing/UX behavior is restored automatically by existing code.
 - This chunk can be done in parallel with Chunk 4 (translation files) if needed — they are fully independent.
+
+---
+
+# Feature Favorites — Saved Locations & Routes
+
+## Overview
+
+Users currently must re-type their origin and destination on every visit. Commonly-used places ("Home", "Work") and regular commutes ("Home → Office") have no persistence. This feature adds a lightweight, localStorage-backed favorites system: saved **locations** (named places that quick-fill a single field) and saved **routes** (origin+destination pairs that reload an entire query with one tap).
+
+No backend changes are needed — all state lives in the browser. The feature is additive and does not affect the routing engine, Claude prompt, or any server-side logic.
+
+**Why it matters:** The most-common transit app interaction is the same trip, every day. Eliminating re-typing for repeat users is the highest-impact UX improvement that requires the least technical risk.
+
+**Type: Bolt-On** — frontend-only. No dependency on any other planned feature.
+
+**Status: ⬜ Not started**
+
+**Prerequisites:**
+- Railway + Vercel deployment live (Phase 6 complete).
+- All scoping decisions below resolved.
+
+---
+
+## Scoping decisions — pending
+
+1. **Save locations, routes, or both?**
+   - **Locations only** — named places (e.g. "Home") that quick-fill the origin or destination field.
+   - **Routes only** — origin+destination pairs.
+   - **Both** — locations can fill either field; routes reload a full query.
+   Recommendation: both — they serve different use cases and share almost all UI infrastructure.
+
+2. **Storage key and schema.** Two separate localStorage keys:
+   - `cta_saved_locations`: `Array<{ id: string, label: string, value: string }>` — a named place string.
+   - `cta_saved_routes`: `Array<{ id: string, label: string, origin: string, destination: string }>` — a named origin+destination pair.
+   Recommendation: two keys as above. Keeping them separate simplifies each CRUD path and allows independent limits.
+
+3. **How to save a location.** Options:
+   - Star/bookmark icon rendered inside each text field (right side), visible when the field has a non-empty value.
+   - "Save location" button that appears after a successful query.
+   Recommendation: star icon inside the field — discoverable without cluttering the post-query results area. Clicking the star when a saved location already matches the field value removes it (toggle behavior).
+
+4. **How to save a route.** Options:
+   - "Save this route" button rendered in the results header after a successful query.
+   - Star icon next to the submit button.
+   Recommendation: "Save this route" text button in the results header (below "Route options") — more visible and contextually clear after a query.
+
+5. **Label input.** When saving, how does the user assign a name?
+   - Auto-generate label from the text value (e.g. first 20 characters).
+   - Prompt the user with a small inline input for the label.
+   Recommendation: prompt with an inline input — "Home", "Work" are far more useful than truncated address strings. Default the input to the raw field value so the user can accept it quickly.
+
+6. **Quick-access UI for locations.** Options:
+   - Dropdown list that appears when a field is focused and saved locations exist (similar to browser autofill).
+   - Persistent chips/pills above the form.
+   Recommendation: dropdown on focus — familiar pattern, requires no persistent layout space. Show a maximum of 5 saved locations in the dropdown (oldest entry drops off if the cap is hit — see decision 7).
+
+7. **Cap on saved items.** Unlimited vs. capped.
+   Recommendation: cap at 10 saved locations and 10 saved routes. Prevents the lists from becoming unmanageable; localStorage has ample capacity. When the cap is hit on save, show a brief inline message ("Limit reached — delete a saved item to add more") instead of silently discarding.
+
+8. **Quick-launch behavior for saved routes.** When the user selects a saved route:
+   - Populate origin + destination fields only (user reviews then clicks "Get Route").
+   - Populate and auto-submit.
+   Recommendation: populate only — user should review before submitting, especially if live arrival data has changed.
+
+9. **Saved routes access point.** Options:
+   - A persistent section above the form listing saved routes.
+   - A collapsible panel below the filter bar.
+   - A "Recent / Saved" tab toggle on the form.
+   Recommendation: collapsible panel below the filter bar, hidden by default. One icon/button in the filter bar toggles it. Avoids adding visual weight unless the user opts in.
+
+10. **Feature Language integration.** If Feature Language is implemented before this feature, every user-visible string added here must receive a translation key following the same pattern used in App.jsx (see Feature Language Chunk 2). If implemented before Feature Language, add a `// i18n: needs translation key` comment above each hardcoded string so it is easy to extract later.
+
+---
+
+## Chunk 1 — Data layer (localStorage CRUD utilities)
+
+**Files:** `frontend/src/favorites.js` (new)
+
+**What to build:**
+
+A pure utility module — no React, no side effects beyond `localStorage` reads and writes.
+
+```js
+// Location schema: { id: string, label: string, value: string }
+// Route schema:    { id: string, label: string, origin: string, destination: string }
+
+const LOC_KEY   = "cta_saved_locations";
+const ROUTE_KEY = "cta_saved_routes";
+const MAX_ITEMS = 10;
+
+function _load(key)           { /* JSON.parse with fallback to [] */ }
+function _save(key, arr)      { /* JSON.stringify and set */ }
+
+export function getSavedLocations()                        { return _load(LOC_KEY); }
+export function saveLocation(label, value)                  { /* append { id: crypto.randomUUID(), label, value }, enforce MAX_ITEMS, return new array */ }
+export function deleteLocation(id)                          { /* filter and save */ }
+export function isLocationSaved(value)                      { /* returns bool — used for star toggle state */ }
+
+export function getSavedRoutes()                            { return _load(ROUTE_KEY); }
+export function saveRoute(label, origin, destination)       { /* append, enforce MAX_ITEMS, return new array */ }
+export function deleteRoute(id)                             { /* filter and save */ }
+export function isRouteSaved(origin, destination)           { /* returns bool — used for save-button toggle state */ }
+```
+
+- `MAX_ITEMS` is enforced on save: if the array is already at 10, return without modifying and return `null` (caller checks for null to show the "limit reached" message).
+- ID generation: use `crypto.randomUUID()` — available in all modern browsers, no library needed.
+- No React imports, no side effects — this module is purely functional so it is easy to test in isolation.
+
+**Notes:**
+- Do not import from `App.jsx` or any other component — this module must be dependency-free.
+
+---
+
+## Chunk 2 — Saved Locations UI (star button + dropdown)
+
+**Files:** `frontend/src/App.jsx`, `frontend/src/App.css`
+
+**What to build:**
+
+**Star button (save/unsave a location):**
+- Render a star icon button (`★` / `☆`) inside the right edge of the "From" and "To" `<input>` wrappers, visible only when the field has a non-empty value.
+- `onClick`: if `isLocationSaved(value)` → call `deleteLocation` and refresh local state. Else → show an inline label input (see below).
+- Use `useState` to track `savedLocations` array (initialized from `getSavedLocations()`; updated after every save/delete).
+
+**Label input (inline, not a modal):**
+- When the star is clicked to save, replace the star with a small `<input type="text">` pre-filled with the current field value, alongside "Save" and "Cancel" buttons.
+- On "Save": call `saveLocation(label, value)`. If `saveLocation` returns `null` (cap hit), show an inline error string ("Limit reached — delete a saved item first.") for 3 seconds, then restore the star. Otherwise, refresh `savedLocations` state and restore the star (now filled `★`).
+- On "Cancel": restore the star unchanged.
+
+**Dropdown on focus:**
+- Wrap each `<input>` in a `<div className="field-wrapper">` (relative position).
+- On `onFocus`, if `savedLocations.length > 0`, render a `<ul className="saved-dropdown">` (absolute position, below the input).
+- Each `<li>` shows the label + a small delete `×` button.
+- Clicking a `<li>` sets the field value and closes the dropdown.
+- Clicking `×` calls `deleteLocation(id)`, refreshes state; if the list empties, close the dropdown.
+- Close the dropdown on `onBlur` (use `setTimeout(0)` to allow click events on list items to fire before the blur handler removes the list).
+
+**CSS:**
+- `.field-wrapper`: `position: relative; display: flex; align-items: center;`
+- `.star-btn`: `position: absolute; right: 8px; background: none; border: none; cursor: pointer; font-size: 1rem; color: var(--accent);`
+- `.saved-dropdown`: `position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid var(--border); border-radius: 6px; list-style: none; margin: 2px 0 0; padding: 0; z-index: 100; max-height: 220px; overflow-y: auto;`
+- `.saved-dropdown li`: `display: flex; justify-content: space-between; padding: 8px 12px; cursor: pointer;` + hover highlight.
+
+**Notes:**
+- The inline label input must not submit the main form when Enter is pressed — use `onKeyDown` to intercept Enter and trigger "Save" instead of form submit.
+- Do not render the dropdown when the field is read-only or disabled (i.e. while a route query is in flight).
+
+---
+
+## Chunk 3 — Saved Routes UI (save button + quick-launch panel)
+
+**Files:** `frontend/src/App.jsx`, `frontend/src/App.css`
+
+**What to build:**
+
+**"Save this route" button:**
+- After a successful query (`result` is non-null), render a small "Save this route ☆" (or "Saved ★") button in the results header area, adjacent to the "Route options" heading.
+- `isRouteSaved(origin, destination)` drives the filled/unfilled star state.
+- On click to save: show an inline label input (same pattern as Chunk 2 — pre-filled with `"{origin} → {destination}"`, truncated to 30 chars). On confirm: call `saveRoute(label, origin, destination)`. Handle the cap error with the same inline message.
+- On click to unsave: call `deleteRoute(id)` where `id` is found by matching origin+destination in `savedRoutes`.
+
+**Saved routes panel:**
+- Add a bookmark icon button (`🔖` or `⭐` — a simple Unicode glyph, no icon library) to the existing `.filters` bar.
+- Clicking it toggles `showSavedRoutes` boolean state.
+- When open, render a `.saved-routes-panel` `<div>` below the filter bar:
+  - Heading: "Saved routes"
+  - List of saved routes, each showing `label`, and small "Go" + `×` (delete) buttons.
+  - Clicking "Go": call `setOrigin(route.origin)` and `setDestination(route.destination)`, then close the panel. The user reviews and submits manually (per scoping decision 8).
+  - Clicking `×`: call `deleteRoute(id)` and refresh `savedRoutes` state.
+  - Empty state: "No saved routes yet. Save a route after getting directions."
+- Close the panel when origin/destination are populated from it (so the form is immediately visible for review).
+
+**State management:**
+- Add `savedRoutes` state (initialized from `getSavedRoutes()`; updated after every save/delete).
+- `showSavedRoutes` boolean state, default `false`.
+
+**CSS:**
+- `.saved-routes-panel`: `background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; margin-bottom: 12px;`
+- `.saved-route-row`: `display: flex; align-items: center; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border);` (no border on last child).
+- The panel should appear between the filter bar and the form (not overlapping the map or results).
+
+**Notes:**
+- Both `savedLocations` and `savedRoutes` state arrays should be derived from a single `useState` per type, not from repeated `getSaved*()` calls scattered through event handlers. Keep a single source of truth per list.
+- If Feature Language has been implemented: add `t()` keys for all strings in this feature. If not yet implemented: add `// i18n: needs translation key` comment on every hardcoded user-visible string.

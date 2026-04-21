@@ -35,21 +35,28 @@ _claude_client = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY",
 # OrderedDict preserves insertion order so eviction of the oldest entry is O(1)
 # via popitem(last=False) rather than O(n) via min() over all entries.
 _response_cache: collections.OrderedDict[str, tuple[float, dict]] = collections.OrderedDict()
-_CACHE_TTL_SECONDS = 45
-_CACHE_MAX_SIZE    = 500
+_CACHE_TTL_SECONDS = 45       # seconds
+_CACHE_MAX_SIZE    = 500      # entries
+
+# Squared degree threshold for treating origin == destination (≈0.07 miles at Chicago's latitude).
+_SAME_LOCATION_THRESHOLD_DEG2: float = 0.001 ** 2   # degrees²
 
 
 def _cache_key(origin: str, destination: str, transit_mode: str, bus_fullness: str,
-               byok: bool = False) -> str:
+               byok: bool = False, ai_enabled: bool = False, language: str = "en") -> str:
     # Include a BYOK flag so BYOK and shared-quota requests never share cache
     # entries — a non-BYOK user would otherwise be served a response whose
     # Claude call was paid for by a BYOK user (and vice-versa).
+    # Include ai_enabled because the recommendation field differs between AI-on and AI-off responses.
+    # Include language so responses in different languages are cached separately.
     return "|".join([
         origin.lower().strip(),
         destination.lower().strip(),
         transit_mode,
         bus_fullness,
         "byok" if byok else "",
+        "ai" if ai_enabled else "",
+        language or "en",
     ])
 
 # ---------------------------------------------------------------------------
@@ -62,6 +69,15 @@ def _cache_key(origin: str, destination: str, transit_mode: str, bus_fullness: s
 _RATE_LIMIT_ENABLED = os.getenv("RATE_LIMIT_ENABLED", "false").lower() == "true"
 _RATE_LIMIT_RPM     = int(os.getenv("RATE_LIMIT_RPM", "10"))   # max requests per minute per IP
 _RATE_LIMIT_RPH     = int(os.getenv("RATE_LIMIT_RPH", "50"))   # max requests per hour per IP
+
+# Shared lock protecting both _rate_store and _response_cache.
+# asyncio.Lock() is correct here (not threading.Lock) because recommend() is an
+# async def that awaits between the cache read and cache write — the await yields
+# control to the event loop, allowing a second coroutine to observe a stale miss
+# and launch a duplicate expensive request, or to interleave partial reads/writes.
+# Holding the lock around the check+read and again around the write eliminates
+# both the duplicate-computation stampede and the eviction double-pop.
+_store_lock = asyncio.Lock()
 
 # ip → deque of monotonic timestamps for this IP's recent requests
 _rate_store: dict[str, collections.deque] = {}
@@ -81,9 +97,7 @@ def _check_rate_limit(ip: str) -> bool:
     Always returns True when _RATE_LIMIT_ENABLED is False.
 
     Sliding-window approach: per-minute AND per-hour caps must both pass.
-    No locking needed — FastAPI runs on a single asyncio event loop and
-    _check_rate_limit is called outside any await point, so no concurrent
-    mutation can occur between the deque reads and the append.
+    Callers must hold _store_lock before calling this function.
     """
     if not _RATE_LIMIT_ENABLED:
         return True
@@ -169,6 +183,12 @@ class RouteRequest(BaseModel):
     # When BYOK is disabled, this field is accepted but silently ignored so the
     # frontend does not need to know whether BYOK is active on the server.
     anthropic_api_key: str | None = None
+    # AI toggle — when False (default), the Claude call is skipped entirely.
+    # response.recommendation will be null. Future paywall gate lives here.
+    ai_enabled: bool = False
+    # BCP-47 language code (e.g. "es", "ar", "ja"). When non-null and not "en",
+    # build_prompt() appends a language instruction so Claude responds in that language.
+    language: str | None = None
 
     @field_validator("transit_mode")
     @classmethod
@@ -453,6 +473,370 @@ def _alert_ids_from_routes(ranked_routes: list[tuple]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# recommend() sub-steps — each handles one distinct concern
+# ---------------------------------------------------------------------------
+
+def _validate_api_keys(request: RouteRequest, byok_key: str | None) -> None:
+    """Raise HTTPException if any required API key is absent."""
+    train_key     = os.getenv("CTA_TRAIN_API_KEY", "")
+    bus_key       = os.getenv("CTA_BUS_API_KEY", "")
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if not train_key:
+        raise HTTPException(status_code=500, detail="CTA_TRAIN_API_KEY not configured in backend/.env")
+    if request.ai_enabled and not byok_key and (not anthropic_key or anthropic_key == "your_api_key_here"):
+        raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not configured in backend/.env")
+    if request.transit_mode in ("Bus", "All") and not bus_key:
+        raise HTTPException(status_code=500, detail="CTA_BUS_API_KEY not configured in backend/.env")
+
+
+async def _resolve_locations(
+    loop: asyncio.AbstractEventLoop,
+    request: RouteRequest,
+) -> tuple:
+    """Resolve origin and destination to stations, bus stops, and coordinates.
+
+    Returns (origin_stations, origin_bus_stops, dest_stations, dest_bus_stops,
+             dest_match, origin_coords, dest_coords).
+    Raises HTTPException(400) if either location is unresolvable or they are
+    the same location.
+    """
+    origin_stations, origin_bus_stops, _ = await loop.run_in_executor(
+        None, resolve_location, request.origin
+    )
+    if not origin_stations and not origin_bus_stops:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Could not find CTA stops near '{request.origin}'. "
+                "Try a neighborhood name like 'Wrigleyville', 'Lincoln Park', or 'River North'."
+            ),
+        )
+
+    dest_stations, dest_bus_stops, dest_match = await loop.run_in_executor(
+        None, resolve_location, request.destination
+    )
+    if not dest_stations and not dest_bus_stops:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Could not find CTA stops near '{request.destination}'. "
+                "We currently cover the area from Howard St to 50th St, "
+                "Lakefront to Pulaski Rd. Your destination may be outside our coverage area."
+            ),
+        )
+
+    origin_coords = await loop.run_in_executor(
+        None, _coords_for_location, request.origin, origin_stations
+    )
+    dest_coords = await loop.run_in_executor(
+        None, _coords_for_location, request.destination, dest_stations
+    )
+
+    if origin_coords and dest_coords:
+        dlat = origin_coords[0] - dest_coords[0]
+        dlon = origin_coords[1] - dest_coords[1]
+        if (dlat * dlat + dlon * dlon) < _SAME_LOCATION_THRESHOLD_DEG2:
+            raise HTTPException(
+                status_code=400,
+                detail="Your origin and destination appear to be the same location.",
+            )
+
+    return (
+        origin_stations, origin_bus_stops,
+        dest_stations, dest_bus_stops, dest_match,
+        origin_coords, dest_coords,
+    )
+
+
+async def _fetch_arrivals(
+    request: RouteRequest,
+    origin_stations: list[dict],
+    origin_bus_stops: list[dict],
+) -> tuple[list[dict], list[dict], int, int]:
+    """Fetch train and bus live arrivals for the origin.
+
+    Returns (train_arrivals, bus_arrivals, n_train_errors, n_bus_errors).
+    """
+    train_key   = os.getenv("CTA_TRAIN_API_KEY", "")
+    bus_key     = os.getenv("CTA_BUS_API_KEY", "")
+    walk_lookup = {s["mapid"]: s.get("walk_minutes", 0) for s in origin_stations}
+
+    n_train_errors = 0
+    if request.transit_mode == "Bus":
+        train_arrivals: list[dict] = []
+    else:
+        train_arrivals, n_train_errors = await get_train_arrivals(origin_stations, train_key)
+        for a in train_arrivals:
+            a["walk_minutes"] = walk_lookup.get(a.get("station_mapid"), 0)
+
+    bus_arrivals: list[dict] = []
+    n_bus_errors = 0
+    if request.transit_mode in ("Bus", "All") and bus_key and origin_bus_stops:
+        stop_ids = [s["stop_id"] for s in origin_bus_stops]
+        bus_arrivals, n_bus_errors = await get_bus_arrivals(stop_ids, bus_key)
+        if request.bus_fullness != "All":
+            target_load = _FULLNESS_API_VALUES.get(request.bus_fullness, "")
+            bus_arrivals = [a for a in bus_arrivals if a.get("psgld", "") == target_load]
+
+    return train_arrivals, bus_arrivals, n_train_errors, n_bus_errors
+
+
+async def _run_routing(
+    request: RouteRequest,
+    origin_coords: tuple | None,
+    dest_coords: tuple | None,
+    origin_stations: list[dict],
+    origin_bus_stops: list[dict],
+    train_arrivals: list[dict],
+    bus_arrivals: list[dict],
+) -> list[tuple]:
+    """Run the unified routing engine and return ranked (total, wait, route) tuples."""
+    ranked_routes: list[tuple] = []
+    if not origin_coords or not dest_coords:
+        return ranked_routes
+
+    # Unified-graph routing (trains + direct bus + intermodal).
+    # Feature J (2026-04-18): find_routes() is the sole source of direct
+    # bus-only itineraries; Bus mode post-filters to drop routes with train legs.
+    try:
+        arrival_lookup = _build_arrival_lookup(train_arrivals)
+        ranked_routes = _rank_routes(
+            find_routes(
+                origin_lat=origin_coords[0],
+                origin_lon=origin_coords[1],
+                dest_lat=dest_coords[0],
+                dest_lon=dest_coords[1],
+                origin_stations=origin_stations,
+                n_routes=5,
+            ),
+            arrival_lookup,
+        )
+        if request.transit_mode == "Bus":
+            ranked_routes = [
+                (total, wait, route)
+                for total, wait, route in ranked_routes
+                if not any(
+                    isinstance(leg, TransitLeg) and leg.line_code in LINE_NAMES
+                    for leg in route.legs
+                )
+            ]
+    except Exception as exc:
+        print(f"[recommend] unified-graph routing error: {exc}")
+
+    # Bus-to-bus transfer routes — find_routes() does not model these as graph
+    # edges, so find_bus_transfer_routes() handles them separately.
+    if request.transit_mode in ("Bus", "All") and bus_arrivals and origin_bus_stops:
+        try:
+            transfer_ranked = find_bus_transfer_routes(
+                origin_lat=origin_coords[0],
+                origin_lon=origin_coords[1],
+                dest_lat=dest_coords[0],
+                dest_lon=dest_coords[1],
+                bus_arrivals=bus_arrivals,
+                origin_bus_stops=origin_bus_stops,
+                n_routes=2,
+            )
+            if transfer_ranked:
+                transfer_ranked = _rank_bus_routes(transfer_ranked)
+            ranked_routes = sorted(
+                ranked_routes + transfer_ranked,
+                key=lambda x: x[0],
+            )[:5]
+        except Exception as exc:
+            print(f"[recommend] bus transfer routing error: {exc}")
+
+    return ranked_routes
+
+
+async def _fetch_transfer_arrivals(ranked_routes: list[tuple]) -> list[dict]:
+    """Fetch live arrivals at transfer stops (Feature D) and annotate legs in-place.
+
+    Returns combined train + bus transfer arrival dicts.
+    """
+    if not ranked_routes:
+        return []
+
+    train_key = os.getenv("CTA_TRAIN_API_KEY", "")
+    bus_key   = os.getenv("CTA_BUS_API_KEY", "")
+
+    transfer_train_stations, transfer_bus_stop_ids = _extract_transfer_stops(ranked_routes)
+    xfer_train_task = (
+        get_train_arrivals(transfer_train_stations, train_key)
+        if transfer_train_stations and train_key
+        else _empty()
+    )
+    xfer_bus_task = (
+        get_bus_arrivals(transfer_bus_stop_ids, bus_key)
+        if transfer_bus_stop_ids and bus_key
+        else _empty()
+    )
+    xfer_train_result, xfer_bus_result = await asyncio.gather(xfer_train_task, xfer_bus_task)
+
+    transfer_train_arrivals: list[dict] = (
+        xfer_train_result[0] if isinstance(xfer_train_result, tuple) else xfer_train_result
+    )
+    transfer_bus_arrivals: list[dict] = (
+        xfer_bus_result[0] if isinstance(xfer_bus_result, tuple) else xfer_bus_result
+    )
+
+    # Annotate transfer legs in-place with live wait data
+    train_xfer_lookup = _build_arrival_lookup(transfer_train_arrivals)
+    bus_xfer_lookup   = _build_bus_transfer_lookup(transfer_bus_arrivals)
+    for _total, _wait, route in ranked_routes:
+        seen_transit = False
+        for leg in route.legs:
+            if isinstance(leg, TransitLeg):
+                if seen_transit:
+                    if leg.line_code in LINE_NAMES:
+                        dest_map = train_xfer_lookup.get(
+                            (leg.line_code, leg.from_mapid), {}
+                        )
+                        leg.transfer_wait_minutes = _pick_wait(
+                            dest_map, leg.from_mapid, leg.to_mapid
+                        )
+                    else:
+                        leg.transfer_wait_minutes = bus_xfer_lookup.get(
+                            (leg.line_code, leg.from_mapid)
+                        )
+                seen_transit = True
+
+    return transfer_train_arrivals + transfer_bus_arrivals
+
+
+async def _call_claude(
+    claude_client: anthropic.AsyncAnthropic,
+    prompt: str,
+    ranked_routes: list[tuple],
+) -> tuple[str, str]:
+    """Call Claude with prompt, selecting model by query complexity.
+
+    Returns (recommendation_text, model_label) where model_label is 'haiku' or 'sonnet'.
+    Raises HTTPException(502) on Claude API failure.
+    """
+    simple     = _is_simple_query(ranked_routes)
+    _simple_model  = os.getenv("CLAUDE_SIMPLE_MODEL",  "claude-haiku-4-5-20251001")
+    _complex_model = os.getenv("CLAUDE_COMPLEX_MODEL", "claude-sonnet-4-6")
+    model      = _simple_model if simple else _complex_model
+    max_tokens = 300 if simple else 400
+    print(f"[claude model={'haiku' if simple else 'sonnet'} simple={simple}]")
+
+    try:
+        message = await claude_client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text_block = next((c for c in message.content if hasattr(c, "text")), None)
+        if not text_block:
+            raise ValueError("No text block in Claude response")
+        return text_block.text, ("haiku" if simple else "sonnet")
+    except Exception as exc:
+        print(f"[recommend] Claude API error: {exc}")
+        raise HTTPException(status_code=502, detail=f"Claude API error: {exc}")
+
+
+def _format_response(
+    recommendation: str,
+    model_used: str,
+    origin_coords: tuple | None,
+    dest_coords: tuple | None,
+    train_arrivals: list[dict],
+    bus_arrivals: list[dict],
+    n_train_errors: int,
+    n_bus_errors: int,
+    origin_stations: list[dict],
+    alerts: list[dict],
+    ranked_routes: list[tuple],
+) -> dict:
+    """Assemble the final JSON-serialisable response dict."""
+    return {
+        "recommendation": recommendation,
+        "model_used": model_used,
+        "origin_coords": list(origin_coords) if origin_coords else None,
+        "dest_coords":   list(dest_coords)   if dest_coords   else None,
+        "train_arrivals": train_arrivals,
+        "bus_arrivals": bus_arrivals,
+        "train_errors": n_train_errors,
+        "bus_errors":   n_bus_errors,
+        "origin_stations": [s["name"] for s in origin_stations],
+        "alerts": [
+            {
+                "alert_id":       a["alert_id"],
+                "headline":       a["headline"],
+                "impact":         a["impact"],
+                "severity_score": a["severity_score"],
+                "is_major":       a["is_major"],
+                "event_end":      a["event_end"],
+                "affected_routes": a["affected_routes"],
+            }
+            for a in alerts
+        ],
+        "routes": [
+            {
+                "total_minutes": round(total),
+                "wait_minutes":  wait,
+                "transfers":     route.transfers,
+                "legs": [
+                    {
+                        "type":      leg.leg_type,
+                        "line":      getattr(leg, "line", None),
+                        "line_code": getattr(leg, "line_code", None),
+                        "from": leg.from_name    if isinstance(leg, WalkLeg) else leg.from_station,
+                        "to":   leg.to_name      if isinstance(leg, WalkLeg) else leg.to_station,
+                        "minutes": round(leg.minutes, 1),
+                        **(
+                            {
+                                "shape":                 leg.shape_points,
+                                "from_coords":           leg.shape_points[0]  if leg.shape_points else None,
+                                "to_coords":             leg.shape_points[-1] if leg.shape_points else None,
+                                "transfer_wait_minutes": leg.transfer_wait_minutes,
+                            }
+                            if isinstance(leg, TransitLeg)
+                            else {
+                                "path":       leg.path_points,
+                                "directions": leg.directions,
+                                "exit_label": leg.exit_label,
+                            }
+                        ),
+                    }
+                    for leg in route.legs
+                ],
+            }
+            for total, wait, route in ranked_routes
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Language support
+# ---------------------------------------------------------------------------
+
+LANGUAGE_NAMES: dict[str, str] = {
+    "en":  "English",
+    "es":  "Spanish",
+    "fr":  "French",
+    "it":  "Italian",
+    "pl":  "Polish",
+    "ro":  "Romanian",
+    "uk":  "Ukrainian",
+    "ru":  "Russian",
+    "zh":  "Mandarin Chinese",
+    "yue": "Cantonese Chinese",
+    "ja":  "Japanese",
+    "ko":  "Korean",
+    "tl":  "Filipino (Tagalog)",
+    "vi":  "Vietnamese",
+    "hi":  "Hindi",
+    "gu":  "Gujarati",
+    "pa":  "Punjabi",
+    "ne":  "Nepali",
+    "ur":  "Urdu",
+    "ar":  "Arabic",
+    "ps":  "Pashto",
+    "yo":  "Yoruba",
+}
+
+# ---------------------------------------------------------------------------
 # Prompt building
 # ---------------------------------------------------------------------------
 
@@ -527,6 +911,7 @@ def build_prompt(
     bus_fullness: str = "All",
     alerts: list[dict] | None = None,
     transfer_arrivals: list[dict] | None = None,
+    language: str | None = None,
 ) -> str:
     mode_constraints = {
         "Train": "The rider wants TRAIN options only. Do not mention buses.",
@@ -601,6 +986,17 @@ def build_prompt(
             alert_lines.append(f"  * {prefix}{a['headline']}{impact}")
         alert_section = "\n\nActive service alerts on your route:\n" + "\n".join(alert_lines)
 
+    lang_instruction = ""
+    if language and language != "en":
+        if language == "ja":
+            lang_instruction = (
+                "\n\nRespond in Japanese. Use standard Japanese (a natural mix of hiragana, "
+                "katakana, and kanji). Add furigana in parentheses after each kanji compound "
+                "to aid readability — for example: 電車（でんしゃ）."
+            )
+        elif language in LANGUAGE_NAMES:
+            lang_instruction = f"\n\nRespond in {LANGUAGE_NAMES[language]}."
+
     return (
         f"You are a helpful Chicago transit assistant. "
         f"A rider is at {origin} and wants to get to {destination}.\n\n"
@@ -609,6 +1005,7 @@ def build_prompt(
         "Lead with the single best option and explain why in plain English. "
         "Factor in total trip time including walking and waiting. "
         "Note any delays or active service alerts. Keep it to 3-4 sentences — the rider is probably standing outside."
+        f"{lang_instruction}"
     )
 
 
@@ -623,236 +1020,62 @@ async def health():
 
 @app.post("/recommend")
 async def recommend(request: RouteRequest, http_request: Request):
-    # ── Rate limiting ──────────────────────────────────────────────────────────
     ip = _client_ip(http_request)
-    if not _check_rate_limit(ip):
-        raise HTTPException(
-            status_code=429,
-            detail="Too many requests. Please wait a minute before trying again.",
-        )
 
-    # ── BYOK — select Anthropic client for this request ────────────────────────
     # If BYOK is enabled and the user supplied a valid key, create a throwaway
-    # client scoped to this request. Otherwise fall back to the shared singleton.
-    # A new AsyncAnthropic() is cheap — it holds no persistent connection.
+    # client scoped to this request. A new AsyncAnthropic() is cheap — it holds
+    # no persistent connection.
     byok_key = request.anthropic_api_key if _BYOK_ENABLED else None
     claude_client = (
-        anthropic.AsyncAnthropic(api_key=byok_key)
-        if byok_key
-        else _claude_client
+        anthropic.AsyncAnthropic(api_key=byok_key) if byok_key else _claude_client
     )
 
-    train_key = os.getenv("CTA_TRAIN_API_KEY", "")
-    bus_key   = os.getenv("CTA_BUS_API_KEY", "")
-    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
+    _validate_api_keys(request, byok_key)
 
-    if not train_key:
-        raise HTTPException(status_code=500, detail="CTA_TRAIN_API_KEY not configured in backend/.env")
-    if not byok_key and (not anthropic_key or anthropic_key == "your_api_key_here"):
-        raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not configured in backend/.env")
-    if request.transit_mode in ("Bus", "All") and not bus_key:
-        raise HTTPException(status_code=500, detail="CTA_BUS_API_KEY not configured in backend/.env")
+    key = _cache_key(
+        request.origin, request.destination, request.transit_mode,
+        request.bus_fullness, byok=bool(byok_key), ai_enabled=request.ai_enabled,
+        language=request.language or "en",
+    )
 
-    # ── Cache check (before any I/O) ──────────────────────────────────────────
-    key = _cache_key(request.origin, request.destination, request.transit_mode, request.bus_fullness,
-                     byok=bool(byok_key))
-    cached = _response_cache.get(key)
-    if cached:
-        if time.monotonic() < cached[0]:
-            return {**cached[1], "cache_hit": True}
-        # Evict stale entry so we don't carry dead keys
-        _response_cache.pop(key, None)
+    # Hold _store_lock for the rate-limit check and cache read atomically.
+    # This prevents two concurrent requests with the same key from both seeing a
+    # cache miss and both launching the full expensive pipeline (stampede), and
+    # ensures the rate-limit timestamp is written before any await yields control.
+    async with _store_lock:
+        if not _check_rate_limit(ip):
+            raise HTTPException(
+                status_code=429,
+                detail="Too many requests. Please wait a minute before trying again.",
+            )
+        cached = _response_cache.get(key)
+        if cached:
+            if time.monotonic() < cached[0]:
+                return {**cached[1], "cache_hit": True}
+            _response_cache.pop(key, None)  # evict stale entry
 
     loop = asyncio.get_running_loop()
-    origin_stations, origin_bus_stops, origin_match = await loop.run_in_executor(
-        None, resolve_location, request.origin
-    )
-    if not origin_stations and not origin_bus_stops:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Could not find CTA stops near '{request.origin}'. "
-                "Try a neighborhood name like 'Wrigleyville', 'Lincoln Park', or 'River North'."
-            ),
-        )
-
-    dest_stations, dest_bus_stops, dest_match = await loop.run_in_executor(
-        None, resolve_location, request.destination
-    )
-    if not dest_stations and not dest_bus_stops:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Could not find CTA stops near '{request.destination}'. "
-                "We currently cover the area from Howard St to 50th St, "
-                "Lakefront to Pulaski Rd. Your destination may be outside our coverage area."
-            ),
-        )
+    (
+        origin_stations, origin_bus_stops,
+        dest_stations, dest_bus_stops, dest_match,
+        origin_coords, dest_coords,
+    ) = await _resolve_locations(loop, request)
     destination_label = dest_match or request.destination
 
-    # ── Train arrivals ────────────────────────────────────────────────────────
-    walk_lookup = {s["mapid"]: s.get("walk_minutes", 0) for s in origin_stations}
-
-    n_train_errors = 0
-    if request.transit_mode == "Bus":
-        train_arrivals = []
-    else:
-        train_arrivals, n_train_errors = await get_train_arrivals(origin_stations, train_key)
-        for a in train_arrivals:
-            a["walk_minutes"] = walk_lookup.get(a.get("station_mapid"), 0)
-
-    # ── Bus arrivals ──────────────────────────────────────────────────────────
-    bus_arrivals: list[dict] = []
-    n_bus_errors = 0
-    if request.transit_mode in ("Bus", "All") and bus_key and origin_bus_stops:
-        stop_ids = [s["stop_id"] for s in origin_bus_stops]
-        bus_arrivals, n_bus_errors = await get_bus_arrivals(stop_ids, bus_key)
-
-        # Apply bus_fullness filter
-        if request.bus_fullness != "All":
-            target_load = _FULLNESS_API_VALUES.get(request.bus_fullness, "")
-            bus_arrivals = [
-                a for a in bus_arrivals
-                if a.get("psgld", "") == target_load
-            ]
-
-    # ── Routing engine ────────────────────────────────────────────────────────
-    ranked_routes: list[tuple] = []
-
-    origin_coords = await loop.run_in_executor(
-        None, _coords_for_location, request.origin, origin_stations
-    )
-    dest_coords = await loop.run_in_executor(
-        None, _coords_for_location, request.destination, dest_stations
+    train_arrivals, bus_arrivals, n_train_errors, n_bus_errors = await _fetch_arrivals(
+        request, origin_stations, origin_bus_stops
     )
 
-    if origin_coords and dest_coords:
-        # Guard: same-location check (~100 m threshold using squared degree distance)
-        dlat = origin_coords[0] - dest_coords[0]
-        dlon = origin_coords[1] - dest_coords[1]
-        if (dlat * dlat + dlon * dlon) < (0.001 ** 2):
-            raise HTTPException(
-                status_code=400,
-                detail="Your origin and destination appear to be the same location.",
-            )
+    ranked_routes = await _run_routing(
+        request, origin_coords, dest_coords,
+        origin_stations, origin_bus_stops, train_arrivals, bus_arrivals,
+    )
 
-        # Unified-graph routing (trains + direct bus + intermodal).
-        # Feature J (2026-04-18): the legacy Bus-mode short-circuit that skipped
-        # find_routes() entirely was removed. find_routes() is the sole source
-        # of direct bus-only itineraries now that find_bus_routes() is gone,
-        # so it must run in every mode. In Bus mode we post-filter to drop
-        # routes that traverse any train leg.
-        try:
-            arrival_lookup = _build_arrival_lookup(train_arrivals)
-            ranked_routes = _rank_routes(
-                find_routes(
-                    origin_lat=origin_coords[0],
-                    origin_lon=origin_coords[1],
-                    dest_lat=dest_coords[0],
-                    dest_lon=dest_coords[1],
-                    origin_stations=origin_stations,
-                    n_routes=5,
-                ),
-                arrival_lookup,
-            )
-            if request.transit_mode == "Bus":
-                ranked_routes = [
-                    (total, wait, route)
-                    for total, wait, route in ranked_routes
-                    if not any(
-                        isinstance(leg, TransitLeg) and leg.line_code in LINE_NAMES
-                        for leg in route.legs
-                    )
-                ]
-        except Exception as exc:
-            print(f"[recommend] unified-graph routing error: {exc}")
+    transfer_arrivals_combined = await _fetch_transfer_arrivals(ranked_routes)
 
-        # Bus routing
-        #
-        # Direct bus-only paths come from the unified graph via find_routes()
-        # above. find_bus_transfer_routes() runs unconditionally here to
-        # surface bus+bus transfer itineraries (bus A → walk → bus B) that
-        # the graph does not model — bus-to-bus walk transfers are not
-        # represented as graph edges. The two codepaths produce non-overlapping
-        # route types by design, so no deduplication is needed.
-        if request.transit_mode in ("Bus", "All") and bus_arrivals and origin_bus_stops:
-            try:
-                transfer_ranked = find_bus_transfer_routes(
-                    origin_lat=origin_coords[0],
-                    origin_lon=origin_coords[1],
-                    dest_lat=dest_coords[0],
-                    dest_lon=dest_coords[1],
-                    bus_arrivals=bus_arrivals,
-                    origin_bus_stops=origin_bus_stops,
-                    n_routes=2,
-                )
-                # Normalise bus wait semantics (int | None) to match
-                # _rank_routes() output before merging with train results.
-                if transfer_ranked:
-                    transfer_ranked = _rank_bus_routes(transfer_ranked)
-                ranked_routes = sorted(
-                    ranked_routes + transfer_ranked,
-                    key=lambda x: x[0],
-                )[:5]
-            except Exception as exc:
-                print(f"[recommend] bus transfer routing error: {exc}")
-
-    # ── Feature D: Live arrivals at transfer stops ────────────────────────────
-    transfer_train_arrivals: list[dict] = []
-    transfer_bus_arrivals:   list[dict] = []
-    if ranked_routes:
-        transfer_train_stations, transfer_bus_stop_ids = _extract_transfer_stops(ranked_routes)
-        xfer_train_task = (
-            get_train_arrivals(transfer_train_stations, train_key)
-            if transfer_train_stations and train_key
-            else _empty()
-        )
-        xfer_bus_task = (
-            get_bus_arrivals(transfer_bus_stop_ids, bus_key)
-            if transfer_bus_stop_ids and bus_key
-            else _empty()
-        )
-        xfer_train_result, xfer_bus_result = await asyncio.gather(
-            xfer_train_task, xfer_bus_task
-        )
-        # get_train_arrivals returns (arrivals, n_errors); _empty() returns []
-        if isinstance(xfer_train_result, tuple):
-            transfer_train_arrivals = xfer_train_result[0]
-        elif isinstance(xfer_train_result, list):
-            transfer_train_arrivals = xfer_train_result
-        if isinstance(xfer_bus_result, tuple):
-            transfer_bus_arrivals = xfer_bus_result[0]
-        elif isinstance(xfer_bus_result, list):
-            transfer_bus_arrivals = xfer_bus_result
-
-        # Annotate transfer legs in-place with live wait data
-        train_xfer_lookup = _build_arrival_lookup(transfer_train_arrivals)
-        bus_xfer_lookup   = _build_bus_transfer_lookup(transfer_bus_arrivals)
-        for _total, _wait, route in ranked_routes:
-            seen_transit = False
-            for leg in route.legs:
-                if isinstance(leg, TransitLeg):
-                    if seen_transit:
-                        if leg.line_code in LINE_NAMES:
-                            dest_map = train_xfer_lookup.get(
-                                (leg.line_code, leg.from_mapid), {}
-                            )
-                            leg.transfer_wait_minutes = _pick_wait(
-                                dest_map, leg.from_mapid, leg.to_mapid
-                            )
-                        else:
-                            leg.transfer_wait_minutes = bus_xfer_lookup.get(
-                                (leg.line_code, leg.from_mapid)
-                            )
-                    seen_transit = True
-
-    transfer_arrivals_combined = transfer_train_arrivals + transfer_bus_arrivals
-
-    # ── Alerts ────────────────────────────────────────────────────────────────
     alert_ids = _alert_ids_from_routes(ranked_routes)
     alerts: list[dict] = await get_alerts(alert_ids) if alert_ids else []
 
-    # ── Build prompt and call Claude ──────────────────────────────────────────
     prompt = build_prompt(
         origin=request.origin,
         destination=destination_label,
@@ -863,88 +1086,35 @@ async def recommend(request: RouteRequest, http_request: Request):
         bus_fullness=request.bus_fullness,
         alerts=alerts,
         transfer_arrivals=transfer_arrivals_combined or None,
+        language=request.language,
     )
 
-    # Model selection — Haiku for simple direct rides, Sonnet for everything else.
-    simple = _is_simple_query(ranked_routes)
-    model = "claude-haiku-4-5-20251001" if simple else "claude-sonnet-4-6"
-    max_tokens = 300 if simple else 400
-    print(f"[claude model={'haiku' if simple else 'sonnet'} simple={simple}]")
+    recommendation = None
+    model_used = None
+    if request.ai_enabled:
+        recommendation, model_used = await _call_claude(claude_client, prompt, ranked_routes)
 
-    try:
-        message = await claude_client.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text_block = next((c for c in message.content if hasattr(c, "text")), None)
-        if not text_block:
-            raise ValueError("No text block in Claude response")
-        recommendation = text_block.text
-    except Exception as exc:
-        print(f"[recommend] Claude API error: {exc}")
-        raise HTTPException(status_code=502, detail=f"Claude API error: {exc}")
+    response = _format_response(
+        recommendation=recommendation,
+        model_used=model_used,
+        origin_coords=origin_coords,
+        dest_coords=dest_coords,
+        train_arrivals=train_arrivals,
+        bus_arrivals=bus_arrivals,
+        n_train_errors=n_train_errors,
+        n_bus_errors=n_bus_errors,
+        origin_stations=origin_stations,
+        alerts=alerts,
+        ranked_routes=ranked_routes,
+    )
 
-    # ── Response ──────────────────────────────────────────────────────────────
-    response = {
-        "recommendation": recommendation,
-        "model_used": "haiku" if simple else "sonnet",
-        "origin_coords": list(origin_coords) if origin_coords else None,
-        "dest_coords":   list(dest_coords)   if dest_coords   else None,
-        "train_arrivals": train_arrivals,
-        "bus_arrivals": bus_arrivals,
-        "train_errors": n_train_errors,
-        "bus_errors":   n_bus_errors,
-        "origin_stations": [s["name"] for s in origin_stations],
-        "alerts": [
-            {
-                "alert_id": a["alert_id"],
-                "headline": a["headline"],
-                "impact": a["impact"],
-                "severity_score": a["severity_score"],
-                "is_major": a["is_major"],
-                "event_end": a["event_end"],
-                "affected_routes": a["affected_routes"],
-            }
-            for a in alerts
-        ],
-        "routes": [
-            {
-                "total_minutes": round(total),
-                "wait_minutes": wait,
-                "transfers": route.transfers,
-                "legs": [
-                    {
-                        "type": leg.leg_type,
-                        "line": getattr(leg, "line", None),
-                        "line_code": getattr(leg, "line_code", None),
-                        "from": leg.from_name if isinstance(leg, WalkLeg) else leg.from_station,
-                        "to":   leg.to_name   if isinstance(leg, WalkLeg) else leg.to_station,
-                        "minutes": round(leg.minutes, 1),
-                        **(
-                            {
-                                "shape":                leg.shape_points,
-                                "from_coords":          leg.shape_points[0]  if leg.shape_points else None,
-                                "to_coords":            leg.shape_points[-1] if leg.shape_points else None,
-                                "transfer_wait_minutes": leg.transfer_wait_minutes,
-                            }
-                            if isinstance(leg, TransitLeg)
-                            else {"path": leg.path_points, "directions": leg.directions, "exit_label": leg.exit_label}
-                        ),
-                    }
-                    for leg in route.legs
-                ],
-            }
-            for total, wait, route in ranked_routes
-        ],
-    }
-
-    # ── Cache write ───────────────────────────────────────────────────────────
     # Assign then move_to_end so existing keys shift to the "newest" position
-    # without a separate membership test.
-    _response_cache[key] = (time.monotonic() + _CACHE_TTL_SECONDS, response)
-    _response_cache.move_to_end(key)
-    if len(_response_cache) > _CACHE_MAX_SIZE:
-        _response_cache.popitem(last=False)   # O(1) — drops the oldest insertion
+    # without a separate membership test. Lock prevents concurrent writes from
+    # both evicting an item (double-pop) when the cache is exactly at capacity.
+    async with _store_lock:
+        _response_cache[key] = (time.monotonic() + _CACHE_TTL_SECONDS, response)
+        _response_cache.move_to_end(key)
+        if len(_response_cache) > _CACHE_MAX_SIZE:
+            _response_cache.popitem(last=False)  # O(1) — drops the oldest insertion
 
     return response

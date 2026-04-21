@@ -601,6 +601,67 @@
   border-top: 1px solid #1e1e1e;
 }
 
+/* ── RTL layout overrides ────────────────────────────────────────────────── */
+/* Applied when Arabic, Urdu, or Pashto is selected via [dir="rtl"] on <html>. */
+
+[dir="rtl"] .header-top {
+  flex-direction: row-reverse;
+}
+
+[dir="rtl"] .filters {
+  flex-direction: row-reverse;
+}
+
+[dir="rtl"] .route-card-header {
+  flex-direction: row-reverse;
+  text-align: right;
+}
+
+[dir="rtl"] .route-card-summary {
+  flex-direction: row-reverse;
+}
+
+[dir="rtl"] .leg {
+  flex-direction: row-reverse;
+  text-align: right;
+}
+
+[dir="rtl"] .leg-walk-body {
+  align-items: flex-end;
+}
+
+[dir="rtl"] .leg-steps {
+  border-left: none;
+  border-right: 2px solid #333;
+  padding-left: 0;
+  padding-right: 0.6rem;
+}
+
+[dir="rtl"] .alert-item {
+  border-left: none;
+  border-right: 3px solid;
+}
+
+[dir="rtl"] .alert-item--major {
+  border-color: #ef4444;
+}
+
+[dir="rtl"] .alert-item--minor {
+  border-color: #f59e0b;
+}
+
+[dir="rtl"] .settings-header {
+  flex-direction: row-reverse;
+}
+
+[dir="rtl"] .settings-actions {
+  flex-direction: row-reverse;
+}
+
+[dir="rtl"] .form label {
+  align-items: flex-end;
+}
+
 /* ── BYOK Settings panel ─────────────────────────────────────────────────── */
 /* Disabled by default — only rendered when BYOK_ENABLED === true.           */
 
@@ -661,6 +722,15 @@
   transition: color 0.15s;
 }
 .settings-close:hover {
+  color: #ccc;
+}
+
+.setting-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  font-size: 0.9rem;
   color: #ccc;
 }
 

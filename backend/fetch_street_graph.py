@@ -24,16 +24,19 @@ re-downloads the graph from OpenStreetMap automatically.
 """
 
 import os
+import pickle
 import sys
 from pathlib import Path
 
-GRAPH_PATH = Path(__file__).parent / "street_graph.graphml"
+from utils import STREET_GRAPH_BBOX_OSMNX
 
-# Bounding box: (left/west, bottom/south, right/east, top/north)
-# OSMnx 2.x format
+GRAPH_PATH  = Path(__file__).parent / "street_graph.graphml"
+IGRAPH_PATH = Path(__file__).parent / "street_graph_igraph.pkl"
+
+# OSMnx 2.x format: (left/west, bottom/south, right/east, top/north)
 # Coverage: Howard St (north) → 20th St (south) | Lakefront (east) → Pulaski Rd (west)
-# TODO: expand south boundary toward 50th St when Railway memory allows
-BBOX = (-87.7260, 41.8560, -87.5200, 42.0190)
+# Bounds are defined in utils.STREET_GRAPH_BBOX_OSMNX; expand there when Railway memory allows.
+BBOX = STREET_GRAPH_BBOX_OSMNX
 
 
 def _is_lfs_pointer(path: Path) -> bool:
@@ -70,15 +73,97 @@ def download_and_save() -> None:
 
     G = ox.graph_from_bbox(bbox=BBOX, network_type="walk")
 
-    node_count = G.number_of_nodes()
-    edge_count = G.number_of_edges()
-    print(f"Network downloaded: {node_count:,} nodes, {edge_count:,} edges")
+    raw_nodes = G.number_of_nodes()
+    raw_edges = G.number_of_edges()
+    print(f"Network downloaded: {raw_nodes:,} nodes, {raw_edges:,} edges")
+
+    print("Consolidating intersections (tolerance=10 m) ...")
+    G_proj = ox.project_graph(G)
+    G_proj = ox.consolidate_intersections(G_proj, tolerance=10, rebuild_graph=True, dead_ends=False)
+    G = ox.project_graph(G_proj, to_crs="epsg:4326")
+
+    cons_nodes = G.number_of_nodes()
+    cons_edges = G.number_of_edges()
+    node_pct = (raw_nodes - cons_nodes) / raw_nodes * 100
+    edge_pct = (raw_edges - cons_edges) / raw_edges * 100
+    print(
+        f"After consolidation: {cons_nodes:,} nodes (−{raw_nodes - cons_nodes:,}, {node_pct:.1f}%), "
+        f"{cons_edges:,} edges (−{raw_edges - cons_edges:,}, {edge_pct:.1f}%)"
+    )
 
     print(f"Saving to {GRAPH_PATH} ...")
     ox.save_graphml(G, GRAPH_PATH)
 
     size_mb = GRAPH_PATH.stat().st_size / (1024 * 1024)
     print(f"Saved ({size_mb:.1f} MB). Street graph is ready.")
+
+    _save_igraph_artifact(G)
+
+
+def _save_igraph_artifact(G_nx) -> None:
+    """
+    Convert the NetworkX MultiDiGraph to a compact igraph artifact and pickle it.
+
+    The pickle stores the igraph.Graph with geometry pre-parsed as [(lon,lat),...] lists
+    so runtime walking.py loads it directly without NetworkX or GraphML parsing.
+    """
+    try:
+        import igraph as ig
+        from shapely import wkt as shapely_wkt
+
+        print("Converting to igraph compact artifact ...")
+
+        nodes = list(G_nx.nodes())
+        node_to_idx = {n: i for i, n in enumerate(nodes)}
+
+        edges: list[tuple[int, int]] = []
+        attr_length:   list[float]             = []
+        attr_name:     list[str]               = []
+        attr_geometry: list[list | None]       = []
+
+        for u, v, data in G_nx.edges(data=True):
+            edges.append((node_to_idx[u], node_to_idx[v]))
+            attr_length.append(float(data.get("length") or 0.0))
+
+            name = data.get("name", "")
+            if isinstance(name, list):
+                name = name[0] if name else ""
+            attr_name.append((name or "").strip())
+
+            geom = data.get("geometry")
+            if geom is not None and hasattr(geom, "coords"):
+                attr_geometry.append(list(geom.coords))
+            elif isinstance(geom, str) and geom:
+                try:
+                    attr_geometry.append(list(shapely_wkt.loads(geom).coords))
+                except Exception:
+                    attr_geometry.append(None)
+            else:
+                attr_geometry.append(None)
+
+        ig_graph = ig.Graph(
+            n=len(nodes),
+            edges=edges,
+            directed=True,
+            vertex_attrs={
+                "x": [float(G_nx.nodes[n].get("x", 0.0)) for n in nodes],
+                "y": [float(G_nx.nodes[n].get("y", 0.0)) for n in nodes],
+            },
+            edge_attrs={
+                "length":   attr_length,
+                "name":     attr_name,
+                "geometry": attr_geometry,
+            },
+        )
+
+        with open(IGRAPH_PATH, "wb") as f:
+            pickle.dump({"graph": ig_graph}, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+        artifact_mb = IGRAPH_PATH.stat().st_size / (1024 * 1024)
+        print(f"igraph artifact saved to {IGRAPH_PATH} ({artifact_mb:.1f} MB, {ig_graph.vcount():,} vertices, {ig_graph.ecount():,} edges)")
+
+    except Exception as e:
+        print(f"[warning] igraph artifact creation failed ({type(e).__name__}: {e}) — runtime will fall back to graphml")
 
 
 if __name__ == "__main__":
@@ -107,3 +192,13 @@ if __name__ == "__main__":
                 download_and_save()
             else:
                 print("Aborted. Existing graph kept.")
+
+    # If the graphml is present but the igraph artifact is missing, build it now.
+    if GRAPH_PATH.exists() and not _needs_download() and not IGRAPH_PATH.exists():
+        print(f"igraph artifact missing — building from existing graphml ...")
+        try:
+            import osmnx as ox
+            G_existing = ox.load_graphml(GRAPH_PATH)
+            _save_igraph_artifact(G_existing)
+        except Exception as e:
+            print(f"[warning] Could not build igraph artifact ({type(e).__name__}: {e})")

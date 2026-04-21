@@ -26,6 +26,8 @@ A log of features that have been designed and fully implemented. Entries are mov
 13. Multi-Leg Train Routing Gap 2 (Bus First/Last Mile) — **Structural** (Resolved by Feature B)
 14. Feature J — Deprecate `find_bus_routes()` in Favor of Unified Graph — **Bolt-On** (Dependency on Feature B)
 15. Claude Haiku for Simple Queries — **Bolt-On**
+16. Multi-Leg Train Routing — Shared-Track Edge Deduplication — **Structural**
+17. Feature Language — Multi-Language Support (i18n) — **Bolt-On**
 
 ---
 
@@ -239,6 +241,29 @@ Frontend:
 
 ---
 
+# Multi-Leg Train Routing — Shared-Track Edge Deduplication
+
+**Completed: 2026-04-20**
+
+**Overview:** Fixed a route-label accuracy bug on CTA segments where multiple train lines share the same physical track and station pair (e.g. Red/Purple between Howard and Belmont). Previously `_build_graph()` kept only the single fastest `route_id` per `(from_station, to_station)` edge, so a rider transferring to the Purple Line at Howard would still see the transit leg labelled "Red Line" through the shared section. Timing was always correct — only the displayed line name was wrong.
+
+**What was implemented (1 chunk, `backend/transit_graph.py`):**
+
+- **`_build_graph()`:** For every `(from_mapid, to_mapid)` edge that has more than one route candidate (i.e., shared-track segments), stores `all_routes: dict[route_id, (dir_id, line_name)]` as an edge attribute. Single-route edges get `all_routes=None` (no overhead). Edge weight, `route_id`, and all other attributes continue to reflect the fastest candidate.
+- **`_last_transit_leg()` helper:** New module-level function that searches backward through the assembled `legs` list (past any intervening walk legs) to find the most recent `TransitLeg`. Used to detect the incoming line at the start of each new transit segment.
+- **`_path_to_route()` — shared-track label correction block:** After reading the raw `route_id` and `line` from the first edge of a new transit group, checks: (a) there is an incoming `TransitLeg`, (b) the edge has `all_routes` metadata, (c) the incoming line_code differs from the edge's stored `route_id`, and (d) the incoming line_code is present in `all_routes`. If all four conditions hold, overrides `group_route`, `group_dir`, and `group_line` with the incoming line's values — so the leg is labelled with the line the rider is actually on.
+- **`_path_to_route()` — merge-loop fix:** The while-loop that groups consecutive same-route edges previously broke on `next_edge.get("route_id") != group_route`. Updated to also accept edges where `group_route in next_edge.get("all_routes", {})`, so the Purple Line leg continues merging through Howard→Wilson→Montrose→… even though those edges store `route_id="Red"`.
+- **`line_code` assignment fix:** Changed `line_code = edge.get("line_code") or group_route` to `line_code = group_route` so the `TransitLeg.line_code` field reflects the overridden value (not the raw edge attribute). This ensures shape lookup calls `get_shape(group_route, group_dir)` with the correct line.
+
+**Correctness properties:**
+- No override fires when there is no incoming transit leg (first leg of the trip): stored label used as-is.
+- No override fires when the incoming line equals the stored `route_id`: already correct.
+- No override fires when `all_routes` is None (non-shared-track edge): behavior unchanged.
+- Override only fires when the incoming line actually appears in `all_routes` — prevents spurious relabelling on lines that genuinely diverge.
+- Bus edges never have `all_routes` set (only train candidates are stored per edge), so bus leg labelling is unaffected.
+
+---
+
 # Claude Haiku for Simple Queries
 
 **Completed: 2026-04-18**
@@ -254,3 +279,74 @@ Frontend:
 - BYOK path uses the same classifier — whether the request uses a shared-quota key or a user-supplied key, the same `simple` determination picks the model.
 
 **Out of scope (explicitly not done):** Haiku-specific prompt tuning; expanding "simple" to cover two same-line options; per-model cost tracking in the response; automatic Haiku→Sonnet fallback on low-confidence output (the classifier is conservative enough that this is not needed).
+
+---
+
+# Feature AI Toggle — Optional Claude Recommendation Layer
+
+**Completed: 2026-04-20**
+
+**Overview:** The Claude recommendation layer is now opt-in. The UI adds an "AI Explanation" toggle in the settings panel (off by default, persisted to `localStorage`). When off, the backend skips the Claude call entirely — no latency, no token spend, and `recommendation: null` is returned. When on, behavior is identical to before. The feature is designed so a paywall can be added later with a single auth check at the `if request.ai_enabled:` branch in `main.py`.
+
+**What was implemented (2 chunks):**
+
+- **Chunk 1 — Backend (`backend/main.py`):**
+  - Added `ai_enabled: bool = False` field to `RouteRequest`. Defaults to `False` — old clients that omit the field get the safe default (no Claude call, no breakage).
+  - Updated `_validate_api_keys()` to only require `ANTHROPIC_API_KEY` when `request.ai_enabled` is `True`. Non-AI requests no longer fail if the key is absent.
+  - Updated `_cache_key()` to include `ai_enabled` in the key string so AI-on and AI-off responses are cached separately.
+  - Wrapped the `_call_claude(...)` call in `if request.ai_enabled:`. When the flag is `False`, `recommendation` and `model_used` are both `None`. The response always includes `"recommendation": recommendation` (value is the string when AI ran, `None` otherwise).
+
+- **Chunk 2 — Frontend (`frontend/src/App.jsx`, `frontend/src/App.css`):**
+  - Added `aiEnabled` state, initialized from `localStorage.getItem("cta_ai_enabled") === "true"` (defaults to `false`).
+  - Added `handleAiChange(value)` helper that updates both state and `localStorage`.
+  - Added `ai_enabled: aiEnabled` to the `handleSubmit` fetch request body.
+  - Updated `setResult` to store `null` (not `""`) when `data.recommendation` is `null`.
+  - Added an "AI Explanation" labeled checkbox (`<label className="setting-row">`) to `SettingsPanel`, with a one-line hint below it. `SettingsPanel` now accepts `aiEnabled` and `onAiChange` props. The BYOK key section is conditionally rendered inside the panel when `BYOK_ENABLED` is true.
+  - Removed the `BYOK_ENABLED` gate on the settings gear icon — the button now always shows so the AI toggle is always reachable.
+  - Removed the `BYOK_ENABLED` gate on the `{settingsOpen && <SettingsPanel ...>}` render.
+  - Gated `<div className="recommendation">` on `result.recommendation != null`. Moved `busDataPartial` warning outside the recommendation div so it still renders when AI is off.
+  - Added `.setting-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; }` to `App.css`.
+
+**Future paywall gate:** Add an auth check inside the `if request.ai_enabled:` block in `main.py`. No other code needs to change.
+
+---
+
+## Feature Language — Multi-Language Support (i18n)
+
+**Completed: 2026-04-20**
+
+**Overview:** Added full internationalization to the frontend UI and Claude's AI-generated recommendation text, supporting 22 languages including RTL scripts (Arabic, Urdu, Pashto). A language selector in the header persists to `localStorage` and automatically detects the browser language on first visit.
+
+**What was implemented (6 chunks):**
+
+- **Chunk 1 — i18n infrastructure (`frontend/src/i18n.js`, `frontend/src/main.jsx`, `frontend/public/locales/en/translation.json`):**
+  - Installed `i18next`, `react-i18next`, `i18next-http-backend`, `i18next-browser-languagedetector`.
+  - Created `frontend/src/i18n.js` with `SUPPORTED` list (22 language codes), `HttpBackend` for on-demand locale loading, `LanguageDetector` reading `localStorage["cta_language"]` then `navigator.language`, and `fallbackLng: "en"`.
+  - Updated `frontend/src/main.jsx` to import `i18n.js` and wrap `<App />` in `<Suspense fallback={null}>`.
+  - Created `frontend/public/locales/en/translation.json` with all 45 English strings.
+
+- **Chunk 2 — String extraction (`frontend/src/App.jsx`):**
+  - Added `useTranslation()` hook to all components: `WalkLegItem`, `RouteCard`, `SettingsPanel`, `LoadingSkeleton`, and main `App`.
+  - `formatBlocks()` now accepts `t` as a third parameter, using `block_singular/plural`, `long_block_singular/plural`, `short_block_singular/plural` keys.
+  - Replaced all 45+ hardcoded user-visible strings with `t("key")` or `t("key", { vars })` calls. Station names, line names, and CTA alert text are NOT translated (proper nouns).
+
+- **Chunk 3 — Language selector (`frontend/src/App.jsx`):**
+  - Added `LANGUAGE_NAMES` constant with native-script names (العربية, 中文, etc.) for all 22 languages.
+  - Added `<select>` in `.filters` bar adjacent to transit mode selector, bound to `i18n.changeLanguage()`.
+  - Added `useEffect` watching `i18n.language` to set `document.documentElement.dir` (rtl/ltr) and `document.documentElement.lang`. `RTL_LANGS = new Set(["ar", "ur", "ps"])`.
+
+- **Chunk 4 — Translation files (`frontend/public/locales/{code}/translation.json`):**
+  - Created machine-translated files for all 21 non-English languages: es, fr, it, pl, ro, uk, ru, zh, yue, ja, ko, tl, vi, hi, gu, pa, ne, ur, ar, ps, yo.
+  - Japanese file includes parenthetical furigana on all kanji-heavy terms.
+  - All non-English files include `"_comment": "machine-translated, review welcome"`.
+
+- **Chunk 5 — Backend language pass-through (`backend/main.py`):**
+  - Added `language: str | None = None` field to `RouteRequest`.
+  - Added `LANGUAGE_NAMES` dict mapping all 22 codes to English names.
+  - Extended `build_prompt()` with `language` parameter. Appends `"Respond in {language_name}."` for non-English languages; Japanese gets the extended furigana instruction.
+  - Updated `_cache_key()` to include language so same-route queries in different languages cache separately.
+  - Frontend `handleSubmit` now sends `language: i18n.language` in the request body.
+
+- **Chunk 6 — RTL CSS (`frontend/src/App.css`):**
+  - Added `[dir="rtl"]` overrides for `.header-top`, `.filters`, `.route-card-header`, `.route-card-summary`, `.leg`, `.leg-walk-body`, `.leg-steps` (border flips), `.alert-item` (border flips), `.settings-header`, `.settings-actions`, `.form label`.
+  - No full CSS rewrite — only targeted overrides for confirmed RTL issues.

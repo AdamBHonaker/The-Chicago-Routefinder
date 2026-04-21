@@ -40,6 +40,7 @@ import requests
 _http_session = requests.Session()
 
 from walking import walk_minutes
+from utils import haversine_miles as _haversine_miles, CHICAGO_BBOX_GOOGLE, SpatialGrid
 
 GTFS_DIR = Path(__file__).parent / "gtfs_data"
 
@@ -47,7 +48,7 @@ GTFS_DIR = Path(__file__).parent / "gtfs_data"
 _GOOGLE_MAPS_GEOCODE_URL = "https://maps.googleapis.com/maps/api/geocode/json"
 _GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
 # Chicago bounding box for geocoding bias (SW lat,lon | NE lat,lon)
-_CHICAGO_BOUNDS = "41.64,-87.94|42.02,-87.52"
+_CHICAGO_BOUNDS = CHICAGO_BBOX_GOOGLE
 
 # Persistent geocode cache — survives server restarts.
 # Writes use a snapshot file + append-only journal so frequent flushes are O(delta),
@@ -56,16 +57,10 @@ _CHICAGO_BOUNDS = "41.64,-87.94|42.02,-87.52"
 _GEOCODE_CACHE_PATH = Path(__file__).parent / "geocode_cache.json"
 _GEOCODE_JOURNAL_PATH = Path(__file__).parent / "geocode_cache.journal"
 
-# ---------------------------------------------------------------------------
-# TEMPORARY pre-deployment rate limit — remove after go-live
-# Caps Google Geocoding API calls at 9,500/month to prevent accidental cost
-# during development and testing. The free tier is ~40,000 calls/month, so
-# this leaves a 30,500-call buffer before any charges would occur.
-# TODO: Remove this guard (and _GEOCODE_CALL_LIMIT, _geocode_call_counter,
-#       _load_geocode_counter, _save_geocode_counter, and the check inside
-#       geocode_google) once the app is in production and call volume is known.
-# ---------------------------------------------------------------------------
-_GEOCODE_CALL_LIMIT = 9_500
+# Monthly geocode call cap — prevents runaway API costs.
+# Override with env var GEOCODE_MONTHLY_LIMIT (e.g. set to 0 to disable).
+# Google's free tier is ~40,000 calls/month; default leaves a 30,500-call buffer.
+_GEOCODE_CALL_LIMIT = int(os.getenv("GEOCODE_MONTHLY_LIMIT", "9500"))
 _GEOCODE_COUNTER_PATH = Path(__file__).parent / "geocode_counter.json"
 
 
@@ -519,20 +514,6 @@ NEIGHBORHOOD_COORDS: dict[str, tuple[float, float]] = {
 
 
 # ---------------------------------------------------------------------------
-# Distance utility
-# ---------------------------------------------------------------------------
-
-def _haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Straight-line distance in miles between two lat/lon points."""
-    R = 3958.8
-    lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
-    return R * 2 * math.asin(math.sqrt(a))
-
-
-# ---------------------------------------------------------------------------
 # Google Maps geocoding
 # ---------------------------------------------------------------------------
 
@@ -559,9 +540,9 @@ def geocode_google(query: str) -> tuple[float, float] | None:
             print("[gtfs_loader] GOOGLE_MAPS_API_KEY not set — geocoding unavailable")
             return None
 
-        # TEMPORARY: pre-deployment call cap — see TODO note near _GEOCODE_CALL_LIMIT
+        # Monthly call cap (configurable via GEOCODE_MONTHLY_LIMIT; 0 = unlimited)
         current_count = _geocode_call_count()
-        if current_count >= _GEOCODE_CALL_LIMIT:
+        if _GEOCODE_CALL_LIMIT > 0 and current_count >= _GEOCODE_CALL_LIMIT:
             print(
                 f"[gtfs_loader] Monthly geocoding limit reached "
                 f"({current_count}/{_GEOCODE_CALL_LIMIT}) — skipping API call for '{query}'"
@@ -665,33 +646,27 @@ def _load_stops() -> tuple[list[dict], list[dict]]:
 # Spatial index for nearest-stop queries
 # ---------------------------------------------------------------------------
 #
-# Chicago sits near latitude 41.88°, so one mile of longitude is about
-# 1 / (69 * cos(41.88°)) ≈ 0.01948°. One mile of latitude is 1/69 ≈ 0.01449°.
-# A cell size of ~1 mile in each axis means a 1.0-mile radius query touches
+# Cell size of ~1 mile in each axis means a 1.0-mile radius query touches
 # at most a 3×3 block of cells (9 cells), regardless of catalog size.
+# SpatialGrid from utils handles bucketing, bounding-box prefilter, and
+# Haversine postfilter in one shared implementation.
 
-_SPATIAL_CELL_LAT_DEG = 1.0 / 69.0              # ~1 mile of latitude
-_SPATIAL_CELL_LON_DEG = 1.0 / 51.35             # ~1 mile of longitude at Chicago's latitude
-
-
-def _spatial_key(lat: float, lon: float) -> tuple[int, int]:
-    return (int(math.floor(lat / _SPATIAL_CELL_LAT_DEG)),
-            int(math.floor(lon / _SPATIAL_CELL_LON_DEG)))
+_SPATIAL_CELL_LAT_DEG = 1.0 / 69.0    # ~1 mile of latitude
+_SPATIAL_CELL_LON_DEG = 1.0 / 51.35   # ~1 mile of longitude at Chicago's latitude
 
 
 @lru_cache(maxsize=2)
-def _spatial_index(kind: str) -> dict[tuple[int, int], list[dict]]:
+def _spatial_index(kind: str) -> SpatialGrid:
     """
-    Build a grid/bucket spatial index for either "train" or "bus" stops.
-    Built once on first use and cached for the process lifetime (same scope
-    as `_load_stops`).
+    Build a SpatialGrid for either "train" or "bus" stops.
+    Built once on first use and cached for the process lifetime.
     """
     train_stations, bus_stops = _load_stops()
     stops = train_stations if kind == "train" else bus_stops
-    index: dict[tuple[int, int], list[dict]] = {}
+    grid = SpatialGrid(cell_lat_deg=_SPATIAL_CELL_LAT_DEG, cell_lon_deg=_SPATIAL_CELL_LON_DEG)
     for s in stops:
-        index.setdefault(_spatial_key(s["lat"], s["lon"]), []).append(s)
-    return index
+        grid.add(s["lat"], s["lon"], s)
+    return grid
 
 
 def _candidates_within(
@@ -700,38 +675,8 @@ def _candidates_within(
     lon: float,
     radius_miles: float,
 ) -> list[tuple[float, dict]]:
-    """
-    Return (distance_miles, stop) pairs for every stop of `kind` within
-    `radius_miles` of (lat, lon), using the bucket index plus a bounding-box
-    prefilter before Haversine.
-    """
-    index = _spatial_index(kind)
-
-    dlat_deg = radius_miles / 69.0
-    dlon_deg = radius_miles / 51.35
-
-    min_cell_lat = int(math.floor((lat - dlat_deg) / _SPATIAL_CELL_LAT_DEG))
-    max_cell_lat = int(math.floor((lat + dlat_deg) / _SPATIAL_CELL_LAT_DEG))
-    min_cell_lon = int(math.floor((lon - dlon_deg) / _SPATIAL_CELL_LON_DEG))
-    max_cell_lon = int(math.floor((lon + dlon_deg) / _SPATIAL_CELL_LON_DEG))
-
-    lat_lo, lat_hi = lat - dlat_deg, lat + dlat_deg
-    lon_lo, lon_hi = lon - dlon_deg, lon + dlon_deg
-
-    results: list[tuple[float, dict]] = []
-    for cell_lat in range(min_cell_lat, max_cell_lat + 1):
-        for cell_lon in range(min_cell_lon, max_cell_lon + 1):
-            bucket = index.get((cell_lat, cell_lon))
-            if not bucket:
-                continue
-            for s in bucket:
-                s_lat, s_lon = s["lat"], s["lon"]
-                if s_lat < lat_lo or s_lat > lat_hi or s_lon < lon_lo or s_lon > lon_hi:
-                    continue
-                d = _haversine_miles(lat, lon, s_lat, s_lon)
-                if d <= radius_miles:
-                    results.append((d, s))
-    return results
+    """Return (distance_miles, stop) pairs for every stop of `kind` within radius_miles of (lat, lon)."""
+    return _spatial_index(kind).query(lat, lon, radius_miles)
 
 
 # ---------------------------------------------------------------------------

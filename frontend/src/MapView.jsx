@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import maplibregl from "maplibre-gl";
+import { LINE_COLORS, BUS_DIRECTION_COLORS } from "./constants.js";
 
 // ---------------------------------------------------------------------------
 // Map defaults — overridable via props for future view modes
@@ -8,28 +9,6 @@ import maplibregl from "maplibre-gl";
 const DEFAULT_STYLE  = "https://tiles.openfreemap.org/styles/liberty";
 const DEFAULT_CENTER = [-87.654, 41.966]; // Uptown, Chicago
 const DEFAULT_ZOOM   = 13;
-
-// ---------------------------------------------------------------------------
-// Line color tables (mirrors App.jsx — used here for map layer paint)
-// ---------------------------------------------------------------------------
-
-const LINE_COLORS = {
-  "Red Line":    "#c60c30",
-  "Blue Line":   "#00a1de",
-  "Brown Line":  "#62361b",
-  "Green Line":  "#009b3a",
-  "Orange Line": "#f9461c",
-  "Purple Line": "#522398",
-  "Pink Line":   "#e27ea6",
-  "Yellow Line": "#f9e300",
-};
-
-const BUS_DIRECTION_COLORS = {
-  Northbound: "#1565c0",
-  Southbound: "#4e342e",
-  Eastbound:  "#00695c",
-  Westbound:  "#ef6c00",
-};
 
 function legColor(leg) {
   return LINE_COLORS[leg.line] ?? BUS_DIRECTION_COLORS[leg.line] ?? "#4a9eff";
@@ -318,14 +297,7 @@ export default function MapView({
                               e?.error?.message?.toLowerCase().includes("style");
         if (isStyleSource && (status === 0 || (status >= 400 && status < 600))) {
           setStyleError(true);
-        }
-      });
-
-      // Only clear the error banner when the style itself has successfully loaded,
-      // not on any arbitrary tile/source load event.
-      map.on("data", (e) => {
-        if (e.dataType === "style" && e.isSourceLoaded) {
-          setStyleError(false);
+          map.once("styledata", () => setStyleError(false));
         }
       });
 

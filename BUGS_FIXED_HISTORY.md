@@ -2,6 +2,55 @@
 
 ---
 
+# 2026-04-20 BUG-008 `_haversine_walk_minutes()` Function Missing — FIXED
+
+---
+
+## 🔴 Missing `_haversine_walk_minutes()` function causes runtime crash — FIXED
+
+**File:** [backend/walking.py](backend/walking.py)
+
+**What was happening:** The `walk_minutes()` function (line 198) had a fallback exception handler that called `_haversine_walk_minutes(origin_lat, origin_lon, dest_lat, dest_lon)` when the street graph was unavailable or routing failed. However, this function was never defined anywhere in the module. When a user's origin or destination fell outside the street graph's bounding box (or the graph failed to load), the fallback would trigger and immediately raise `NameError: name '_haversine_walk_minutes' is not defined`, crashing the entire route recommendation pipeline with a 500 error.
+
+**Reproduction:** Request a route where at least one endpoint is outside the street graph bounding box (e.g., far south or west of current coverage), or when the graph file is missing/unreadable on startup.
+
+**Fixed in:** Implemented the missing `_haversine_walk_minutes()` function (inserted at line 177–189, just before `walk_minutes()`):
+```python
+def _haversine_walk_minutes(
+    origin_lat: float, origin_lon: float, dest_lat: float, dest_lon: float,
+) -> float:
+    """Estimate walking time (minutes) using straight-line Haversine distance."""
+    distance_miles = _haversine_miles(origin_lat, origin_lon, dest_lat, dest_lon)
+    return round(distance_miles / 3.0 * 60.0, 1)
+```
+
+The function calculates the great-circle distance and divides by 3 mph (standard walking speed), converting to minutes. Matches the rounding precision (1 decimal) used by the street-network path. Now when routing falls back to Haversine, walking times are estimated gracefully instead of crashing.
+
+---
+
+# 2026-04-20 `_rate_store` + `_response_cache` Race Condition — `asyncio.Lock` Added
+
+---
+
+## 🔴 `_rate_store` and `_response_cache` race condition under concurrent requests — FIXED
+
+**File:** `backend/main.py`
+
+**What was happening:** Both `_rate_store` (dict of deques) and `_response_cache` (OrderedDict) were read and written without any lock. Because `recommend()` is an `async def` that `await`s multiple times between the cache read (line ~982) and the cache write (line ~1040), the asyncio event loop could switch to a second coroutine mid-flight. This caused two failure modes under moderate concurrency:
+
+1. **Cache stampede** — two concurrent requests with the same key both saw a cache miss, both launched the full expensive pipeline (geocode → routing → Claude API call), and both wrote the result. Wasted compute and API quota.
+2. **Double-pop eviction** — both responses saw `len(_response_cache) > _CACHE_MAX_SIZE` and each called `popitem(last=False)`, evicting two entries when only one should have been dropped.
+
+The `_rate_store` write inside `_check_rate_limit` is synchronous (no `await`), so it was not susceptible to a mid-flight switch — but the wrong "No locking needed" comment implied callers could rely on that property forever.
+
+**Fixed in:**
+1. **`_store_lock = asyncio.Lock()` added** at module level in `main.py`, alongside `_rate_store` and `_response_cache`. `asyncio.Lock` is correct (not `threading.Lock`) because `recommend()` runs on the asyncio event loop.
+2. **Rate-limit check + cache read wrapped in `async with _store_lock:`** — both `_check_rate_limit(ip)` and `_response_cache.get(key)` / `pop()` now execute inside a single locked block at the top of `recommend()`. No await inside this block, so it runs atomically from the event loop's perspective.
+3. **Cache write wrapped in a second `async with _store_lock:`** — the `_response_cache[key] = ...`, `move_to_end(key)`, and `popitem()` eviction at the bottom of `recommend()` are wrapped in their own locked block. Prevents the double-pop race.
+4. **`_check_rate_limit` docstring updated** — removed the now-incorrect "No locking needed — FastAPI runs on a single asyncio event loop" claim; replaced with "Callers must hold `_store_lock` before calling this function."
+
+---
+
 # 2026-04-18 Bug Scan Fixes (`fetch_station_exits.py`, `fetch_gtfs.py`, `App.jsx`) + BUG-003 False-Positive Investigation
 
 ---

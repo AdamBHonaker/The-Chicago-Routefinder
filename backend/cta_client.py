@@ -9,6 +9,7 @@ resolved by gtfs_loader.find_nearest_bus_stops() and passed in from main.py.
 """
 
 import asyncio
+import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -19,8 +20,11 @@ import aiohttp
 
 CHICAGO_TZ = ZoneInfo("America/Chicago")
 
-TRAIN_BASE = "https://lapi.transitchicago.com/api/1.0/ttarrivals.aspx"
-BUS_BASE   = "https://www.ctabustracker.com/bustime/api/v3/getpredictions"
+_CTA_TRAIN_BASE = os.getenv("CTA_TRAIN_API_URL", "https://lapi.transitchicago.com/api/1.0")
+_CTA_BUS_BASE   = os.getenv("CTA_BUS_API_URL",   "https://www.ctabustracker.com/bustime/api/v3")
+
+TRAIN_BASE = f"{_CTA_TRAIN_BASE}/ttarrivals.aspx"
+BUS_BASE   = f"{_CTA_BUS_BASE}/getpredictions"
 
 # Human-readable line names keyed by the API's rt abbreviation
 LINE_NAMES = {
@@ -56,12 +60,12 @@ async def _fetch_station_arrivals(
         async with session.get(TRAIN_BASE, params=params, timeout=aiohttp.ClientTimeout(total=8)) as resp:
             data = await resp.json(content_type=None)
     except Exception as exc:
-        return [{"error": f"Train API error for {station_label}: {exc}"}]
+        return [{"_error": True, "exc": f"Train API error for {station_label}: {exc}", "mode": "train"}]
 
     ctatt = data.get("ctatt", {})
     err_code = ctatt.get("errCd", "0")
     if str(err_code) != "0":
-        return [{"error": f"Train API error {err_code}: {ctatt.get('errNm', '')}"}]
+        return [{"_error": True, "exc": f"Train API error {err_code}: {ctatt.get('errNm', '')}", "mode": "train"}]
 
     now = datetime.now(CHICAGO_TZ)
     arrivals = []
@@ -127,11 +131,11 @@ async def get_train_arrivals(
         all_arrivals.extend(result)
 
     # Filter out error entries for the sorted list, keep errors for logging
-    good = [a for a in all_arrivals if "error" not in a]
-    errors = [a for a in all_arrivals if "error" in a]
+    good = [a for a in all_arrivals if not a.get("_error")]
+    errors = [a for a in all_arrivals if a.get("_error")]
 
     if errors:
-        msgs = "; ".join(e["error"] for e in errors[:3])
+        msgs = "; ".join(e["exc"] for e in errors[:3])
         print(f"[cta_client] {len(errors)} train error(s): {msgs}")
 
     return sorted(good, key=lambda a: a["arrives_in_minutes"]), len(errors)
@@ -166,7 +170,7 @@ async def _fetch_bus_chunk(
         print(f"[cta_client] Bus API error for {len(chunk)} stops: {exc}")
         # Return a sentinel so get_bus_arrivals can count failures instead of
         # silently dropping them. The list[dict] return type is preserved.
-        return [{"_bus_error": True, "exc": str(exc)}]
+        return [{"_error": True, "exc": str(exc), "mode": "bus"}]
 
     response = data.get("bustime-response", {})
     prd_list = response.get("prd", [])
@@ -235,7 +239,7 @@ async def get_bus_arrivals(
     n_errors = 0
     for result in results:
         for item in result:
-            if item.get("_bus_error"):
+            if item.get("_error"):
                 n_errors += 1
             else:
                 all_arrivals.append(item)
@@ -267,7 +271,8 @@ async def _fetch_alerts_for_route(
             ALERTS_BASE, params=params, timeout=aiohttp.ClientTimeout(total=5)
         ) as resp:
             data = await resp.json(content_type=None)
-    except Exception:
+    except Exception as exc:
+        print(f"[cta_client] WARNING: Alerts API fetch failed for route {route_id!r}: {exc}")
         return []
 
     alerts_raw = data.get("CTAAlerts", {}).get("Alert", [])

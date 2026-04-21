@@ -21,12 +21,27 @@ from pathlib import Path
 
 import requests
 
+from utils import CHICAGO_BBOX_OVERPASS
+
+_EARTH_RADIUS_MILES = 3958.8
+
+
+def _haversine_precomputed(
+    rlat1: float, cos_lat1: float, rlon1: float,
+    rlat2: float, cos_lat2: float, rlon2: float,
+) -> float:
+    """Haversine distance (miles) with radians and cos(lat) pre-computed by caller."""
+    dlat = rlat2 - rlat1
+    dlon = rlon2 - rlon1
+    a = math.sin(dlat / 2) ** 2 + cos_lat1 * cos_lat2 * math.sin(dlon / 2) ** 2
+    return _EARTH_RADIUS_MILES * 2 * math.asin(math.sqrt(a))
+
 GTFS_DIR = Path(__file__).parent / "gtfs_data"
 OUT_FILE = Path(__file__).parent / "station_exits.json"
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 # Chicago bounding box: (south, west, north, east)
-CHICAGO_BBOX = "41.64,-87.94,42.02,-87.52"
+CHICAGO_BBOX = CHICAGO_BBOX_OVERPASS
 
 # Max haversine distance (miles) to assign an entrance to a station.
 # CTA stations can span a full block; 0.2 mi covers the largest footprints.
@@ -36,17 +51,6 @@ MAX_ASSIGN_MILES = 0.20
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    R = 3958.8
-    d_lat = math.radians(lat2 - lat1)
-    d_lon = math.radians(lon2 - lon1)
-    a = (math.sin(d_lat / 2) ** 2
-         + math.cos(math.radians(lat1))
-         * math.cos(math.radians(lat2))
-         * math.sin(d_lon / 2) ** 2)
-    return R * 2 * math.asin(math.sqrt(a))
-
 
 def load_parent_stations() -> dict[str, dict]:
     """Load CTA parent train stations (40000-range) from GTFS stops.txt."""
@@ -62,10 +66,16 @@ def load_parent_stations() -> dict[str, dict]:
             try:
                 sid = int(row["stop_id"].strip())
                 if 40000 <= sid <= 49999 and row.get("location_type", "").strip() == "1":
+                    slat = float(row["stop_lat"].strip())
+                    slon = float(row["stop_lon"].strip())
+                    srlat = math.radians(slat)
                     stations[str(sid)] = {
-                        "name": row.get("stop_name", "").strip(),
-                        "lat":  float(row["stop_lat"].strip()),
-                        "lon":  float(row["stop_lon"].strip()),
+                        "name":    row.get("stop_name", "").strip(),
+                        "lat":     slat,
+                        "lon":     slon,
+                        "rlat":    srlat,
+                        "rlon":    math.radians(slon),
+                        "cos_lat": math.cos(srlat),
                     }
             except (ValueError, KeyError):
                 continue
@@ -122,11 +132,19 @@ def build_exits(
             # Use coordinates as a placeholder so the entry is still useful
             label = f"Entrance ({lat:.4f}, {lon:.4f})"
 
+        # Pre-compute entrance trig once for the ~150-station inner loop
+        rlat1    = math.radians(lat)
+        rlon1    = math.radians(lon)
+        cos_lat1 = math.cos(rlat1)
+
         # Find the nearest parent station
         best_mapid = None
         best_dist  = float("inf")
         for mapid, info in stations.items():
-            d = _haversine_miles(lat, lon, info["lat"], info["lon"])
+            d = _haversine_precomputed(
+                rlat1, cos_lat1, rlon1,
+                info["rlat"], info["cos_lat"], info["rlon"],
+            )
             if d < best_dist:
                 best_dist  = d
                 best_mapid = mapid

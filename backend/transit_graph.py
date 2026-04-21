@@ -29,7 +29,8 @@ from pathlib import Path
 
 import networkx as nx
 
-from gtfs_loader import GTFS_DIR, _haversine_miles, find_nearest_train_stations, find_nearest_bus_stops
+from gtfs_loader import GTFS_DIR, find_nearest_train_stations, find_nearest_bus_stops
+from utils import haversine_miles as _haversine_miles, SpatialGrid, TRANSFER_PENALTY_MINUTES
 from walking import (
     walk_minutes as street_walk_minutes,
     walk_path as street_walk_path,
@@ -52,7 +53,7 @@ LINE_NAMES = {
 }
 
 # Default transfer time at a station when switching lines (minutes)
-_TRANSFER_MINUTES = 2.0
+_TRANSFER_MINUTES = TRANSFER_PENALTY_MINUTES
 
 
 def _bearing_to_direction(lat1: float, lon1: float, lat2: float, lon2: float) -> str:
@@ -82,6 +83,46 @@ _MAX_LEG_MINUTES = 45.0
 
 # Target departure time for representative trip selection: noon = 720 min past midnight
 _TARGET_NOON_MINUTES = 720.0
+
+# ---------------------------------------------------------------------------
+# Intermodal walk-edge tuning constants (used in _build_graph — Feature B)
+# ---------------------------------------------------------------------------
+# Radius within which a train station and bus stop are connected by a walk edge.
+_TRANSFER_RADIUS_MILES: float = 0.15
+# Walk-time cap for intermodal edges; longer walks are excluded from the graph.
+_TRANSFER_WALK_CAP_MIN: float = 5.0
+# Straight-line → street-network correction factor applied to Haversine distances
+# at graph-build time (avoids loading the full street graph into memory on startup).
+_DETOUR_FACTOR: float = 1.3
+
+# ---------------------------------------------------------------------------
+# Bus-to-bus transfer candidate scoring (used in _select_transfer_candidates — Feature C)
+# ---------------------------------------------------------------------------
+# Maximum walk distance from a transfer stop to the destination for route B.
+_MAX_EXIT_DIST: float = 0.5          # miles
+# Maximum walk between routes A and B at the transfer stop.
+_MAX_TRANSFER_WALK: float = 0.25     # miles
+# Route A must reduce Haversine-to-destination by at least this ratio at each stop.
+_FWD_PROGRESS_RATIO: float = 0.9    # Sk must bring ≥10 % forward progress
+# Maximum candidates kept per (arrival × route-A) combination.
+_MAX_CANDIDATES_PER_ARRIVAL: int = 3
+# Walk-time penalty factor in the candidate score: 60 min/hr ÷ 3 mph × 1.3 detour = 26.0 min/mile
+_TRANSFER_SCORE_WALK_FACTOR: float = 26.0   # minutes per mile
+
+# ---------------------------------------------------------------------------
+# Module-level state — initialization contract
+# ---------------------------------------------------------------------------
+# All module-level dicts/None values below are populated exactly once:
+#
+#   _shape_lookup       ← warm_up() → _build_shape_lookup()   (read-only after)
+#   _bus_seq_cache      ← _build_graph() during warm_up()     (read-only after)
+#   _stop_to_routes     ← warm_up() → _build_stop_to_routes() (read-only after)
+#   _bus_stop_grid      ← module import → _build_bus_stop_grid() (read-only after)
+#   _bus_stop_coords    ← same as above
+#   _station_exits      ← module import → _load_station_exits()  (read-only after)
+#
+# All writes go through a single initializer function and are protected by the
+# GIL (CPython).  No writes occur after startup, so concurrent reads are safe.
 
 # Thread-local storage for per-thread graph copies used by find_routes().
 # Each executor thread in the FastAPI thread pool keeps its own copy of G_base
@@ -534,8 +575,15 @@ def _build_graph() -> tuple[nx.DiGraph, dict[str, dict]]:
 
     transit_edge_count = 0
     for (from_mapid, to_mapid), candidates in edge_candidates.items():
-        # Keep the fastest route for the edge weight; store all serving lines
+        # Keep the fastest route for the edge weight
         best_route, best_dir, best_line, best_min = min(candidates, key=lambda x: x[3])
+        # On shared-track segments (e.g. Red/Purple between Howard and Belmont),
+        # multiple lines compete for the same (from, to) edge. Store all of them
+        # so _path_to_route() can pick the correct label based on the incoming line.
+        all_routes = (
+            {c[0]: (c[1], c[2]) for c in candidates}  # {route_id: (dir_id, line_name)}
+            if len(candidates) > 1 else None
+        )
         G.add_edge(
             from_mapid, to_mapid,
             weight=best_min,
@@ -545,6 +593,7 @@ def _build_graph() -> tuple[nx.DiGraph, dict[str, dict]]:
             line_code=best_route,
             edge_type="transit",
             mode="train",
+            all_routes=all_routes,
         )
         transit_edge_count += 1
 
@@ -615,9 +664,6 @@ def _build_graph() -> tuple[nx.DiGraph, dict[str, dict]]:
     # Railway before any requests are served.  Routing requests compute precise
     # turn-by-turn paths lazily via street_walk_* only when needed.
     intermodal_edge_count = 0
-    _TRANSFER_RADIUS_MILES = 0.15
-    _TRANSFER_WALK_CAP_MIN = 5.0
-    _DETOUR_FACTOR = 1.3   # straight-line → street-network correction
 
     for mapid, station in parent_stations.items():
         s_lat, s_lon = station["lat"], station["lon"]
@@ -1073,6 +1119,14 @@ def _resolve_node(node: str, stations: dict, G: "nx.DiGraph") -> tuple[str, floa
     return node_data.get("name", str(node)), node_data.get("lat", 0.0), node_data.get("lon", 0.0)
 
 
+def _last_transit_leg(legs: list) -> "TransitLeg | None":
+    """Return the most recent TransitLeg in legs, searching backward past walk legs."""
+    for leg in reversed(legs):
+        if isinstance(leg, TransitLeg):
+            return leg
+    return None
+
+
 def _path_to_route(
     path: list[str],
     G: nx.DiGraph,
@@ -1182,11 +1236,28 @@ def _path_to_route(
         alight_node = to_node
         seg_minutes = weight
 
+        # Shared-track label correction: if the incoming transit leg is on a
+        # different line that also serves this edge (e.g. Purple through the
+        # Red/Purple shared Howard–Belmont segment), prefer the incoming line's
+        # label so the leg displays the correct line name to the rider.
+        incoming = _last_transit_leg(legs)
+        all_routes = edge.get("all_routes")  # {route_id: (dir_id, line_name)} or None
+        if (incoming and all_routes
+                and incoming.line_code != group_route
+                and incoming.line_code in all_routes):
+            alt_dir, alt_line = all_routes[incoming.line_code]
+            group_route = incoming.line_code
+            group_dir   = alt_dir
+            group_line  = alt_line
+
         look = idx + 1
         while look < len(path) - 1 and path[look] != DEST and path[look + 1] != DEST:
             next_edge = G.edges[path[look], path[look + 1]]
-            if (next_edge.get("route_id") != group_route
-                    or next_edge.get("edge_type") != "transit"):
+            next_route     = next_edge.get("route_id", "")
+            next_all       = next_edge.get("all_routes") or {}
+            # Continue merging if the next edge serves our (possibly overridden) line
+            serves_group = (next_route == group_route or group_route in next_all)
+            if not serves_group or next_edge.get("edge_type") != "transit":
                 break
             seg_minutes += next_edge.get("weight", 0.0)
             alight_node  = path[look + 1]
@@ -1210,9 +1281,9 @@ def _path_to_route(
         board_name,  board_lat,  board_lon  = _resolve_node(board_node,  stations, G)
         alight_name, alight_lat, alight_lon = _resolve_node(alight_node, stations, G)
 
-        # For bus edges, line_code comes from the edge attribute (same as route_id,
-        # but being explicit is safer). For train edges, group_route is the line code.
-        line_code = edge.get("line_code") or group_route
+        # group_route already holds the correct (possibly overridden) route/line code
+        # for both train and bus edges — use it directly for the TransitLeg.
+        line_code = group_route
 
         legs.append(TransitLeg(
             line=group_line,
@@ -1414,32 +1485,34 @@ def find_routes(
 # Bus stop spatial grid index (Chunk 1 — Feature C)
 # ---------------------------------------------------------------------------
 #
-# _bus_stop_grid: grid cell → list of stop_ids in that cell
-#   key = (int(lat / 0.005), int(lon / 0.005))
-#   0.005° ≈ 0.34 miles lat / 0.27 miles lon at Chicago's latitude
+# _bus_stop_grid: SpatialGrid keyed by stop_id strings.
+#   Cell size 0.005° ≈ 0.34 miles lat / 0.27 miles lon at Chicago's latitude.
+#   A 0.25-mile radius query touches at most a 3×3 cell window.
 #
-# _bus_stop_coords: stop_id → (lat, lon) for haversine post-filtering
+# _bus_stop_coords: stop_id → (lat, lon) for direct coordinate lookups by ID
+#   (e.g. computing haversine to a specific stop without a grid query).
 #
 # Both are populated once at module import via _build_bus_stop_grid().
 
-_bus_stop_grid:   dict[tuple[int, int], list[str]] = {}
-_bus_stop_coords: dict[str, tuple[float, float]]   = {}
+_BUS_STOP_CELL_DEG: float = 0.005  # degrees; ~0.34 miles lat, ~0.27 miles lon
+
+_bus_stop_grid:   SpatialGrid | None           = None
+_bus_stop_coords: dict[str, tuple[float, float]] = {}
 
 
 def _build_bus_stop_grid() -> None:
     """Populate _bus_stop_grid and _bus_stop_coords from stops.txt at module load."""
     global _bus_stop_grid, _bus_stop_coords
     stops = _load_bus_stop_lookup()
-    grid: dict[tuple[int, int], list[str]] = {}
+    grid = SpatialGrid(cell_lat_deg=_BUS_STOP_CELL_DEG, cell_lon_deg=_BUS_STOP_CELL_DEG)
     coords: dict[str, tuple[float, float]] = {}
     for sid, meta in stops.items():
         lat, lon = meta["lat"], meta["lon"]
         coords[sid] = (lat, lon)
-        cell = (int(lat / 0.005), int(lon / 0.005))
-        grid.setdefault(cell, []).append(sid)
+        grid.add(lat, lon, sid)
     _bus_stop_grid   = grid
     _bus_stop_coords = coords
-    print(f"[transit_graph] Bus stop grid built: {len(coords)} stops, {len(grid)} cells")
+    print(f"[transit_graph] Bus stop grid built: {len(coords)} stops, {grid.cell_count} cells")
 
 
 _build_bus_stop_grid()
@@ -1514,29 +1587,10 @@ def _stops_near(lat: float, lon: float, radius_miles: float = 0.25) -> list[str]
     """
     Return stop_ids within radius_miles of (lat, lon).
 
-    Uses the pre-built _bus_stop_grid for an initial bounding-box filter
-    (checking at most a 3×3 cell window for a 0.25-mile radius), then
-    post-filters with exact haversine distance.
-
+    Uses SpatialGrid for bounding-box prefilter + Haversine postfilter.
     Not cached — lat/lon float keys would produce unbounded cache growth.
     """
-    lat_delta = radius_miles * 0.0145   # degrees per mile at Chicago latitude
-    lon_delta = radius_miles * 0.0175
-
-    lat_min = int((lat - lat_delta) / 0.005)
-    lat_max = int((lat + lat_delta) / 0.005)
-    lon_min = int((lon - lon_delta) / 0.005)
-    lon_max = int((lon + lon_delta) / 0.005)
-
-    candidates: list[str] = []
-    for clat in range(lat_min, lat_max + 1):
-        for clon in range(lon_min, lon_max + 1):
-            candidates.extend(_bus_stop_grid.get((clat, clon), []))
-
-    return [
-        sid for sid in candidates
-        if _haversine_miles(lat, lon, *_bus_stop_coords[sid]) <= radius_miles
-    ]
+    return [sid for _, sid in _bus_stop_grid.query(lat, lon, radius_miles)]
 
 
 # ---------------------------------------------------------------------------
@@ -1572,56 +1626,30 @@ def _build_stop_to_routes() -> None:
 # Bus-to-bus transfer routing (Chunk 3 — Feature C)
 # ---------------------------------------------------------------------------
 
-def find_bus_transfer_routes(
+def _select_transfer_candidates(
     origin_lat: float,
     origin_lon: float,
     dest_lat: float,
     dest_lon: float,
-    bus_arrivals: list[dict],      # from cta_client.get_bus_arrivals(); must include stop_id
-    origin_bus_stops: list[dict],  # from gtfs_loader.find_nearest_bus_stops(); includes walk_minutes
-    n_routes: int = 3,
-) -> list[tuple[float, int, object]]:
+    bus_arrivals: list[dict],
+    origin_bus_stops: list[dict],
+    sequences: dict,
+) -> tuple[dict, dict]:
     """
-    Find bus+bus transfer routes from origin to destination.
+    Pass 1: spatial / haversine-only candidate selection.
 
-    Called unconditionally from main.py whenever transit_mode is "Bus" or
-    "All" and live bus arrival data is available. Direct bus-only paths come
-    from the unified graph via find_routes(); this function surfaces the
-    bus+bus transfer itineraries (bus A → walk → bus B) that the graph does
-    not model, since bus-to-bus walk transfers are not represented as graph
-    edges.
-
-    Builds 5-leg routes of the form:
-        WalkLeg  (origin → boarding_stop_A)
-        TransitLeg (route A: boarding_stop_A → transfer_stop_Sk)
-        WalkLeg  (Sk → transfer_boarding_stop_T)   ← minutes=0 if same stop
-        TransitLeg (route B: T → exit_stop_B)
-        WalkLeg  (exit_stop_B → destination)
-
-    Sorting key includes a fixed 7.5-min estimate for the leg-2 wait (half
-    of a typical 15-min CTA headway). This estimate is NOT added to
-    route.walk_minutes_total or route.transit_minutes — those fields retain
-    their strict definitions.
+    For each live arrival at a nearby boarding stop, scans forward on route A
+    to find transfer stops Sk with forward progress toward the destination,
+    then checks whether any route B from a nearby stop T exits within 0.5 mi
+    of the destination.  Candidates are deduplicated by (rA, Sk, T, rB, exitB)
+    identity and capped at 3 per arrival+route-A combination.
 
     Returns:
-        list of (total_minutes, wait_minutes_A, Route) sorted by total_minutes.
-        wait_minutes_A is the live wait for route A. Empty list if no
-        transfer routes are found.
+        candidate_map  — {(route_A_key, sk_idx, t_stop_id, route_B_key, exit_B_idx):
+                           (score, board_walk_min, wait_min_A, board_stop_id)}
+        board_index    — {stop_id: [(short_name, did, idx_in_seq), ...]}
+                         (needed by Pass 2 to resolve the boarding stop index)
     """
-    sequences = get_bus_stop_sequences()
-    if not sequences or not bus_arrivals or not origin_bus_stops:
-        return []
-    if not _stop_to_routes:
-        return []
-
-    _LEG2_WAIT_ESTIMATE = 7.5   # fixed leg-2 wait estimate (minutes)
-    _MAX_TRIP_MINUTES   = 90.0
-    _MAX_EXIT_DIST      = 0.5   # miles — exit-walk cap for route B
-    _MAX_TRANSFER_WALK  = 0.25  # miles
-    _FWD_PROGRESS_RATIO = 0.9   # Sk must reduce haversine-to-dest by ≥10%
-    _MAX_CANDIDATES_PER_ARRIVAL = 3
-
-    # Walk time from origin to each nearby boarding stop
     board_walk: dict[str, float] = {
         s["stop_id"]: s.get("walk_minutes", 0.0)
         for s in origin_bus_stops
@@ -1629,7 +1657,6 @@ def find_bus_transfer_routes(
     boarding_stop_ids = set(board_walk.keys())
 
     # Build board_index: stop_id → [(short_name, did, idx_in_seq), ...]
-    # Limited to our actual boarding stops (cheap per request).
     board_index: dict[str, list[tuple[str, str, int]]] = {}
     for (short_name, did), stops in sequences.items():
         for idx, entry in enumerate(stops):
@@ -1637,20 +1664,6 @@ def find_bus_transfer_routes(
             if sid in boarding_stop_ids:
                 board_index.setdefault(sid, []).append((short_name, did, idx))
 
-    # ── Pass 1: find candidate transfers (haversine only) ────────────────────
-    #
-    # For each live arrival, scan forward from the boarding stop on route A.
-    # At each stop Sk that shows forward progress toward the destination,
-    # check nearby stops T and the routes serving them.  If route B exits
-    # within 0.5 miles of the destination, record the candidate.
-    #
-    # Stored as: {(route_A_key, Sk_idx, T_stop_id, route_B_key, exit_B_idx):
-    #              (score, board_walk_min, wait_min_A, board_stop_id)}
-    #
-    # score = board_walk_min + wait_A + transfer_walk_haversine*20 + exit_B_haversine*20
-
-    # Use a dict keyed by the logical candidate identity to deduplicate
-    # (same route A + transfer stop + route B combination from different arrivals).
     candidate_map: dict[tuple, tuple] = {}
 
     for arrival in bus_arrivals:
@@ -1665,16 +1678,17 @@ def find_bus_transfer_routes(
         if not cands_A:
             continue
 
-        board_walk_min   = board_walk.get(stop_id, 0.0)
-        boarding_hav     = _haversine_miles(stop_id and _bus_stop_coords.get(stop_id, (origin_lat, origin_lon))[0] or origin_lat,
-                                            stop_id and _bus_stop_coords.get(stop_id, (origin_lat, origin_lon))[1] or origin_lon,
-                                            dest_lat, dest_lon)
+        board_walk_min = board_walk.get(stop_id, 0.0)
+        boarding_hav   = _haversine_miles(
+            _bus_stop_coords.get(stop_id, (origin_lat, origin_lon))[0],
+            _bus_stop_coords.get(stop_id, (origin_lat, origin_lon))[1],
+            dest_lat, dest_lon,
+        )
 
         for short_A, did_A, board_idx in cands_A:
             seq_A = sequences[(short_A, did_A)]
             route_A_key = (short_A, did_A)
 
-            # Per-arrival per-route-A candidate list for top-3 capping
             arrival_candidates: list[tuple] = []
 
             for sk_idx in range(board_idx + 1, len(seq_A)):
@@ -1685,23 +1699,20 @@ def find_bus_transfer_routes(
                 if sk_hav >= boarding_hav * _FWD_PROGRESS_RATIO:
                     continue
 
-                # Find bus stops near Sk within transfer-walk radius
                 nearby = _stops_near(sk_lat, sk_lon, _MAX_TRANSFER_WALK)
                 if not nearby:
                     continue
 
                 for t_stop_id in nearby:
-                    # Don't transfer to a stop on the same route+direction
                     routes_at_T = _stop_to_routes.get(t_stop_id, [])
                     for short_B, did_B, t_idx, _ in routes_at_T:
                         if (short_B, did_B) == route_A_key:
-                            continue   # same route — skip
+                            continue
 
                         seq_B = sequences.get((short_B, did_B))
                         if seq_B is None:
                             continue
 
-                        # Scan forward from T on route B to find best exit stop
                         best_exit_idx  = -1
                         best_exit_dist = float("inf")
                         for j in range(t_idx + 1, len(seq_B)):
@@ -1716,11 +1727,9 @@ def find_bus_transfer_routes(
 
                         transfer_hav = _haversine_miles(sk_lat, sk_lon,
                                                         *_bus_stop_coords.get(t_stop_id, (sk_lat, sk_lon)))
-                        # 20.0 = 60 min/hr ÷ 3 mph walk speed; ×1.3 corrects
-                        # straight-line to Manhattan-grid distance.
                         score = (board_walk_min + wait_min
-                                 + transfer_hav * 26.0
-                                 + best_exit_dist * 26.0)
+                                 + transfer_hav * _TRANSFER_SCORE_WALK_FACTOR
+                                 + best_exit_dist * _TRANSFER_SCORE_WALK_FACTOR)
 
                         arrival_candidates.append((
                             score,
@@ -1729,7 +1738,6 @@ def find_bus_transfer_routes(
                             board_walk_min, wait_min, stop_id,
                         ))
 
-            # Keep only top-3 candidates for this arrival+route-A combination
             arrival_candidates.sort(key=lambda x: x[0])
             for cand in arrival_candidates[:_MAX_CANDIDATES_PER_ARRIVAL]:
                 score, rA, sk_i, t_sid, rB, exit_i, bwm, wm, bsid = cand
@@ -1738,10 +1746,31 @@ def find_bus_transfer_routes(
                 if existing is None or score < existing[0]:
                     candidate_map[key] = (score, bwm, wm, bsid)
 
-    if not candidate_map:
-        return []
+    return candidate_map, board_index
 
-    # ── Pass 2: build Route objects for surviving candidates (OSMnx calls) ───
+
+def _build_transfer_routes(
+    candidate_map: dict,
+    board_index: dict,
+    bus_arrivals: list[dict],
+    sequences: dict,
+    origin_lat: float,
+    origin_lon: float,
+    dest_lat: float,
+    dest_lon: float,
+    n_routes: int,
+) -> list[tuple[float, int, object]]:
+    """
+    Pass 2: build Route objects for the candidates returned by Pass 1.
+
+    Performs all OSMnx street-walk calls, assembles WalkLeg / TransitLeg
+    objects, and applies the 90-minute trip cap.  Returns up to n_routes
+    results sorted by (in-vehicle + walk + live wait for A + 7.5-min
+    estimated wait for B).
+    """
+    _LEG2_WAIT_ESTIMATE = 7.5   # fixed leg-2 wait estimate (minutes)
+    _MAX_TRIP_MINUTES   = 90.0
+
     ranked: list[tuple[float, int, object]] = []
 
     for (route_A_key, sk_idx, t_stop_id, route_B_key, exit_B_idx), \
@@ -1752,7 +1781,6 @@ def find_bus_transfer_routes(
         seq_A = sequences[(short_A, did_A)]
         seq_B = sequences[(short_B, did_B)]
 
-        # Locate boarding stop index from the stored board_stop_id
         board_idx = next(
             (e[2] for e in board_index.get(board_stop_id, [])
              if (e[0], e[1]) == route_A_key),
@@ -1768,7 +1796,6 @@ def find_bus_transfer_routes(
             continue
         t_lat, t_lon = t_meta
 
-        # Look up T's name from the sequence entry (index known from _stop_to_routes)
         t_idx_in_seq = next(
             (e[2] for e in _stop_to_routes.get(t_stop_id, [])
              if (e[0], e[1]) == route_B_key),
@@ -1780,7 +1807,6 @@ def find_bus_transfer_routes(
 
         exit_sid, exit_name, exit_lat, exit_lon, exit_arr = seq_B[exit_B_idx]
 
-        # In-vehicle times from GTFS scheduled arrival minutes
         in_vehicle_A = sk_arr - board_arr
         if in_vehicle_A < 0:
             in_vehicle_A += 24 * 60
@@ -1793,7 +1819,6 @@ def find_bus_transfer_routes(
         if in_vehicle_B <= 0:
             continue
 
-        # Transfer walk time (OSMnx) — skip if Sk and T are the same stop
         same_stop = (sk_sid == t_stop_id)
         if same_stop:
             transfer_walk_min = 0.0
@@ -1812,7 +1837,6 @@ def find_bus_transfer_routes(
         if total_no_wait + wait_min_A + _LEG2_WAIT_ESTIMATE > _MAX_TRIP_MINUTES:
             continue
 
-        # Look up direction strings for both transit legs
         direction_A = next(
             (a.get("direction", short_A)
              for a in bus_arrivals
@@ -1876,6 +1900,56 @@ def find_bus_transfer_routes(
 
     ranked.sort(key=lambda x: x[0])
     return ranked[:n_routes]
+
+
+def find_bus_transfer_routes(
+    origin_lat: float,
+    origin_lon: float,
+    dest_lat: float,
+    dest_lon: float,
+    bus_arrivals: list[dict],      # from cta_client.get_bus_arrivals(); must include stop_id
+    origin_bus_stops: list[dict],  # from gtfs_loader.find_nearest_bus_stops(); includes walk_minutes
+    n_routes: int = 3,
+) -> list[tuple[float, int, object]]:
+    """
+    Find bus+bus transfer routes from origin to destination.
+
+    Called unconditionally from main.py whenever transit_mode is "Bus" or
+    "All" and live bus arrival data is available. Direct bus-only paths come
+    from the unified graph via find_routes(); this function surfaces the
+    bus+bus transfer itineraries (bus A → walk → bus B) that the graph does
+    not model, since bus-to-bus walk transfers are not represented as graph
+    edges.
+
+    Builds 5-leg routes of the form:
+        WalkLeg  (origin → boarding_stop_A)
+        TransitLeg (route A: boarding_stop_A → transfer_stop_Sk)
+        WalkLeg  (Sk → transfer_boarding_stop_T)   ← minutes=0 if same stop
+        TransitLeg (route B: T → exit_stop_B)
+        WalkLeg  (exit_stop_B → destination)
+
+    Sorting key includes a fixed 7.5-min estimate for the leg-2 wait (half
+    of a typical 15-min CTA headway). This estimate is NOT added to
+    route.walk_minutes_total or route.transit_minutes — those fields retain
+    their strict definitions.
+
+    Returns:
+        list of (total_minutes, wait_minutes_A, Route) sorted by total_minutes.
+        wait_minutes_A is the live wait for route A. Empty list if no
+        transfer routes are found.
+    """
+    sequences = get_bus_stop_sequences()
+    if not sequences or not bus_arrivals or not origin_bus_stops or not _stop_to_routes:
+        return []
+    candidate_map, board_index = _select_transfer_candidates(
+        origin_lat, origin_lon, dest_lat, dest_lon, bus_arrivals, origin_bus_stops, sequences,
+    )
+    if not candidate_map:
+        return []
+    return _build_transfer_routes(
+        candidate_map, board_index, bus_arrivals, sequences,
+        origin_lat, origin_lon, dest_lat, dest_lon, n_routes,
+    )
 
 
 # ---------------------------------------------------------------------------

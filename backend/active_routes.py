@@ -44,8 +44,11 @@ TRAIN_LINES: dict[str, str] = {
     "Y":    "Yellow Line",
 }
 
-BUS_ROUTES_URL      = "https://www.ctabustracker.com/bustime/api/v3/getroutes"
-TRAIN_POSITIONS_URL = "https://lapi.transitchicago.com/api/1.0/ttpositions.aspx"
+_CTA_TRAIN_BASE = os.getenv("CTA_TRAIN_API_URL", "https://lapi.transitchicago.com/api/1.0")
+_CTA_BUS_BASE   = os.getenv("CTA_BUS_API_URL",   "https://www.ctabustracker.com/bustime/api/v3")
+
+BUS_ROUTES_URL      = f"{_CTA_BUS_BASE}/getroutes"
+TRAIN_POSITIONS_URL = f"{_CTA_TRAIN_BASE}/ttpositions.aspx"
 GTFS_ROUTES_PATH    = Path(__file__).parent / "gtfs_data" / "routes.txt"
 
 
