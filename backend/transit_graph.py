@@ -672,6 +672,7 @@ def _build_graph() -> tuple[nx.DiGraph, dict[str, dict]]:
             if dist > _TRANSFER_RADIUS_MILES:
                 continue
             walk_min = dist / 3.0 * 60 * _DETOUR_FACTOR  # 3 mph, detour-corrected
+            walk_min = max(walk_min, _TRANSFER_MINUTES)  # apply minimum transfer penalty
             if walk_min > _TRANSFER_WALK_CAP_MIN:
                 continue
             G.add_edge(mapid, stop_id,
@@ -1826,6 +1827,7 @@ def _build_transfer_routes(
             transfer_dirs     = []
         else:
             transfer_walk_min = street_walk_minutes(sk_lat, sk_lon, t_lat_s, t_lon_s)
+            transfer_walk_min = max(transfer_walk_min, _TRANSFER_MINUTES)  # apply minimum transfer penalty
             transfer_path     = street_walk_path(sk_lat, sk_lon, t_lat_s, t_lon_s)
             transfer_dirs     = street_walk_directions(sk_lat, sk_lon, t_lat_s, t_lon_s)
 
