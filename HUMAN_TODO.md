@@ -36,7 +36,7 @@ Claude cannot do these. Check them off as you go.
 - [x] Go back to Railway and set `ALLOWED_ORIGINS` → your Vercel URL, then redeploy
 - [x] Update `frontend/.env.production` with the real Railway URL and commit
 - [x] Test the live app end-to-end on the public URLs
-- [ ] (Optional) Add a custom domain in Vercel dashboard → Settings → Domains
+- [ ] (Optional) Add a custom domain in Vercel dashboard → Settings → Domains --Maybe something like "Chicago Routefinder"
 
 ---
 
@@ -60,7 +60,7 @@ Claude cannot do these. Check them off as you go.
 - [ ] Research and select an ad network (Google AdSense is the standard starting point for a utility app)
 - [ ] Apply for AdSense account at adsense.google.com — requires a live public URL, so do this after Phase 6
 - [ ] Share AdSense publisher ID with Claude to wire up ad placements in the frontend
-
+- [ ] Look into Amazon Associates or other affiliate link "Home-Ad" opportunities
 ---
 
 ## Post-Deployment Cleanup

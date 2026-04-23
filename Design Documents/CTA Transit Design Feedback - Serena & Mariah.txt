@@ -1,0 +1,38 @@
+Notes on Transit Design Feedback 4/21/2026 Mariah and Serena
+-best choice Direction 2 - editorial/printed map
+
+Likes:
+-palatable color scheme - neutral
+-bold numbers
+-enjoyable and easily readable fonts
+-typography forward focus
+-chicago-focused themes (names like "The Chicago Transit Almanac, printed in chicago notice at bottom of screen)
+-focus on daily commuter, average individual
+-lack of symbols, replaced by simple words/phrases - good for translation purposes
+-concise wording
+-faded color for train line (blue for blue line, red for red, etc.)
+-mariah likes bl, rd, br within bubble to designate train line - serena unsure
+-accessible for out of towners/travellers
+-"begin this journey"
+-explorer, adventurer undertones
+-date and time at top corner at all times
+-cross off previous train/bus stop as in motion
+-itinerary layout, bullet point style
+-really like that it says which exit to take (maybe not necessary to say NE corner)
+-like frequents option (could be a widget to add on screen)
+-font size of number for time is good 
+-subtle highlight around color on map
+-star for destination
+-shows stops along the way
+-your train in the corner
+-alert before stop great idea (really good for travellers)
+
+Suggested changes:
+-change name - not almanac
+-recommended options not only based on amount of time but dropdown menu for different purposes (time, walking/getting steps in, avoiding bus/train routes, avoiding inclement weather, etc.)
+-incorporate step counter
+-incorporate change departure/arrival time
+-need more clarity on notices/delays
+-obvious marker on map of where you are (choose avatar or symbol)
+-alert before stop could have different dropdown options (flash across screen, short buzz, sound, image, etc. - option for greater detail or notice especially beneficial for travellers)
+-maybe different modes for daily commuter, casual rider, out of towner, more or less info about how to use transit system (example - out of towners get reminder or notice that you should exit your seat and walk towards the doors BEFORE you get to your stop bc the train opens/cloes quickly, etc.)
