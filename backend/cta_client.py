@@ -14,6 +14,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import aiohttp
+import config as _cfg
 
 # Tracks raw psgld values seen from the API — logged once per unique value so
 # we can verify the actual format against our normalization assumption.
@@ -53,11 +54,14 @@ async def _fetch_station_arrivals(
     params = {
         "key": train_key,
         "mapid": mapid,
-        "max": 6,
+        "max": _cfg.CTA_MAX_ARRIVALS_PER_STATION,
         "outputType": "JSON",
     }
     try:
-        async with session.get(TRAIN_BASE, params=params, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+        async with session.get(
+            TRAIN_BASE, params=params,
+            timeout=aiohttp.ClientTimeout(total=_cfg.CTA_API_TIMEOUT_SECONDS),
+        ) as resp:
             data = await resp.json(content_type=None)
     except Exception as exc:
         return [{"_error": True, "exc": f"Train API error for {station_label}: {exc}", "mode": "train"}]
@@ -163,7 +167,8 @@ async def _fetch_bus_chunk(
 
     try:
         async with session.get(
-            BUS_BASE, params=params, timeout=aiohttp.ClientTimeout(total=8)
+            BUS_BASE, params=params,
+            timeout=aiohttp.ClientTimeout(total=_cfg.CTA_API_TIMEOUT_SECONDS),
         ) as resp:
             data = await resp.json(content_type=None)
     except Exception as exc:

@@ -6,7 +6,7 @@ Known issues catalogued for future fixing. Severity: 🔴 High · 🟡 Medium ·
 
 ---
 
-### BUG-007 · Transit photos missing from production
+## BUG-007 · Transit photos missing from production
 
 - **File**: `frontend/public/transit-photos/` (directory), `frontend/src/App.jsx` (`PHOTOS` array)
 - **Severity**: Low

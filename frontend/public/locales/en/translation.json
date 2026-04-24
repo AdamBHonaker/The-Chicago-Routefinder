@@ -47,5 +47,18 @@
   "aria_loading": "Finding your route",
   "mode_all": "All modes",
   "mode_train": "Train",
-  "mode_bus": "Bus"
+  "mode_bus": "Bus",
+  "fav_save_location": "Save location",
+  "fav_unsave_location": "Remove saved location",
+  "fav_save": "Save",
+  "fav_cancel": "Cancel",
+  "fav_limit_reached": "Limit reached — delete a saved item first.",
+  "fav_label_placeholder": "Name this location…",
+  "fav_route_label_placeholder": "Name this route…",
+  "fav_saved_routes_heading": "Saved routes",
+  "fav_save_route": "Save ☆",
+  "fav_saved_route": "Saved ★",
+  "fav_routes_empty": "No saved routes yet. Save a route after getting directions.",
+  "fav_delete": "Delete",
+  "fav_go": "Go"
 }

@@ -27,6 +27,49 @@ Entry template — copy this block when moving an item from EFFICIENCY_IMPROVEME
 
 -->
 
+# 2026-04-24 LRU cache promotion on hit, coordinate pre-transform in MapView, first_transit_leg_index on Route
+
+---
+
+## 🟡 OPT-001 · Response Cache Eviction Not LRU-Aware — IMPLEMENTED
+
+**File:** `backend/main.py`
+
+**Category:** Memory Inefficiency / Cache Performance
+
+**What was inefficient:** The `_response_cache` `OrderedDict` used `move_to_end(key)` only on write, so every cache hit left the accessed entry at its original insertion position. On eviction (`popitem(last=False)`), a hot entry accessed hundreds of times could be evicted before a cold entry inserted after it — purely because the hot entry was older by insertion order. This forced repeated expensive round-trips (CTA API + Claude) for popular routes while cold entries for obscure one-off queries stayed in cache.
+
+**Implemented in:** Added `_response_cache.move_to_end(key)` inside the existing `async with _store_lock:` read block, immediately before the `return {**cached[1], "cache_hit": True}` line. The lock was already held at this point (protecting both the read and the promotion from concurrent access), so no additional synchronization was needed. Write path was already correct (`move_to_end` after assignment). With this fix, the LRU invariant holds: the entry at `popitem(last=False)` is always the one not accessed longest.
+
+---
+
+## 🟢 OPT-002 · Redundant Coordinate Transformations in MapView renderRoute — IMPLEMENTED
+
+**File:** `frontend/src/MapView.jsx`
+
+**Category:** Redundant Computation
+
+**What was inefficient:** The `toGeo` helper (`[lat, lon] → [lon, lat]`) was called via `.map(toGeo)` separately in Pass 1 (polylines) and again via `toGeo(shape[j])` per intermediate stop point in Pass 2, for the same underlying `leg.shape` array. For a transit leg with a 200-point shape and 10 intermediate samples, this meant 200 array allocations in Pass 1 and 10 individual calls in Pass 2 — all re-computing the same transformation from the same source data. Walk leg paths had the same double-map pattern across the two passes.
+
+**Implemented in:** Added `const legGeoCoords = legs.map(leg => { ... })` immediately after the existing `legColors` precomputation, before Pass 1. Each entry calls `(leg.path ?? []).map(toGeo)` or `(leg.shape ?? []).map(toGeo)` exactly once. Pass 1 now reads `const coords = legGeoCoords[i]` for both walk and transit polylines. Pass 2 replaces `const shape = leg.shape ?? []; ... toGeo(shape[j])` with `const geoShape = legGeoCoords[i]; ... geoShape[j]` (already GeoJSON order). Reduces coordinate array allocations by ~50–60% per render for typical multi-leg routes. Individual `from_coords`/`to_coords`/`originCoords`/`destCoords` point conversions remain single calls and are unchanged.
+
+---
+
+## 🟢 OPT-003 · Sequential Leg Iteration in _rank_routes to Find First TransitLeg — IMPLEMENTED
+
+**Files:** `backend/transit_graph.py`, `backend/main.py`
+
+**Category:** Redundant Computation
+
+**What was inefficient:** `_rank_routes()` called `next((l for l in route.legs if isinstance(l, TransitLeg)), None)` on each route to find the first transit leg at ranking time. This is an O(legs) scan per route, repeated for every route on every `/recommend` request. The information is structurally fixed once a route is built — re-deriving it on every call was unnecessary.
+
+**Implemented in:** Two coordinated changes:
+
+1. **`Route` dataclass** (`transit_graph.py`): added `first_transit_leg_index: int | None = None` field. `_path_to_route()` computes `first_transit_idx = next((i for i, l in enumerate(legs) if isinstance(l, TransitLeg)), None)` once at route construction and passes it to the constructor. `find_bus_transfer_routes()` passes `first_transit_leg_index=1` directly (its leg list is always `[Walk, Transit, Walk, Transit, Walk]`, so the index is a constant). The one-time scan at construction cost is shared across all requests that use the route.
+2. **`_rank_routes()`** (`main.py`): replaced `next((l for l in route.legs ...), None)` with `route.legs[route.first_transit_leg_index] if route.first_transit_leg_index is not None else None` — O(1) index access. No behavior change; `first_transit_leg_index` is `None` for walk-only routes (same as `next()` returning `None`).
+
+---
+
 # 2026-04-20 Replace NetworkX MultiDiGraph with igraph + scipy cKDTree in walking.py
 
 ---

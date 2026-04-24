@@ -41,6 +41,7 @@ _http_session = requests.Session()
 
 from walking import walk_minutes
 from utils import haversine_miles as _haversine_miles, CHICAGO_BBOX_GOOGLE, SpatialGrid
+import config as _cfg
 
 GTFS_DIR = Path(__file__).parent / "gtfs_data"
 
@@ -56,6 +57,9 @@ _CHICAGO_BOUNDS = CHICAGO_BBOX_GOOGLE
 # back into the snapshot periodically (see _GEOCODE_COMPACT_* below).
 _GEOCODE_CACHE_PATH = Path(__file__).parent / "geocode_cache.json"
 _GEOCODE_JOURNAL_PATH = Path(__file__).parent / "geocode_cache.journal"
+# Sidecar: maps each cached address key to the Unix timestamp it was first stored.
+# Used for age-based eviction — entries older than GEOCODE_CACHE_MAX_AGE_DAYS are removed.
+_GEOCODE_AGES_PATH = Path(__file__).parent / "geocode_cache_ages.json"
 
 # Monthly geocode call cap — prevents runaway API costs.
 # Override with env var GEOCODE_MONTHLY_LIMIT (e.g. set to 0 to disable).
@@ -170,16 +174,86 @@ def _save_geocode_cache(cache: dict) -> bool:
         return False
 
 
+def _load_geocode_ages() -> dict[str, float]:
+    """Load the per-entry insertion timestamps from the sidecar ages file."""
+    if _GEOCODE_AGES_PATH.exists():
+        try:
+            return json.loads(_GEOCODE_AGES_PATH.read_text(encoding="utf-8"))
+        except Exception as exc:
+            print(f"[gtfs_loader] Could not load geocode ages: {exc}")
+    return {}
+
+
+def _save_geocode_ages(ages: dict[str, float]) -> None:
+    """Atomically persist the ages dict to disk."""
+    tmp = _GEOCODE_AGES_PATH.with_suffix(".ages.tmp")
+    try:
+        tmp.write_text(json.dumps(ages, indent=2), encoding="utf-8")
+        tmp.replace(_GEOCODE_AGES_PATH)
+    except Exception as exc:
+        print(f"[gtfs_loader] Could not save geocode ages: {exc}")
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _evict_old_geocode_entries() -> int:
+    """Remove geocode entries whose recorded age exceeds _GEOCODE_MAX_AGE_SECONDS.
+
+    Must be called under _geocode_lock.  Mutates _geocode_cache and _geocode_ages
+    in-place, then persists the trimmed ages file.  Returns the number of entries
+    removed.
+    """
+    now = time.time()
+    cutoff = now - _GEOCODE_MAX_AGE_SECONDS
+    stale = [k for k, ts in _geocode_ages.items() if ts < cutoff]
+    for k in stale:
+        _geocode_cache.pop(k, None)
+        _geocode_ages.pop(k, None)
+    if stale:
+        print(
+            f"[gtfs_loader] Age-based eviction removed {len(stale)} geocode "
+            f"entries older than {_cfg.GEOCODE_CACHE_MAX_AGE_DAYS} days"
+        )
+        _save_geocode_ages(_geocode_ages)
+    return len(stale)
+
+
 # Loaded once at import time; dirty entries are flushed by background thread.
 _geocode_cache: dict[str, tuple[float, float] | None] = _load_geocode_cache()
 
+# {address_key: Unix timestamp of first insertion} — persisted to _GEOCODE_AGES_PATH.
+# Entries without a recorded age are treated as immortal (survive any eviction sweep)
+# so that pre-existing cache files are never silently cleared on first upgrade.
+_geocode_ages: dict[str, float] = _load_geocode_ages()
+
+# Apply age-based eviction at startup so stale entries never survive a restart.
+_geocode_max_age_seconds: float = _cfg.GEOCODE_CACHE_MAX_AGE_DAYS * 24 * 3600
+_startup_evict_cutoff = time.time() - _geocode_max_age_seconds
+_startup_evicted = [k for k, ts in _geocode_ages.items() if ts < _startup_evict_cutoff]
+for _k in _startup_evicted:
+    _geocode_cache.pop(_k, None)
+    _geocode_ages.pop(_k, None)
+if _startup_evicted:
+    print(
+        f"[gtfs_loader] Startup eviction removed {len(_startup_evicted)} geocode "
+        f"entries older than {_cfg.GEOCODE_CACHE_MAX_AGE_DAYS} days"
+    )
+del _startup_evict_cutoff, _startup_evicted  # clean up loop vars
+
 # Entries added since the last journal append. Always mutated under _geocode_lock.
 _geocode_pending: dict[str, tuple[float, float] | None] = {}
-_GEOCODE_FLUSH_INTERVAL = 30  # seconds between background flushes
-_GEOCODE_COMPACT_INTERVAL = 3600  # seconds between full snapshot rewrites
-_GEOCODE_COMPACT_THRESHOLD = 500  # journal entries that force an early compaction
+_GEOCODE_FLUSH_INTERVAL = 30        # seconds between background flushes
+_GEOCODE_COMPACT_INTERVAL = 3600    # seconds between full snapshot rewrites
+_GEOCODE_COMPACT_THRESHOLD = 500    # journal entries that force an early compaction
 _geocode_last_compact: float = time.monotonic()
-_geocode_journal_entries: int = 0  # lines appended since last full snapshot
+_geocode_journal_entries: int = 0   # lines appended since last full snapshot
+
+# Age-based eviction schedule.
+_GEOCODE_MAX_AGE_SECONDS: float = _geocode_max_age_seconds
+_GEOCODE_EVICT_INTERVAL: int    = _cfg.GEOCODE_EVICT_INTERVAL_SECONDS
+_geocode_last_eviction: float   = time.monotonic()
 
 
 def _append_geocode_journal(entries: dict[str, tuple[float, float] | None]) -> None:
@@ -199,19 +273,30 @@ def _append_geocode_journal(entries: dict[str, tuple[float, float] | None]) -> N
 
 
 def _flush_geocode_cache_if_dirty() -> None:
-    """Append pending entries to the journal; compact to a full snapshot periodically."""
+    """Append pending entries to the journal; compact to a full snapshot periodically.
+
+    Also runs age-based eviction once per _GEOCODE_EVICT_INTERVAL (weekly by default)
+    so the cache does not grow unbounded even when compaction thresholds are never hit.
+    """
     global _geocode_pending, _geocode_last_compact, _geocode_journal_entries
+    global _geocode_last_eviction
     with _geocode_lock:
+        # Weekly age-based sweep — independent of compaction thresholds.
+        now_mono = time.monotonic()
+        if now_mono - _geocode_last_eviction >= _GEOCODE_EVICT_INTERVAL:
+            _evict_old_geocode_entries()
+            _geocode_last_eviction = now_mono
+
         if not _geocode_pending:
             # Even with no new entries, honor a time-based compaction so any prior
             # journal growth gets folded back into the snapshot eventually.
             if (
                 _geocode_journal_entries > 0
-                and time.monotonic() - _geocode_last_compact >= _GEOCODE_COMPACT_INTERVAL
+                and now_mono - _geocode_last_compact >= _GEOCODE_COMPACT_INTERVAL
             ):
                 _save_geocode_cache(_geocode_cache)
                 _geocode_journal_entries = 0
-                _geocode_last_compact = time.monotonic()
+                _geocode_last_compact = now_mono
             return
         pending = _geocode_pending
         _geocode_pending = {}
@@ -566,6 +651,7 @@ def geocode_google(query: str) -> tuple[float, float] | None:
                 coords: tuple[float, float] = (float(loc["lat"]), float(loc["lng"]))
                 _geocode_cache[query] = coords
                 _geocode_pending[query] = coords
+                _geocode_ages[query] = time.time()  # record insertion time for age-based eviction
                 _increment_geocode_call_count()
                 print(
                     f"[gtfs_loader] Geocoded and cached '{query}' -> {coords} "
@@ -580,6 +666,7 @@ def geocode_google(query: str) -> tuple[float, float] | None:
             if status == "ZERO_RESULTS":
                 _geocode_cache[query] = None
                 _geocode_pending[query] = None
+                _geocode_ages[query] = time.time()
         except Exception as exc:
             print(f"[gtfs_loader] Google geocoding failed for '{query}': {exc}")
             # Don't cache transient network/timeout errors — allow retries.
@@ -851,6 +938,8 @@ assert len(_ABBR_MAP) == len(_ABBR_PAIRS), (
 )
 # Sort longest-first so longer patterns are tried before shorter ones
 _sorted_abbrs = sorted(_ABBR_MAP, key=len, reverse=True)
+_COORD_RE = re.compile(r"^(-?\d{1,3}\.?\d*),\s*(-?\d{1,3}\.?\d*)$")
+
 _STREET_ABBR_RE = re.compile(
     # Lookahead (?=\s*(?:,|$)) requires the token to be at end-of-string or
     # immediately before a comma.  This prevents "St." in "St. Michael's Church"
@@ -889,6 +978,18 @@ def resolve_location(query: str) -> tuple[list[dict], list[dict], str | None]:
         matched_name is the dict key or the original query if geocoded.
     """
     original_query = query.strip()
+
+    # Fast-path: GPS coordinate strings (e.g. "41.893,-87.631") bypass all fuzzy
+    # matching and geocoding so they never hit geocode_google(), avoiding extra latency.
+    m = _COORD_RE.match(original_query)
+    if m:
+        lat, lon = float(m.group(1)), float(m.group(2))
+        return (
+            find_nearest_train_stations(lat, lon),
+            find_nearest_bus_stops(lat, lon),
+            original_query,
+        )
+
     q = original_query.lower()
     q = _normalize_street_abbr(q)          # expand "Ave" → "avenue", etc.
 

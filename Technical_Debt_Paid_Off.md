@@ -6,6 +6,31 @@ Priority: 🔴 High · 🟡 Medium · 🟢 Low.
 
 ---
 
+## 🔴 TD-011 · No automated test suite — zero coverage — RESOLVED
+
+**Files added:** `backend/tests/__init__.py`, `backend/tests/conftest.py`, `backend/tests/test_utils.py`, `backend/tests/test_transit_graph.py`, `backend/tests/test_main_helpers.py`, `backend/tests/test_gtfs_loader.py`
+
+**What it was:** The project had zero automated tests — no `tests/`, `.test.py`, or `.test.js` files anywhere. Any change to routing logic, geocoding, or the API contract could break silently with no safety net.
+
+**How it was resolved:** Created a `backend/tests/` pytest suite with **147 tests** covering the highest-risk pure functions across all four backend modules. The suite runs in ~4 seconds without GTFS files, CTA API keys, or a running server.
+
+Test files and what they cover:
+
+- **`test_utils.py`** (19 tests) — `haversine_miles` (symmetry, known distances, triangle inequality) and `SpatialGrid` (add/query/cell_count, radius filtering, multi-entry cells).
+- **`test_transit_graph.py`** (56 tests) — `_bearing_to_direction` (all four cardinals, degenerate same-point), `_parse_gtfs_time` (midnight, noon, past-midnight GTFS convention, seconds), `clip_shape` (None/empty fallback, clipping, reversal, degenerate same-point), `Route` / `WalkLeg` / `TransitLeg` dataclasses (defaults, properties, `summary()`), `_dedup_stations_by_line` (same-line dedup, different-line kept, ghost node, transfer edges excluded).
+- **`test_main_helpers.py`** (51 tests) — `_cache_key` (lowercase, strip, all differentiators), `_check_rate_limit` (disabled, under-cap, minute-cap, hour-cap, stale-eviction), `_is_simple_query`, `_alert_ids_from_routes`, `build_prompt` (mode constraints, language instructions, alert inclusion/exclusion), `_format_routes` (option numbers, wait display, transfer count), `RouteRequest` Pydantic validators (transit_mode, bus_fullness, anthropic_api_key prefix, defaults).
+- **`test_gtfs_loader.py`** (21 tests) — `_normalize_street_abbr` (avenue/boulevard/street expansions, case-insensitivity, comma-boundary), `fuzzy_match_neighborhood` (exact match, no match, Chicago coordinate bounds, self-match sweep over all keys).
+
+`conftest.py` adds `backend/` to `sys.path` and creates header-only GTFS stub files in `backend/gtfs_data/` if the feed is absent (CI safety net) — real data is never overwritten.
+
+`pytest>=8.0` was added to `backend/requirements.txt`.
+
+Run the suite from `backend/` with: `python -m pytest tests/ -v`
+
+**Date resolved:** 2026-04-24
+
+---
+
 ## 🔴 TD-001 · Haversine distance formula duplicated in three files — RESOLVED
 
 **Files affected:** `backend/walking.py`, `backend/gtfs_loader.py`, `backend/transit_graph.py`, `backend/fetch_station_exits.py`
@@ -191,3 +216,66 @@ Priority: 🔴 High · 🟡 Medium · 🟢 Low.
 **How it was resolved:** The one-line TODO was replaced with a multi-line expansion guide in `utils.py` documenting: the current coverage bounds (Howard St → ~21st St/Cermak Rd), the target expansion (50th St ≈ 41.80°, Cicero Ave ≈ -87.745°), and a four-step checklist (verify Railway RAM headroom ≥ 2 GB free, lower the two constants, re-run `fetch_street_graph.py`, redeploy and confirm no OOM). The `fetch_street_graph.py` header comment already pointed to the `utils.py` definition — no change needed there. The expansion itself is deferred until Railway memory headroom is confirmed; the checklist is the contract for a future session.
 
 **Date resolved:** 2026-04-20
+
+---
+
+## 🟡 TD-012 · Magic numbers scattered throughout codebase — RESOLVED
+
+**Files affected:** `backend/transit_graph.py`, `backend/cta_client.py`, `backend/walking.py`
+
+**What it was:** Routing tuning parameters were scattered across three backend files. While most were already in named module-level variables (good), two genuine magic literals remained in `cta_client.py`: `"max": 6` (arrivals fetched per station from the Train Tracker API) and `timeout=aiohttp.ClientTimeout(total=8)` (HTTP timeout, appearing twice for train and bus clients). No single file gave a complete picture of all tunable routing constants.
+
+**How it was resolved:** Created `backend/config.py` as the single authoritative source for all routing parameters. The file defines 16 named constants across four categories (transit graph constraints, intermodal walk-edge tuning, walking speed/block thresholds, and CTA API limits), each with a comment explaining its purpose, units, and typical range. All constants support env-var overrides (e.g. `CTA_API_TIMEOUT_SECONDS=10` in Railway) so routing behaviour can be tuned without a code deploy. `transit_graph.py` and `walking.py` now import their constants from `config.py` via `import config as _cfg` with `_cfg.CONSTANT` references. `cta_client.py` replaced its inline `6` and `8` literals with `_cfg.CTA_MAX_ARRIVALS_PER_STATION` and `_cfg.CTA_API_TIMEOUT_SECONDS`.
+
+**Date resolved:** 2026-04-24
+
+---
+
+## 🟡 TD-013 · App.jsx was 1,165 lines containing 6 inline sub-components — RESOLVED
+
+**File affected:** `frontend/src/App.jsx`
+
+**What it was:** `App.jsx` had grown to 1,165 lines and contained six standalone sub-components (`TransitPhoto`, `WalkLegItem`, `RouteLegs`, `RouteCard`, `SettingsPanel`, `LoadingSkeleton`) plus `formatBlocks` helper, all defined inline in the same file. Testing, debugging, or reading any individual component required navigating a 1,100-line file.
+
+**How it was resolved:** Created `frontend/src/components/` and extracted all six components into four files:
+
+- `components/TransitPhoto.jsx` — photo carousel with local `PHOTOS` constant
+- `components/RouteCard.jsx` — `WalkLegItem`, `RouteLegs`, and `RouteCard` in one file (they are tightly coupled and share `formatBlocks`)
+- `components/SettingsPanel.jsx` — BYOK/AI settings dialog; reads `VITE_BYOK_ENABLED` directly
+- `components/LoadingSkeleton.jsx` — loading animation
+
+`App.jsx` was updated to import from these files, removing ~250 lines. It now focuses on layout, state management, and event handlers. `LINE_COLORS`/`BUS_DIRECTION_COLORS` imports were moved out of `App.jsx` into `RouteCard.jsx` where they are actually used.
+
+**Date resolved:** 2026-04-24
+
+---
+
+## 🟢 TD-014 · Frontend fetch had no retry logic — transient 5xx failures required manual re-submit — RESOLVED
+
+**File affected:** `frontend/src/App.jsx`
+
+**What it was:** Both `handleSubmit()` and `handleReroute()` used a bare `fetch()` call with a single try/catch. Any 5xx server error or network hiccup caused an immediate error message; the user had to manually re-submit.
+
+**How it was resolved:** Added `fetchWithRetry(url, options, onRetrying)` as a module-level helper in `App.jsx`. It retries up to 3 times (1 s → 2 s → 4 s delays) on network failures and HTTP 5xx responses. 4xx errors and `AbortError` (user cancelled) are not retried. During each retry, `onRetrying` is called to update the error state with "Network error — retrying... (N/3)" so the user sees feedback instead of a blank error. Both `handleSubmit` and `handleReroute` now call `fetchWithRetry` instead of bare `fetch`.
+
+**Date resolved:** 2026-04-24
+
+---
+
+## 🟢 TD-015 · Geocoding cache had no age-based eviction — entries accumulated indefinitely — RESOLVED
+
+**File affected:** `backend/gtfs_loader.py`
+
+**What it was:** The geocoding cache (snapshot + append-only journal) only compacted when 500 new entries were added or 1 hour had elapsed. On a low-traffic server, neither threshold might be hit for days, leaving stale/redundant entries in the cache indefinitely. Over months this could produce a 10k+ entry cache with entries for addresses never queried again.
+
+**How it was resolved:** Added two complementary garbage-collection mechanisms:
+
+1. **Age-based eviction with sidecar file**: New geocode entries (both successful coords and `ZERO_RESULTS` misses) now record their Unix insertion timestamp in `geocode_cache_ages.json` alongside the main cache. Three new helpers manage this: `_load_geocode_ages()`, `_save_geocode_ages()`, and `_evict_old_geocode_entries()`. The max age defaults to 90 days and is configurable via `GEOCODE_MAX_AGE_DAYS` env var. Pre-existing cache entries without a recorded age are treated as immortal (they survive eviction), so upgrading does not silently clear a populated cache.
+
+2. **Weekly background sweep**: `_flush_geocode_cache_if_dirty()` (the existing 30-second background daemon) now also checks `_geocode_last_eviction` and calls `_evict_old_geocode_entries()` once per `GEOCODE_EVICT_INTERVAL_SECONDS` (default: 7 days). This is independent of the compaction thresholds, so the cache is trimmed even on quiet servers.
+
+3. **Startup eviction**: On module import, any entries already in `_geocode_ages` that exceed the max age are evicted immediately, so stale entries don't survive a server restart.
+
+All constants (`GEOCODE_CACHE_MAX_AGE_DAYS`, `GEOCODE_EVICT_INTERVAL_SECONDS`) live in `backend/config.py`.
+
+**Date resolved:** 2026-04-24

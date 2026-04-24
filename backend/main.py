@@ -4,7 +4,7 @@ import os
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
 from dotenv import load_dotenv
@@ -14,6 +14,8 @@ import anthropic
 # gtfs_loader.py reads GOOGLE_MAPS_API_KEY at module level (import time),
 # so the .env file must be loaded into os.environ first.
 load_dotenv()
+
+import dau
 
 from gtfs_loader import (
     resolve_location, geocode_google, NEIGHBORHOOD_COORDS,
@@ -106,12 +108,6 @@ def _check_rate_limit(ip: str) -> bool:
     # Evict timestamps older than one hour to bound memory growth
     while window and now - window[0] > 3600:
         window.popleft()
-    # If all entries expired and the deque is now empty, remove the dict entry
-    # so IPs that never return don't accumulate indefinitely.  `window` still
-    # holds the deque reference, so the append below works for this request —
-    # it just won't persist to _rate_store (next request starts fresh).
-    if not window:
-        del _rate_store[ip]
     # Per-hour check
     if len(window) >= _RATE_LIMIT_RPH:
         return False
@@ -264,16 +260,20 @@ def _build_arrival_lookup(
     train_arrivals: list[dict],
 ) -> dict[tuple[str, str], dict[str, int]]:
     """
-    (line_code, station_mapid) -> {destNm: earliest_minutes}
+    (line_code, station_mapid) -> {destNm: earliest_catchable_minutes}
 
-    Groups all arrivals by destination so _rank_routes can select the one
-    going in the correct direction rather than blindly taking the earliest.
+    Groups arrivals by destination so _rank_routes can select the one going in
+    the correct direction.  Arrivals where arrives_in_minutes < walk_minutes
+    are skipped — the user cannot reach the station in time for those trains.
     """
     lookup: dict[tuple[str, str], dict[str, int]] = {}
     for a in train_arrivals:
         key = (a.get("line_code", ""), a.get("station_mapid", ""))
         dest = a.get("destination", "")
         minutes = a["arrives_in_minutes"]
+        walk = a.get("walk_minutes", 0)
+        if minutes < walk:
+            continue
         dests = lookup.setdefault(key, {})
         if dest not in dests or minutes < dests[dest]:
             dests[dest] = minutes
@@ -330,16 +330,33 @@ def _rank_routes(
     Add live wait time to each route and sort by total (walk + wait + transit).
     Returns list of (total_with_wait, wait_minutes, route).
     Bearing-based direction selection is delegated to _pick_wait().
+
+    wait (arrives_in_minutes) is the time from NOW until the train arrives.
+    The station wait is (wait - first_walk), so total = arrives_in_minutes +
+    transit + other_walks — the first walk is not double-counted.
     """
     ranked = []
     for route in routes:
-        first_transit = next((l for l in route.legs if isinstance(l, TransitLeg)), None)
+        first_transit = (
+            route.legs[route.first_transit_leg_index]
+            if route.first_transit_leg_index is not None
+            else None
+        )
         wait: int | None = None
         if first_transit:
             key = (first_transit.line_code, first_transit.from_mapid)
             dest_map = arrival_lookup.get(key, {})
             wait = _pick_wait(dest_map, first_transit.from_mapid, first_transit.to_mapid)
-        total = route.total_minutes_no_wait + (wait if wait is not None else 0)
+        if wait is not None:
+            first_walk = next(
+                (l.minutes for l in route.legs
+                 if isinstance(l, WalkLeg) and l.from_name == "Your location"),
+                0.0,
+            )
+            station_wait = max(0.0, wait - first_walk)
+            total = route.total_minutes_no_wait + station_wait
+        else:
+            total = route.total_minutes_no_wait
         ranked.append((total, wait, route))
     ranked.sort(key=lambda x: x[0])
     return ranked
@@ -1018,6 +1035,22 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/ping")
+async def ping(http_request: Request):
+    ip = _client_ip(http_request)
+    await dau.record_visit(ip)
+    return {"ok": True}
+
+
+@app.get("/admin/dau")
+async def admin_dau(authorization: str | None = Header(default=None)):
+    token = os.getenv("DAU_ADMIN_TOKEN", "")
+    expected = f"Bearer {token}" if token else None
+    if not expected or authorization != expected:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    return await dau.get_counts()
+
+
 @app.post("/recommend")
 async def recommend(request: RouteRequest, http_request: Request):
     ip = _client_ip(http_request)
@@ -1051,6 +1084,7 @@ async def recommend(request: RouteRequest, http_request: Request):
         cached = _response_cache.get(key)
         if cached:
             if time.monotonic() < cached[0]:
+                _response_cache.move_to_end(key)  # promote to MRU position (LRU eviction)
                 return {**cached[1], "cache_hit": True}
             _response_cache.pop(key, None)  # evict stale entry
 

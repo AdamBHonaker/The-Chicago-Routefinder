@@ -1,0 +1,18 @@
+Defaulting to user installation because normal site-packages is not writeable
+Collecting pytest
+  Downloading pytest-9.0.3-py3-none-any.whl.metadata (7.6 kB)
+Requirement already satisfied: colorama>=0.4 in C:\Users\Adam & Serena\AppData\Roaming\Python\Python314\site-packages (from pytest) (0.4.6)
+Collecting iniconfig>=1.0.1 (from pytest)
+  Downloading iniconfig-2.3.0-py3-none-any.whl.metadata (2.5 kB)
+Requirement already satisfied: packaging>=22 in C:\Users\Adam & Serena\AppData\Roaming\Python\Python314\site-packages (from pytest) (26.0)
+Collecting pluggy<2,>=1.5 (from pytest)
+  Downloading pluggy-1.6.0-py3-none-any.whl.metadata (4.8 kB)
+Requirement already satisfied: pygments>=2.7.2 in C:\Users\Adam & Serena\AppData\Roaming\Python\Python314\site-packages (from pytest) (2.20.0)
+Downloading pytest-9.0.3-py3-none-any.whl (375 kB)
+Downloading pluggy-1.6.0-py3-none-any.whl (20 kB)
+Downloading iniconfig-2.3.0-py3-none-any.whl (7.5 kB)
+Installing collected packages: pluggy, iniconfig, pytest
+  WARNING: The scripts py.test.exe and pytest.exe are installed in 'C:\Users\Adam & Serena\AppData\Roaming\Python\Python314\Scripts' which is not on PATH.
+  Consider adding this directory to PATH or, if you prefer to suppress this warning, use --no-warn-script-location.
+
+Successfully installed iniconfig-2.3.0 pluggy-1.6.0 pytest-9.0.3

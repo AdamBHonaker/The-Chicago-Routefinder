@@ -511,6 +511,131 @@
   color: #ccc;
 }
 
+/* ── Feature Trip — active/complete leg highlighting ─────────────────────── */
+
+.leg-active {
+  border-left: 3px solid #4A90E2;
+  padding-left: 8px;
+  margin-left: -11px;
+}
+
+.leg-complete {
+  opacity: 0.5;
+}
+
+.leg-complete-check {
+  font-size: 0.75rem;
+  color: #4A90E2;
+  flex-shrink: 0;
+  margin-top: 0.1rem;
+}
+
+.leg-step--complete {
+  opacity: 0.5;
+}
+
+.leg-step-complete-check {
+  color: #4A90E2;
+  margin-right: 2px;
+}
+
+/* ── Feature Trip — Start/Stop Trip buttons ──────────────────────────────── */
+
+.route-card-trip-footer {
+  padding: 8px 16px 12px;
+  display: flex;
+  justify-content: flex-end;
+  border-top: 1px solid #222;
+}
+
+.start-trip-btn {
+  background: #1a5bad;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 7px 16px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.start-trip-btn:hover {
+  background: #2068cc;
+}
+
+.stop-trip-btn {
+  background: #3a2020;
+  color: #e09090;
+  border: 1px solid #5a3030;
+  border-radius: 6px;
+  padding: 7px 16px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.stop-trip-btn:hover {
+  background: #4a2a2a;
+}
+
+/* ── Feature Trip — Off-route banner ─────────────────────────────────────── */
+
+.off-route-banner {
+  background: #FFF3CD;
+  border-left: 4px solid #D97706;
+  color: #333;
+  padding: 10px 16px;
+  margin-bottom: 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-radius: 0 6px 6px 0;
+  gap: 12px;
+}
+
+.off-route-message {
+  flex: 1;
+  font-size: 0.88rem;
+  font-weight: 500;
+}
+
+.off-route-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.off-route-reroute-btn {
+  background: #1a5bad;
+  color: #fff;
+  border: none;
+  border-radius: 5px;
+  padding: 6px 12px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.off-route-reroute-btn:hover {
+  background: #2068cc;
+}
+
+.off-route-dismiss-btn {
+  background: transparent;
+  color: #555;
+  border: 1px solid #bbb;
+  border-radius: 5px;
+  padding: 6px 12px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.off-route-dismiss-btn:hover {
+  background: #f0f0f0;
+}
+
 /* ── MapView component ───────────────────────────────────────────────────── */
 
 .map-view {
@@ -830,4 +955,298 @@
 .settings-clear:hover {
   border-color: #888;
   color: #ccc;
+}
+
+/* ── Favorites — Location field star + dropdown ─────────────────────────── */
+
+.field-wrapper {
+  position: relative;
+}
+
+.field-wrapper input {
+  padding-right: 2.5rem; /* reserve space for the star button */
+}
+
+.star-btn {
+  position: absolute;
+  right: 0.6rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1.1rem;
+  color: #555;
+  padding: 0.2rem;
+  line-height: 1;
+  z-index: 1;
+  transition: color 0.15s;
+}
+.star-btn:hover { color: #f59e0b; }
+.star-btn--saved { color: #f59e0b; }
+
+.label-save-panel {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  margin-top: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.label-save-input {
+  flex: 1;
+  min-width: 0;
+  background: #1a1a1a;
+  border: 1px solid #4a9eff;
+  border-radius: 8px;
+  padding: 0.45rem 0.75rem;
+  font-size: max(0.85rem, 16px);
+  color: #f0f0f0;
+  outline: none;
+}
+
+.label-save-btn {
+  background: #1a5bad;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 0.45rem 0.8rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.label-save-btn:hover { background: #2268cc; }
+
+.label-cancel-btn {
+  background: none;
+  border: 1px solid #444;
+  border-radius: 6px;
+  color: #888;
+  cursor: pointer;
+  font-size: 0.8rem;
+  padding: 0.45rem 0.8rem;
+  white-space: nowrap;
+}
+.label-cancel-btn:hover { border-color: #888; color: #ccc; }
+
+.fav-limit-error {
+  font-size: 0.75rem;
+  color: #f87171;
+  width: 100%;
+}
+
+.saved-dropdown {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  background: #1a1a1a;
+  border: 1px solid #2e2e2e;
+  border-radius: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0.25rem 0;
+  z-index: 100;
+  max-height: 220px;
+  overflow-y: auto;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+
+.saved-dropdown-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 0.75rem;
+  gap: 0.5rem;
+}
+.saved-dropdown-item:hover { background: #242424; }
+
+.saved-dropdown-label {
+  flex: 1;
+  font-size: 0.88rem;
+  color: #ccc;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.saved-dropdown-delete {
+  background: none;
+  border: none;
+  color: #666;
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0 0.2rem;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.saved-dropdown-delete:hover { color: #f87171; }
+
+/* ── Favorites — Routes section header ───────────────────────────────────── */
+
+.routes-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.6rem;
+}
+
+.routes-section-header .routes-heading {
+  margin-bottom: 0;
+}
+
+.save-route-btn {
+  background: none;
+  border: 1px solid #2e2e2e;
+  border-radius: 6px;
+  color: #888;
+  cursor: pointer;
+  font-size: 0.78rem;
+  padding: 0.2rem 0.55rem;
+  transition: border-color 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+.save-route-btn:hover { border-color: #4a9eff; color: #ccc; }
+.save-route-btn--saved { border-color: #f59e0b; color: #f59e0b; }
+
+.route-label-save-panel {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  margin-bottom: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.route-label-save-input {
+  flex: 1;
+  min-width: 0;
+  background: #1a1a1a;
+  border: 1px solid #4a9eff;
+  border-radius: 6px;
+  padding: 0.35rem 0.6rem;
+  font-size: max(0.82rem, 16px);
+  color: #f0f0f0;
+  outline: none;
+}
+
+.route-label-save-btn {
+  background: #1a5bad;
+  color: #fff;
+  border: none;
+  border-radius: 5px;
+  padding: 0.35rem 0.7rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.route-label-save-btn:hover { background: #2268cc; }
+
+.route-label-cancel-btn {
+  background: none;
+  border: 1px solid #444;
+  border-radius: 5px;
+  color: #888;
+  cursor: pointer;
+  font-size: 0.78rem;
+  padding: 0.35rem 0.7rem;
+  white-space: nowrap;
+}
+.route-label-cancel-btn:hover { border-color: #888; color: #ccc; }
+
+/* ── Favorites — Saved routes panel ─────────────────────────────────────── */
+
+.saved-routes-toggle {
+  background: none;
+  border: 1px solid #2e2e2e;
+  border-radius: 8px;
+  color: #888;
+  cursor: pointer;
+  font-size: max(0.9rem, 16px);
+  padding: 0.35rem 0.55rem;
+  transition: border-color 0.15s, color 0.15s;
+  line-height: 1;
+}
+.saved-routes-toggle:hover { border-color: #4a9eff; color: #ccc; }
+.saved-routes-toggle--open { border-color: #4a9eff; color: #ccc; }
+
+.saved-routes-panel {
+  background: #141414;
+  border: 1px solid #2e2e2e;
+  border-radius: 10px;
+  padding: 0.9rem 1rem;
+}
+
+.saved-routes-panel-heading {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #666;
+  margin-bottom: 0.5rem;
+}
+
+.saved-route-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.45rem 0;
+  border-bottom: 1px solid #1e1e1e;
+  gap: 0.5rem;
+}
+.saved-route-row:last-child { border-bottom: none; }
+
+.saved-route-label {
+  flex: 1;
+  font-size: 0.88rem;
+  color: #ccc;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.saved-route-go {
+  background: #1a5bad;
+  color: #fff;
+  border: none;
+  border-radius: 5px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 0.25rem 0.6rem;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+.saved-route-go:hover { background: #2268cc; }
+
+.saved-route-delete {
+  background: none;
+  border: none;
+  color: #666;
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0 0.2rem;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.saved-route-delete:hover { color: #f87171; }
+
+.saved-routes-empty {
+  font-size: 0.85rem;
+  color: #555;
+  font-style: italic;
+}
+
+/* ── RTL overrides for favorites ─────────────────────────────────────────── */
+
+[dir="rtl"] .star-btn {
+  right: auto;
+  left: 0.6rem;
+}
+
+[dir="rtl"] .field-wrapper input {
+  padding-right: 1rem;
+  padding-left: 2.5rem;
 }

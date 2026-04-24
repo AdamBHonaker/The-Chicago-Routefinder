@@ -18,15 +18,16 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from utils import haversine_miles as _haversine_miles
+import config as _cfg
 
 GRAPH_PATH  = Path(__file__).parent / "street_graph.graphml"
 IGRAPH_PATH = Path(__file__).parent / "street_graph_igraph.pkl"
 
-WALKING_SPEED_MPS = 3.0 * 1609.34 / 3600  # 3 mph → metres per second ≈ 1.34 m/s
-
-_LONG_BLOCK_METERS    = 201.17   # 1/8 mile = 660 ft — N-S numbered-address axis
-_SHORT_BLOCK_METERS   = 100.58   # 1/16 mile = 330 ft — E-W cross streets
-_BLOCK_TYPE_THRESHOLD = 150.0    # midpoint; ≥ threshold → long block
+# Sourced from config.py — edit there to tune walking behaviour.
+WALKING_SPEED_MPS     = _cfg.WALKING_SPEED_MPS        # metres per second ≈ 1.34
+_LONG_BLOCK_METERS    = _cfg.LONG_BLOCK_METERS         # 1/8 mile = 660 ft
+_SHORT_BLOCK_METERS   = _cfg.SHORT_BLOCK_METERS        # 1/16 mile = 330 ft
+_BLOCK_TYPE_THRESHOLD = _cfg.BLOCK_TYPE_THRESHOLD_METERS  # midpoint; ≥ → long block
 
 _DIRECTION_FULL = {
     "N":  "North",     "NE": "Northeast", "E":  "East",      "SE": "Southeast",
@@ -152,6 +153,9 @@ def _get_shortest_path(
     dest_idx = _get_nearest_node(dest_lat, dest_lon)
     if orig_idx is None or dest_idx is None:
         return None
+    n = G.vcount()
+    if orig_idx >= n or dest_idx >= n:
+        return None
     try:
         result = G.get_shortest_paths(orig_idx, to=dest_idx, weights="length", output="epath")
         if not result or not result[0]:
@@ -166,24 +170,6 @@ def _get_shortest_path(
         return (tuple(vpath), tuple(epath))
     except Exception:
         return None
-
-
-def _haversine_walk_minutes(
-    origin_lat: float,
-    origin_lon: float,
-    dest_lat: float,
-    dest_lon: float,
-) -> float:
-    """
-    Estimate walking time (minutes) using straight-line Haversine distance.
-    
-    Fallback when the street network graph is unavailable or routing fails
-    (e.g., when a location falls outside the graph's bounding box).
-    
-    Assumes 3 mph walking speed.
-    """
-    distance_miles = _haversine_miles(origin_lat, origin_lon, dest_lat, dest_lon)
-    return round(distance_miles / 3.0 * 60.0, 1)
 
 
 @lru_cache(maxsize=512)
@@ -211,7 +197,7 @@ def walk_minutes(
 
         _, epath = path
         length_m = sum(G.es[e]["length"] or 0.0 for e in epath)
-        return round(length_m / WALKING_SPEED_MPS / 60, 1)
+        return max(0.1, round(length_m / WALKING_SPEED_MPS / 60, 1))
 
     except Exception:
         return _haversine_walk_minutes(origin_lat, origin_lon, dest_lat, dest_lon)
@@ -238,7 +224,9 @@ def _walk_directions_impl(
         name = attrs.get("name", "")
         if isinstance(name, list):
             name = name[0] if name else ""
-        name = (name or "").strip()
+        if not isinstance(name, str):
+            return "unnamed path"
+        name = name.strip()
         return name if name else "unnamed path"
 
     try:
@@ -249,6 +237,9 @@ def _walk_directions_impl(
         path = _get_shortest_path(origin_lat, origin_lon, dest_lat, dest_lon)
         if path is None:
             raise RuntimeError("path unavailable")
+
+        if _vertex_lats is None or _vertex_lons is None:
+            raise RuntimeError("vertex coordinate arrays unavailable")
 
         vpath, epath = path
 
@@ -293,6 +284,8 @@ def _walk_directions_impl(
                 "blocks":         blocks,
                 "block_type":     block_type,
                 "minutes":        minutes,
+                "start_lat":      lat1,
+                "start_lon":      lon1,
             })
         return tuple(steps)
 
@@ -300,7 +293,7 @@ def _walk_directions_impl(
         total_min = _haversine_walk_minutes(origin_lat, origin_lon, dest_lat, dest_lon)
         fallback_meters = total_min * 60 * WALKING_SPEED_MPS
         fallback_blocks = max(0.5, round(fallback_meters / _LONG_BLOCK_METERS * 2) / 2)
-        return ({"street": "Walk", "direction": "", "direction_full": "", "blocks": fallback_blocks, "block_type": "long", "minutes": total_min},)
+        return ({"street": "Walk", "direction": "", "direction_full": "", "blocks": fallback_blocks, "block_type": "long", "minutes": total_min, "start_lat": origin_lat, "start_lon": origin_lon},)
 
 
 def walk_directions(
@@ -345,6 +338,9 @@ def _walk_path_impl(
         path = _get_shortest_path(origin_lat, origin_lon, dest_lat, dest_lon)
         if path is None:
             raise RuntimeError("path unavailable")
+
+        if _vertex_lats is None or _vertex_lons is None:
+            raise RuntimeError("vertex coordinate arrays unavailable")
 
         vpath, epath = path
 

@@ -28,6 +28,9 @@ A log of features that have been designed and fully implemented. Entries are mov
 15. Claude Haiku for Simple Queries — **Bolt-On**
 16. Multi-Leg Train Routing — Shared-Track Edge Deduplication — **Structural**
 17. Feature Language — Multi-Language Support (i18n) — **Bolt-On**
+18. Feature Trip — Live Trip-in-Progress Routing — **Bolt-On**
+19. Feature Favorites — Saved Locations & Routes — **Bolt-On**
+20. Feature DAU — Daily Unique User Counting — **Bolt-On**
 
 ---
 
@@ -311,6 +314,38 @@ Frontend:
 
 ---
 
+## Feature Trip — Live Trip-in-Progress Routing
+
+**Completed: 2026-04-23**
+
+**Overview:** After a rider selects a route card, a "Start Trip" button activates GPS tracking via `navigator.geolocation.watchPosition`. The app follows the user through each route leg, highlights the active leg and dims completed ones, marks individual walk steps complete as the user passes them, detects significant deviation from the planned route, and offers a one-tap re-route from the current GPS position. A "Stop Trip" button is always visible while tracking is active. Starting a new search automatically ends any in-progress trip.
+
+**What was implemented (3 chunks):**
+
+- **Chunk 1 — GPS tracking, trip activation UI, and map position dot:**
+  - `App.jsx`: `tripActive`, `userPosition`, `watchIdRef` state/refs; `startTrip()` / `stopTrip()` helpers; "Start Trip" / "Stop Trip" buttons rendered in the selected route card footer; GPS watch options `{ enableHighAccuracy: true, maximumAge: 15000, timeout: 10000 }`; `stopTrip()` called at top of `handleSubmit` and when switching route cards; `userPosition` / `tripActive` passed to `MapView`.
+  - `MapView.jsx`: `userPosition` and `tripActive` props accepted; when trip active, a blue circle (`#4A90E2`, radius 10, white stroke) is added as a GeoJSON source/layer `user-position-source`/`user-position-layer`; map `flyTo` centers on first GPS fix; subsequent position updates call `setData` rather than re-adding the layer; when trip stops, layer visibility set to `"none"` rather than removed (avoids MapLibre source-still-in-use errors); `userPosLayerRef` reset to `false` on map re-init.
+  - `App.css`: `.route-card-trip-footer`, `.start-trip-btn` (blue, primary), `.stop-trip-btn` (muted/destructive).
+
+- **Chunk 2 — Active leg tracking and walk step completion:**
+  - `App.jsx`: `activeLegIndex` (default `null`, set to `0` on trip start) and `completedSteps` (`Set<string>`, keys `"legIdx-stepIdx"`) state; `haversineMeters(a, b)` inline 5-line Haversine; `legEndCoord(leg)` returns `{lat, lng}` from `leg.to_coords` (transit) or last `leg.path` point (walk); `useEffect([userPosition])` runs three functional `setActiveLegIndex` passes: (1) advance leg when within 60 m of its endpoint, (2) mark walk steps complete when within 30 m of `step.start_lat`/`start_lon`, (3) off-route detection; `activeLegIndex` / `completedSteps` passed via `RouteCard` → `RouteLegs` → `WalkLegItem`.
+  - `RouteLegs`: accepts `activeLegIndex` and `completedSteps` props; applies `.leg-active` (blue left border) to active leg and `.leg-complete` (50% opacity + ✓ check icon) to completed legs.
+  - `WalkLegItem`: accepts `completedSteps` and `extraClass`; renders ✓ + `.leg-step--complete` on steps whose key is in `completedSteps`.
+  - `backend/walking.py`: Added `"start_lat": lat1, "start_lon": lon1` to every step dict in `_walk_directions_impl` (both street-routed path and Haversine fallback).
+
+- **Chunk 3 — Off-route detection and re-route prompt:**
+  - `App.jsx`: `isOffRoute` boolean state; `suppressRerouteUntil` ref (90 s suppression after dismiss); off-route fires only during walk legs when min distance to any leg endpoint exceeds 400 m; `handleReroute()` function submits GPS coords as origin without stopping the GPS watch (`setOrigin(gpsOrigin)`, fresh fetch, resets `activeLegIndex`/`completedSteps`); off-route banner rendered above route cards with "Re-route from here" and "Dismiss" buttons.
+  - `backend/gtfs_loader.py`: `_COORD_RE` module-level regex + fast-path at top of `resolve_location()` so GPS coordinate strings (e.g. `"41.893450,-87.631200"`) bypass fuzzy matching and geocoding entirely, resolving directly to `find_nearest_train_stations` / `find_nearest_bus_stops`.
+  - `App.css`: `.off-route-banner` (amber `#FFF3CD` background, `border-left: 4px solid #D97706`), `.off-route-message`, `.off-route-actions`, `.off-route-reroute-btn`, `.off-route-dismiss-btn`.
+
+**Future iteration ideas (not implemented):**
+- Live arrival countdown polling every 30 s during transit wait phase.
+- Adaptive GPS polling rate (lower on walk legs, higher on transit legs).
+- Shape-based off-route detection using the clipped GTFS shape polyline.
+- Haptic / browser notification alerts for boarding nudges.
+
+---
+
 ## Feature Language — Multi-Language Support (i18n)
 
 **Completed: 2026-04-20**
@@ -350,3 +385,43 @@ Frontend:
 - **Chunk 6 — RTL CSS (`frontend/src/App.css`):**
   - Added `[dir="rtl"]` overrides for `.header-top`, `.filters`, `.route-card-header`, `.route-card-summary`, `.leg`, `.leg-walk-body`, `.leg-steps` (border flips), `.alert-item` (border flips), `.settings-header`, `.settings-actions`, `.form label`.
   - No full CSS rewrite — only targeted overrides for confirmed RTL issues.
+
+---
+
+# Feature Favorites — Saved Locations & Routes
+
+**Completed: 2026-04-23**
+
+**Overview:** Added a localStorage-backed favorites system so repeat users can save named locations (e.g. "Home", "Work") that quick-fill either text field, and named routes (origin+destination pairs) that repopulate both fields with one tap. All state lives in the browser — no backend changes. Cap of 10 items per list.
+
+**What was implemented (3 chunks):**
+
+- **Chunk 1 — Data layer (`frontend/src/favorites.js`, new):** Pure utility module with no React dependency. `_load(key)` / `_save(key, arr)` private helpers backed by `localStorage`. Public exports: `getSavedLocations`, `saveLocation` (returns updated array or `null` on cap), `deleteLocation`, `getSavedRoutes`, `saveRoute` (same null-on-cap contract), `deleteRoute`. Cap is 10 items per list; IDs generated with `crypto.randomUUID()`.
+
+- **Chunk 2 — Saved Locations UI (`frontend/src/App.jsx`, `frontend/src/App.css`):** New `LocationInput` component wraps each "From"/"To" field in a `.field-wrapper` (position: relative). A `☆` star button (absolute-positioned right) appears when the field has a non-empty value; turns amber `★` when the value is already saved. Clicking an unsaved field opens an inline label save panel (text input + Save/Cancel buttons; Enter saves, Escape cancels; blocks form submission). Clicking a saved field immediately removes it. Focusing a field with saved locations shows a `.saved-dropdown` (absolute, `z-index: 100`) listing up to 5 items with per-item `×` delete buttons; `onMouseDown` + `e.preventDefault()` ensures selection fires before `onBlur` closes the dropdown (150 ms debounce). Cap hit shows a 3-second inline error then auto-dismisses. RTL overrides flip star to left edge.
+
+- **Chunk 3 — Saved Routes UI (`frontend/src/App.jsx`, `frontend/src/App.css`):** `⭐` toggle button added to the `.filters` bar; opens a `.saved-routes-panel` between the header and form listing all saved routes with "Go" (populates fields + closes panel) and `×` (deletes) buttons, plus an empty-state message. After a successful query, a "Save ☆" / "Saved ★" button appears in a `.routes-section-header` flex row alongside the "Route options" heading. Clicking to save opens an inline route-label save panel (same pattern as locations, 30-char max, pre-filled with `origin → destination`). Clicking to unsave immediately removes the matching entry. Route save UI resets on new query submission. 14 new i18n keys added to `frontend/public/locales/en/translation.json`; other locale files require manual translation review.
+
+---
+
+# Feature DAU — Daily Unique User Counting
+
+**Completed: 2026-04-24**
+
+**Overview:** Tracks how many unique users access the site per day as a single integer per day — the minimum viable growth signal. No personal data, behavioral data, or session information is persisted. Client IPs are HMAC-SHA256 hashed with a daily secret salt and kept only in an in-memory set for the current UTC day; when the day rolls over the set is discarded and only the final count is written to disk. Cross-day correlation is impossible because the daily salt changes.
+
+**What was implemented (2 chunks):**
+
+- **Chunk 1 — Backend counter (`backend/dau.py` new, `backend/main.py`):**
+  - `backend/dau.py`: `DAU_FILE` path — `/app/data/dau.json` when `APP_ENV=production` (Railway persistent volume), `backend/data/dau.json` otherwise. `DAU_FILE.parent.mkdir(parents=True, exist_ok=True)` runs at module load. Module-level state: `_current_day: str`, `_seen_hashes: set[str]`, `_lock: asyncio.Lock`. `_load() -> dict[str, int]` — reads the JSON file, returns `{}` on missing or corrupt. `_save(counts)` — atomic write via `tempfile.mkstemp` + `os.replace`. `async def record_visit(ip)` — derives today's HMAC key from `DAILY_SALT + today_utc`, hashes the IP, checks if already in `_seen_hashes` (skip), flushes previous day's count on day rollover, adds hash to set, and saves the incremented count. `async def get_counts()` — returns `_load()`.
+  - `backend/main.py`: Imported `dau` module. Added `Header` to FastAPI imports. Added `GET /ping` — calls `_client_ip()` (already honors `X-Forwarded-For` for Railway proxy), calls `await dau.record_visit(ip)`, returns `{"ok": True}`. Added `GET /admin/dau` — checks `Authorization: Bearer <DAU_ADMIN_TOKEN>` header (env var); returns `await dau.get_counts()`; returns 403 on mismatch or absent token. `DAILY_SALT` and `DAU_ADMIN_TOKEN` must be set in Railway env vars (values never committed).
+
+- **Chunk 2 — Frontend ping (`frontend/src/App.jsx`):**
+  - Added `useEffect(() => { fetch(\`${BACKEND_URL}/ping\`); }, [])` in the `App` component — fires once on mount, fire-and-forget (no await, no error handling, never blocks the UI).
+
+**Railway setup required:**
+
+- Add Railway persistent volume mounted at `/app/data`.
+- Set env vars: `DAILY_SALT=<random-secret>`, `DAU_ADMIN_TOKEN=<random-secret>`, `APP_ENV=production`.
+
+**Data access:** `GET /admin/dau` with `Authorization: Bearer <DAU_ADMIN_TOKEN>` returns the full `{"YYYY-MM-DD": count, ...}` JSON object.

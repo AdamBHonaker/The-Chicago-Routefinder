@@ -36,6 +36,7 @@ from walking import (
     walk_path as street_walk_path,
     walk_directions as street_walk_directions,
 )
+import config as _cfg
 
 # ---------------------------------------------------------------------------
 # CTA line metadata
@@ -79,7 +80,7 @@ def _bearing_to_direction(lat1: float, lon1: float, lat2: float, lon2: float) ->
 _shape_lookup: dict[tuple[str, str], list[list[float]]] = {}
 
 # Maximum plausible scheduled leg time; longer values are treated as GTFS noise
-_MAX_LEG_MINUTES = 45.0
+_MAX_LEG_MINUTES: float = _cfg.MAX_LEG_MINUTES
 
 # Target departure time for representative trip selection: noon = 720 min past midnight
 _TARGET_NOON_MINUTES = 720.0
@@ -87,27 +88,20 @@ _TARGET_NOON_MINUTES = 720.0
 # ---------------------------------------------------------------------------
 # Intermodal walk-edge tuning constants (used in _build_graph — Feature B)
 # ---------------------------------------------------------------------------
-# Radius within which a train station and bus stop are connected by a walk edge.
-_TRANSFER_RADIUS_MILES: float = 0.15
-# Walk-time cap for intermodal edges; longer walks are excluded from the graph.
-_TRANSFER_WALK_CAP_MIN: float = 5.0
-# Straight-line → street-network correction factor applied to Haversine distances
-# at graph-build time (avoids loading the full street graph into memory on startup).
-_DETOUR_FACTOR: float = 1.3
+# Sourced from config.py — edit there to tune routing behaviour.
+_TRANSFER_RADIUS_MILES: float = _cfg.TRANSFER_RADIUS_MILES
+_TRANSFER_WALK_CAP_MIN: float = _cfg.TRANSFER_WALK_CAP_MIN
+_DETOUR_FACTOR: float          = _cfg.DETOUR_FACTOR
 
 # ---------------------------------------------------------------------------
 # Bus-to-bus transfer candidate scoring (used in _select_transfer_candidates — Feature C)
 # ---------------------------------------------------------------------------
-# Maximum walk distance from a transfer stop to the destination for route B.
-_MAX_EXIT_DIST: float = 0.5          # miles
-# Maximum walk between routes A and B at the transfer stop.
-_MAX_TRANSFER_WALK: float = 0.25     # miles
-# Route A must reduce Haversine-to-destination by at least this ratio at each stop.
-_FWD_PROGRESS_RATIO: float = 0.9    # Sk must bring ≥10 % forward progress
-# Maximum candidates kept per (arrival × route-A) combination.
-_MAX_CANDIDATES_PER_ARRIVAL: int = 3
-# Walk-time penalty factor in the candidate score: 60 min/hr ÷ 3 mph × 1.3 detour = 26.0 min/mile
-_TRANSFER_SCORE_WALK_FACTOR: float = 26.0   # minutes per mile
+# Sourced from config.py — edit there to tune routing behaviour.
+_MAX_EXIT_DIST: float              = _cfg.MAX_EXIT_DIST_MILES
+_MAX_TRANSFER_WALK: float          = _cfg.MAX_TRANSFER_WALK_MILES
+_FWD_PROGRESS_RATIO: float         = _cfg.FWD_PROGRESS_RATIO
+_MAX_CANDIDATES_PER_ARRIVAL: int   = _cfg.MAX_CANDIDATES_PER_ARRIVAL
+_TRANSFER_SCORE_WALK_FACTOR: float = _cfg.TRANSFER_SCORE_WALK_FACTOR
 
 # ---------------------------------------------------------------------------
 # Module-level state — initialization contract
@@ -171,6 +165,7 @@ class Route:
     transit_minutes: float = 0.0               # in-vehicle time only
     walk_minutes_total: float = 0.0            # sum of all walk legs
     transfers: int = 0                         # number of line changes
+    first_transit_leg_index: int | None = None  # index of first TransitLeg in legs, or None
 
     @property
     def total_minutes_no_wait(self) -> float:
@@ -1304,11 +1299,13 @@ def _path_to_route(
         idx = look
 
     transit_legs = [l for l in legs if isinstance(l, TransitLeg)]
+    first_transit_idx = next((i for i, l in enumerate(legs) if isinstance(l, TransitLeg)), None)
     return Route(
         legs=legs,
         transit_minutes=transit_total,
         walk_minutes_total=walk_total,
         transfers=max(0, len(transit_legs) - 1),
+        first_transit_leg_index=first_transit_idx,
     )
 
 
@@ -1680,11 +1677,11 @@ def _select_transfer_candidates(
             continue
 
         board_walk_min = board_walk.get(stop_id, 0.0)
-        boarding_hav   = _haversine_miles(
-            _bus_stop_coords.get(stop_id, (origin_lat, origin_lon))[0],
-            _bus_stop_coords.get(stop_id, (origin_lat, origin_lon))[1],
-            dest_lat, dest_lon,
-        )
+        if stop_id in _bus_stop_coords:
+            board_lat, board_lon = _bus_stop_coords[stop_id]
+        else:
+            board_lat, board_lon = origin_lat, origin_lon
+        boarding_hav = _haversine_miles(board_lat, board_lon, dest_lat, dest_lon)
 
         for short_A, did_A, board_idx in cands_A:
             seq_A = sequences[(short_A, did_A)]
@@ -1793,7 +1790,7 @@ def _build_transfer_routes(
         board_sid, board_name, board_lat, board_lon, board_arr = seq_A[board_idx]
         sk_sid,    sk_name,    sk_lat,    sk_lon,    sk_arr    = seq_A[sk_idx]
         t_meta = _bus_stop_coords.get(t_stop_id)
-        if t_meta is None:
+        if not t_meta or not isinstance(t_meta, tuple) or len(t_meta) != 2:
             continue
         t_lat, t_lon = t_meta
 
@@ -1896,6 +1893,7 @@ def _build_transfer_routes(
             transit_minutes=round(in_vehicle_A + in_vehicle_B, 1),
             walk_minutes_total=round(board_walk_min + transfer_walk_min + exit_walk_min, 1),
             transfers=1,
+            first_transit_leg_index=1,  # always Walk[0], Transit[1], Walk[2], Transit[3], Walk[4]
         )
         sort_key = total_no_wait + wait_min_A + _LEG2_WAIT_ESTIMATE
         ranked.append((sort_key, wait_min_A, route))

@@ -63,11 +63,18 @@ function renderRoute(map, route, originCoords, destCoords, layerIds, sourceIds) 
   // Precompute per-leg colors once so Pass 2 doesn't re-invoke legColor.
   const legColors = legs.map(leg => leg.type === "transit" ? legColor(leg) : null);
 
+  // Pre-transform all path/shape coordinates once — avoids repeated .map(toGeo) across passes.
+  const legGeoCoords = legs.map(leg => {
+    if (leg.type === "walk")    return (leg.path  ?? []).map(toGeo);
+    if (leg.type === "transit") return (leg.shape ?? []).map(toGeo);
+    return [];
+  });
+
   // ── Pass 1: polylines ────────────────────────────────────────────────────
 
   legs.forEach((leg, i) => {
     if (leg.type === "walk") {
-      const coords = (leg.path ?? []).map(toGeo);
+      const coords = legGeoCoords[i];
       if (coords.length < 2) return;
       coords.forEach(c => allGeoCoords.push(c));
 
@@ -83,7 +90,7 @@ function renderRoute(map, route, originCoords, destCoords, layerIds, sourceIds) 
       }, layerIds);
 
     } else if (leg.type === "transit") {
-      const coords = (leg.shape ?? []).map(toGeo);
+      const coords = legGeoCoords[i];
       if (coords.length < 2) return;
       coords.forEach(c => allGeoCoords.push(c));
 
@@ -139,14 +146,14 @@ function renderRoute(map, route, originCoords, destCoords, layerIds, sourceIds) 
       }
 
       // Intermediate stops — evenly sampled from the clipped shape
-      const shape = leg.shape ?? [];
-      if (shape.length > 10) {
-        const step = Math.max(3, Math.floor(shape.length / 10));
+      const geoShape = legGeoCoords[i];
+      if (geoShape.length > 10) {
+        const step = Math.max(3, Math.floor(geoShape.length / 10));
         const intermFeatures = [];
-        for (let j = step; j < shape.length - step; j += step) {
+        for (let j = step; j < geoShape.length - step; j += step) {
           intermFeatures.push({
             type: "Feature",
-            geometry:   { type: "Point", coordinates: toGeo(shape[j]) },
+            geometry:   { type: "Point", coordinates: geoShape[j] },
             properties: { color },
           });
         }
@@ -195,9 +202,10 @@ function renderRoute(map, route, originCoords, destCoords, layerIds, sourceIds) 
   }
 
   // Destination dot — use explicit destCoords prop; fall back to last leg path
+  const lastLegPath = legs.length > 0 ? legs[legs.length - 1]?.path : null;
   const destPt = destCoords
     ? [destCoords[1], destCoords[0]]       // [lat,lon] → [lon,lat]
-    : (() => { const lp = legs[legs.length - 1]?.path; return lp?.length ? toGeo(lp[lp.length - 1]) : null; })();
+    : (lastLegPath?.length ? toGeo(lastLegPath[lastLegPath.length - 1]) : null);
   if (destPt) {
     _trackSource(map, "route-dest", {
       type: "geojson",
@@ -237,6 +245,8 @@ export default function MapView({
   route        = null,
   originCoords = null,
   destCoords   = null,
+  userPosition = null,
+  tripActive   = false,
   style        = DEFAULT_STYLE,
   center       = DEFAULT_CENTER,
   zoom         = DEFAULT_ZOOM,
@@ -245,6 +255,7 @@ export default function MapView({
   const mapRef        = useRef(null);
   const routeLayerIds  = useRef([]);   // tracked IDs set during renderRoute
   const routeSourceIds = useRef([]);
+  const userPosLayerRef = useRef(false); // whether user-position layer has been added
   const [unlocked, setUnlocked] = useState(false);
   const [styleError, setStyleError] = useState(false);
 
@@ -302,6 +313,7 @@ export default function MapView({
       });
 
       mapRef.current = map;
+      userPosLayerRef.current = false; // reset on new map instance
     }, 0);
 
     return () => {
@@ -330,6 +342,42 @@ export default function MapView({
       return () => map.off("load", render);
     }
   }, [route, originCoords, destCoords]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // User position dot — shown during an active trip
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded()) return;
+
+    if (tripActive && userPosition) {
+      const geoData = {
+        type: "Feature",
+        geometry: { type: "Point", coordinates: [userPosition.lng, userPosition.lat] },
+      };
+
+      if (!userPosLayerRef.current) {
+        map.addSource("user-position-source", { type: "geojson", data: geoData });
+        map.addLayer({
+          id:     "user-position-layer",
+          type:   "circle",
+          source: "user-position-source",
+          paint:  {
+            "circle-color":        "#4A90E2",
+            "circle-radius":       10,
+            "circle-stroke-width": 2,
+            "circle-stroke-color": "#ffffff",
+          },
+        });
+        userPosLayerRef.current = true;
+        // Center map on first GPS fix
+        map.flyTo({ center: [userPosition.lng, userPosition.lat], zoom: 15 });
+      } else {
+        map.getSource("user-position-source")?.setData(geoData);
+        try { map.setLayoutProperty("user-position-layer", "visibility", "visible"); } catch {}
+      }
+    } else if (userPosLayerRef.current) {
+      try { map.setLayoutProperty("user-position-layer", "visibility", "none"); } catch {}
+    }
+  }, [tripActive, userPosition]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleUnlock() {
     const map = mapRef.current;

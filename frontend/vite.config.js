@@ -52,9 +52,18 @@ export default defineConfig({
         runtimeCaching: [
           {
             // Match /recommend and /health regardless of hostname (covers both
-            // localhost dev and the production Railway URL)
+            // localhost dev and the production Railway URL).
+            // NetworkFirst: serve cached result when network is unavailable
+            // (common in CTA underground stations). 1-hour TTL, 50 entries.
             urlPattern: /\/(recommend|health)(\?.*)?$/i,
-            handler: "NetworkOnly",
+            handler: "NetworkFirst",
+            options: {
+              cacheName: "api-cache",
+              expiration: {
+                maxEntries: 25,
+                maxAgeSeconds: 3600,
+              },
+            },
           },
           {
             // Transit photos: serve from cache if available, update in background

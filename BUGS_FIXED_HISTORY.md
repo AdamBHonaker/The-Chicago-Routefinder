@@ -2,6 +2,262 @@
 
 ---
 
+# 2026-04-24 BUG-013 · Service worker used `NetworkOnly` for `/recommend` — app unusable offline — FIXED
+
+## 🟡 Workbox `NetworkOnly` replaced with `NetworkFirst` + cache options — FIXED
+
+**File:** `frontend/vite.config.js` — runtime caching block for `/recommend` and `/health`
+
+**What was happening:** The Workbox runtime caching strategy for `/recommend` (and `/health`) was `NetworkOnly`. If the network was unavailable or too slow — common in CTA underground stations — the user received no response and the app appeared broken. A transit app used underground should serve a stale cached result rather than nothing.
+
+**Fixed in:** Changed `handler: "NetworkOnly"` to `handler: "NetworkFirst"` and added a `cacheName: "api-cache"` block with `maxEntries: 25` and `maxAgeSeconds: 3600` (1 hour). With `NetworkFirst`, Workbox attempts the network first; if the network is unreachable or times out, it falls back to the most recent cached response. Cache entries expire after 1 hour and the cache is capped at 50 entries to prevent unbounded growth.
+
+```javascript
+// BEFORE:
+{
+  urlPattern: /\/(recommend|health)(\?.*)?$/i,
+  handler: "NetworkOnly",
+}
+
+// AFTER:
+{
+  urlPattern: /\/(recommend|health)(\?.*)?$/i,
+  handler: "NetworkFirst",
+  options: {
+    cacheName: "api-cache",
+    expiration: {
+      maxEntries: 25,
+      maxAgeSeconds: 3600,
+    },
+  },
+}
+```
+
+---
+
+# 2026-04-24 BUG-019 · Graph node accessed without existence check in `walking.py` — FIXED
+
+## 🟢 Vertex index bounds check and coordinate-array None guards added — FIXED
+
+**File:** `backend/walking.py` — `_get_shortest_path()`, `_walk_directions_impl()`, `_walk_path_impl()`
+
+**What was happening:** The code has been migrated from NetworkX to igraph since the bug was originally filed. The equivalent vulnerability in the igraph codebase is:
+
+1. **`_get_shortest_path`** — after `_get_nearest_node()` returned vertex indices, there was no guard verifying those indices were within `G.vcount()`. A stale KDTree (e.g., if the graph object were replaced between the tree build and the path query) could produce an out-of-bounds index, causing igraph to raise an `IndexError` on `G.get_shortest_paths()`.
+
+2. **`_walk_directions_impl` / `_walk_path_impl`** — both functions access `_vertex_lats[vertex_idx]` and `_vertex_lons[vertex_idx]` directly. These module-level arrays are set inside `_load_graph()` but there was no explicit None guard before the access, meaning a corrupted or partially-initialized graph state could cause a `TypeError` when subscripting `None`.
+
+**Fixed in:** Three guards added:
+
+```python
+# _get_shortest_path — after existing None check:
+n = G.vcount()
+if orig_idx >= n or dest_idx >= n:
+    return None
+
+# _walk_directions_impl — before vertex array access:
+if _vertex_lats is None or _vertex_lons is None:
+    raise RuntimeError("vertex coordinate arrays unavailable")
+
+# _walk_path_impl — before vertex array access:
+if _vertex_lats is None or _vertex_lons is None:
+    raise RuntimeError("vertex coordinate arrays unavailable")
+```
+
+The `RuntimeError` cases in the two `_impl` functions are caught by their surrounding `try/except` blocks and fall back to the Haversine estimate, preserving graceful degradation.
+
+---
+
+# 2026-04-24 BUG-018 · Walking distance can round to `0.0` minutes — FIXED
+
+## 🟢 `walk_minutes()` could return `0.0` for very short walks — FIXED
+
+**File:** `backend/walking.py` — line 197 (inside `walk_minutes()`)
+
+**What was happening:** For two stops less than ~6 metres apart, `round(length_m / WALKING_SPEED_MPS / 60, 1)` returned `0.0`. Downstream code treating `0.0` as "no walk needed" (or any division by walk time) could behave incorrectly.
+
+**Fixed in:** Wrapped the return with `max(0.1, ...)` to enforce a minimum of 0.1 minutes (~6 seconds):
+
+```python
+# BEFORE:
+return round(length_m / WALKING_SPEED_MPS / 60, 1)
+
+# AFTER:
+return max(0.1, round(length_m / WALKING_SPEED_MPS / 60, 1))
+```
+
+---
+
+# 2026-04-24 BUG-017 · Street name non-string type causes `AttributeError` in `walking.py` — FIXED
+
+## 🟢 `_street_name()` crashed on truthy non-string OSM `name` values — FIXED
+
+**File:** `backend/walking.py` — `_street_name()` inner function inside `_walk_directions_impl`
+
+**What was happening:** The `name` field from OpenStreetMap edges can be a string, a list, or occasionally a non-string scalar (e.g., an integer road number). After handling the list case, the code used `(name or "").strip()`. Python's `or` short-circuits on falsy values only — a truthy non-string like `42` passes through unchanged, and `42.strip()` raises an unhandled `AttributeError` in the walk directions path.
+
+**Fixed in:** Added an explicit `isinstance(name, str)` guard after the list check. Non-string values now return `"unnamed path"` directly instead of attempting `.strip()`:
+
+```python
+# BEFORE:
+if isinstance(name, list):
+    name = name[0] if name else ""
+name = (name or "").strip()
+return name if name else "unnamed path"
+
+# AFTER:
+if isinstance(name, list):
+    name = name[0] if name else ""
+if not isinstance(name, str):
+    return "unnamed path"
+name = name.strip()
+return name if name else "unnamed path"
+```
+
+---
+# 2026-04-24 BUG-014 · BYOK API key had no idle timeout and no "Forget Key" button — FIXED
+
+## 🟡 BYOK key persisted indefinitely with no idle auto-clear — FIXED
+
+**File:** `frontend/src/App.jsx` — after `handleSaveByokKey` (~line 356)
+
+**What was happening:** The BYOK Anthropic API key was stored in `sessionStorage` with no auto-expiry. A user who walked away from their computer left their key accessible for the entire browser session. The bug originally called for both a "Forget Key" button and a 30-minute idle timeout; the "Remove Key" button in `SettingsPanel.jsx` already satisfied the former (added during TD-013 component extraction), so only the idle timeout was missing.
+
+**Fixed in:** Added a `useEffect` in `App.jsx` that activates only when a key is stored (`BYOK_ENABLED && byokKey`). On mount it attaches `mousemove` and `keydown` listeners that each reset a 30-minute `setTimeout`. When the timer fires (no user activity for 30 minutes), the key is removed from `sessionStorage` and `byokKey` state is cleared. The effect re-runs whenever `byokKey` changes, ensuring the timer is torn down and restarted correctly on key save/removal.
+
+```javascript
+useEffect(() => {
+  if (!BYOK_ENABLED || !byokKey) return;
+  let idleTimer;
+  const resetTimer = () => {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      sessionStorage.removeItem("byok_api_key");
+      setByokKey("");
+    }, 30 * 60 * 1000);
+  };
+  window.addEventListener("mousemove", resetTimer);
+  window.addEventListener("keydown", resetTimer);
+  resetTimer();
+  return () => {
+    clearTimeout(idleTimer);
+    window.removeEventListener("mousemove", resetTimer);
+    window.removeEventListener("keydown", resetTimer);
+  };
+}, [byokKey]);
+```
+
+---
+# 2026-04-24 BUG-016 · Fragile empty-legs fallback in `MapView.jsx` uses IIFE — FIXED
+
+## 🟢 IIFE for last-leg path fallback replaced with explicit length guard — FIXED
+
+**File:** `frontend/src/MapView.jsx` — line ~207
+
+**What was happening:** The destination dot fallback used an IIFE (`(() => { ... })()`) to retrieve the last leg's path without first checking that `legs` is non-empty. Optional chaining masked any crash but produced `undefined` silently with no indication of the fallback intent, making the code fragile and hard to reason about.
+
+**Fixed in:** Replaced the IIFE with an explicit `legs.length > 0` guard and a named intermediate `lastLegPath`:
+
+```javascript
+// BEFORE:
+const destPt = destCoords
+  ? [destCoords[1], destCoords[0]]
+  : (() => { const lp = legs[legs.length - 1]?.path; return lp?.length ? toGeo(lp[lp.length - 1]) : null; })();
+
+// AFTER:
+const lastLegPath = legs.length > 0 ? legs[legs.length - 1]?.path : null;
+const destPt = destCoords
+  ? [destCoords[1], destCoords[0]]
+  : (lastLegPath?.length ? toGeo(lastLegPath[lastLegPath.length - 1]) : null);
+```
+
+---
+# 2026-04-24 BUG-012 · Boolean short-circuit on coordinate lookup silently substitutes wrong latitude — FIXED
+
+## 🟡 Double `_bus_stop_coords.get()` call replaced with explicit membership check — FIXED
+
+**File:** `backend/transit_graph.py` — `find_bus_transfer_routes()` lines ~1679–1684
+
+**What was happening:** The boarding-stop haversine calculation called `_bus_stop_coords.get(stop_id, (origin_lat, origin_lon))` twice (once for index `[0]`, once for `[1]`) to extract coordinates to pass to `_haversine_miles()`. Beyond the redundant double dict lookup, the original bug report describes this code pattern as having originated from a `... [0] or origin_lat` form that treats a stored latitude of `0.0` as falsy (Python's `or` short-circuits on any falsy value), silently substituting `origin_lat` and producing an incorrect haversine distance with no error or log.
+
+**Fixed in:** Replaced the double `.get()` calls with an explicit membership check:
+
+```python
+if stop_id in _bus_stop_coords:
+    board_lat, board_lon = _bus_stop_coords[stop_id]
+else:
+    board_lat, board_lon = origin_lat, origin_lon
+boarding_hav = _haversine_miles(board_lat, board_lon, dest_lat, dest_lon)
+```
+
+The dict is now looked up at most once per arrival, coordinate unpacking is unambiguous, and a latitude of `0.0` is handled correctly. No other nearby coordinate lookups in this function used the `or` short-circuit idiom.
+
+---
+# 2026-04-24 BUG-015 · Bus stop coordinate tuple unpacked without length validation — FIXED
+
+## 🟡 `t_lat, t_lon = t_meta` unpacked without tuple-length guard — FIXED
+
+**File:** `backend/transit_graph.py` — line ~1793
+
+**What was happening:** `_bus_stop_coords.get(t_stop_id)` was checked for `None`, but immediately unpacked with `t_lat, t_lon = t_meta` without verifying the tuple had exactly 2 elements. A malformed cache entry (e.g., a 3-tuple or a scalar) would raise an unhandled `ValueError`, crashing the transfer-route pass for that candidate.
+
+**Fixed in:** Added `isinstance` + `len` guards before unpacking:
+
+```python
+# BEFORE:
+t_meta = _bus_stop_coords.get(t_stop_id)
+if t_meta is None:
+    continue
+t_lat, t_lon = t_meta
+
+# AFTER:
+t_meta = _bus_stop_coords.get(t_stop_id)
+if not t_meta or not isinstance(t_meta, tuple) or len(t_meta) != 2:
+    continue
+t_lat, t_lon = t_meta
+```
+
+---
+# 2026-04-24 BUG-011 · `frontend/.env.production` missing `https://` in `VITE_BACKEND_URL` — FIXED
+
+## 🔴 `VITE_BACKEND_URL` committed without `https://` protocol prefix — FIXED
+
+**File:** `frontend/.env.production` — line 3
+
+**What was happening:** `VITE_BACKEND_URL` was committed as a bare hostname with no protocol (`cta-transit-pwa-prod-production.up.railway.app`). Vite bakes this value into the production bundle at build time. Without `https://`, the browser treated concatenated API URLs (e.g. `/recommend`) as relative paths on the Vercel domain, causing every API request to return 404. A prior fix had updated the Vercel dashboard env var directly, but the committed file was never corrected. Any fresh Vercel deployment reading from the committed file (or any local production build) would reproduce the 404 regression.
+
+**Fixed in:** Added the `https://` prefix to the committed file:
+```env
+VITE_BACKEND_URL=https://cta-transit-pwa-prod-production.up.railway.app
+```
+
+---
+# 2026-04-23 BUG-010 · `_check_rate_limit` silently drops the first request's timestamp after a full hourly gap — FIXED
+
+## 🟡 `_check_rate_limit` silently drops the first request's timestamp after a full hourly gap — FIXED
+
+**File:** `backend/main.py`
+
+**What was happening:** After evicting all timestamps older than 1 hour, `_check_rate_limit` called `del _rate_store[ip]` to remove the now-empty deque. The local `window` variable still held a reference to the orphaned deque, so `window.append(now)` at the end of the function appeared to succeed — but the deque was no longer stored in `_rate_store`. On the next request, `_rate_store.setdefault(ip, collections.deque())` created a fresh empty deque, silently discarding the previous request's timestamp. An attacker making exactly one request per hour would never accumulate quota and could never be rate-limited.
+
+The `del _rate_store[ip]` block was originally added to prevent stale IPs from accumulating indefinitely. That concern is already addressed by the eviction loop (`window.popleft()` removes every timestamp older than 1 hour), so the deletion was both incorrect and unnecessary — empty deques are O(1) in memory.
+
+**Fixed in:** Removed the `if not window: del _rate_store[ip]` block entirely. The eviction loop still keeps deques lean; IPs that have not sent a request in over an hour hold an empty deque at negligible cost, and every new request timestamp is correctly persisted.
+
+---
+
+# 2026-04-23 BUG-009 · Duplicate `_haversine_walk_minutes` Definition in `walking.py` — FIXED
+
+## 🟡 `_haversine_walk_minutes` defined twice — first definition is dead code — FIXED
+
+**File:** `backend/walking.py`
+
+**What was happening:** `_haversine_walk_minutes` was defined twice in the module — first at line 171 (with a multi-line docstring describing it as a street-graph fallback) and again at line 409 (a compact one-liner). Python silently overwrites the first definition with the second at module load time. Both computed identical results, but the first definition was dead code: any future change to it would be silently ignored, and any reader who found the first definition would be confused about which one was active.
+
+**Fixed in:** Deleted the first definition (the verbose version at line 171–186). The surviving definition at (now) line ~393 is the canonical one.
+
+---
+
 # 2026-04-20 BUG-008 `_haversine_walk_minutes()` Function Missing — FIXED
 
 ---
