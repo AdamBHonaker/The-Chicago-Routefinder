@@ -16,25 +16,20 @@ RUN pip install -r requirements.txt
 COPY . .
 
 # Download the pre-built street graph from GitHub Releases (Feature K).
-# The repo is private, so a GitHub personal access token (read:packages or
-# contents scope) must be passed as the GITHUB_TOKEN build argument.
-# In Railway: Settings → Build → Build Arguments → GITHUB_TOKEN=<PAT>
-#
-# To update the graph (e.g. after NorthExpansion / SouthExpansion):
-#   1. Run: python fetch_street_graph.py --force  (from backend/)
-#   2. Create a new release tag (e.g. street-graph-v2) via gh release create
-#   3. Update STREET_GRAPH_URL below to the new tag's asset URL.
-ARG STREET_GRAPH_URL=https://github.com/AdamBHonaker/CTA-Transit-PWA/releases/download/street-graph-v1/street_graph.graphml
+# Repo is private — pass a GitHub PAT (Contents:Read) as a Railway build arg:
+#   Service → Settings → Build → Build Arguments → GITHUB_TOKEN=<PAT>
+# Uses the GitHub API asset endpoint (not the browser redirect URL) so the
+# Authorization header survives the CDN redirect for private-repo assets.
+# Asset ID 407136213 = street_graph.graphml in release street-graph-v1.
+# Update STREET_GRAPH_ASSET_ID when uploading a new release (v2, v3, ...).
+ARG STREET_GRAPH_ASSET_ID=407136213
 ARG GITHUB_TOKEN
 RUN set -eu; \
-    if [ -n "${GITHUB_TOKEN:-}" ]; then \
-      curl -fSL --retry 3 --retry-delay 2 \
-           -H "Authorization: Bearer $GITHUB_TOKEN" \
-           -o street_graph.graphml "$STREET_GRAPH_URL"; \
-    else \
-      curl -fSL --retry 3 --retry-delay 2 \
-           -o street_graph.graphml "$STREET_GRAPH_URL"; \
-    fi \
+    ASSET_URL="https://api.github.com/repos/AdamBHonaker/CTA-Transit-PWA/releases/assets/${STREET_GRAPH_ASSET_ID}"; \
+    curl -fSL --retry 3 --retry-delay 2 \
+         -H "Authorization: token $GITHUB_TOKEN" \
+         -H "Accept: application/octet-stream" \
+         -o street_graph.graphml "$ASSET_URL" \
     && SIZE=$(wc -c < street_graph.graphml) \
     && echo "street_graph.graphml: $SIZE bytes" \
     && if [ "$SIZE" -lt 1048576 ]; then \
