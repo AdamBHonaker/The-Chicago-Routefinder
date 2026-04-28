@@ -14,6 +14,7 @@ Otherwise the heuristic fills the gap with confidence "medium" or "low".
 CHICAGO_TZ is defined locally to avoid coupling this module to cta_client.py.
 """
 
+import logging
 import math
 from datetime import datetime
 from enum import Enum
@@ -41,6 +42,14 @@ _HOLIDAYS: Set[str] = {
     "2027-06-19", "2027-07-05", "2027-09-06", "2027-10-11",
     "2027-11-11", "2027-11-25", "2027-12-25",
 }
+
+_HOLIDAY_MAX_YEAR = max(int(d[:4]) for d in _HOLIDAYS)
+if datetime.now(tz=CHICAGO_TZ).year > _HOLIDAY_MAX_YEAR:
+    logging.getLogger(__name__).warning(
+        "Holiday list only covers up to %d; this year will be treated as a regular weekday — "
+        "update _HOLIDAYS in crowdedness.py.",
+        _HOLIDAY_MAX_YEAR,
+    )
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -177,27 +186,15 @@ HIGH_TRAFFIC_TRAIN_STATIONS: dict[str, float] = {
     "40450": 1.15,  # 95th/Dan Ryan (Red terminus)
 }
 
-# Direction override dict for routes where the heuristic is wrong.
-# Heuristic: Southbound/Eastbound → inbound; Northbound/Westbound → outbound.
-# Cross-town routes (e.g. 49-Western, 66-Chicago) that run E-W but are not
-# Loop-oriented should be added here as bugs surface.
-# Example entry: ("49", "Northbound"): "outbound"
-_DIRECTION_OVERRIDES: dict[tuple[str, str], str] = {}
-
-
 def rtdir_to_inbound_outbound(route_short_name: str, rtdir: str) -> str:
     """
     Map a Bus Tracker rtdir string to "inbound" or "outbound".
 
-    Heuristic: Southbound/Eastbound → inbound (toward the Loop);
-               Northbound/Westbound → outbound.
-    Override dict handles exceptions for cross-town/Far South routes.
+    rtdir must already be lowercase (normalized at the CTA client boundary).
+    Heuristic: southbound/eastbound → inbound (toward the Loop);
+               northbound/westbound → outbound.
     """
-    override = _DIRECTION_OVERRIDES.get((route_short_name, rtdir))
-    if override:
-        return override
-    rtdir_lower = rtdir.lower()
-    if "south" in rtdir_lower or "east" in rtdir_lower:
+    if "south" in rtdir or "east" in rtdir:
         return "inbound"
     return "outbound"
 

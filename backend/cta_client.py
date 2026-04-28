@@ -226,7 +226,7 @@ async def _fetch_bus_chunk(
             arrivals.append({
                 "type": "bus",
                 "route": prd.get("rt", ""),
-                "direction": prd.get("rtdir", ""),
+                "direction": prd.get("rtdir", "").lower(),
                 "stop_id": prd.get("stpid", ""),   # GTFS stop ID — used by find_bus_transfer_routes()
                 "stop_name": prd.get("stpnm", ""),
                 "destination": prd.get("des", ""),
@@ -279,7 +279,7 @@ async def get_bus_arrivals(
 # Alerts API  (public — no key required)
 # ---------------------------------------------------------------------------
 
-ALERTS_BASE = "https://lapi.transitchicago.com/api/1.0/alerts.aspx"
+ALERTS_BASE = os.getenv("CTA_ALERTS_API_URL", "https://lapi.transitchicago.com/api/1.0/alerts.aspx")
 
 # Maps app-internal line_code values to the lowercase routeid the Alerts API expects
 _TRAIN_LINE_TO_ALERT_ID = {
@@ -327,7 +327,7 @@ async def _fetch_alerts_for_route(
                 "headline": a.get("Headline", ""),
                 "impact": a.get("Impact", ""),
                 "severity_score": severity,
-                "is_major": severity >= 7,
+                "is_major": severity >= 70,
                 "event_end": event_end,
                 "affected_routes": affected_routes,
             })
@@ -368,7 +368,7 @@ async def get_alerts(route_ids: list[str]) -> list[dict]:
 # Route Status API  (public — no key required)
 # ---------------------------------------------------------------------------
 
-ROUTES_BASE = "https://lapi.transitchicago.com/api/1.0/routes.aspx"
+ROUTES_BASE = os.getenv("CTA_ROUTES_API_URL", "https://lapi.transitchicago.com/api/1.0/routes.aspx")
 
 
 async def get_route_statuses() -> list[dict]:

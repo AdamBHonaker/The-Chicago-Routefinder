@@ -69,6 +69,3 @@ export function unpinStop(id, current) {
   return next;
 }
 
-export function isStopPinned(stop_id) {
-  return _load(PINNED_KEY).some((s) => s.stop_id === stop_id);
-}

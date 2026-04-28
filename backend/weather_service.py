@@ -9,6 +9,7 @@ NWS requires a real contact email in the User-Agent header.
 """
 
 import asyncio
+import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from enum import Enum
@@ -18,15 +19,17 @@ import aiohttp
 from cachetools import TTLCache
 from pydantic import BaseModel
 
-_NWS_USER_AGENT = "CTA-Transit-PWA/1.0 (adambhonaker@gmail.com)"
+_NWS_USER_AGENT = f"CTA-Transit-PWA/1.0 ({os.getenv('NWS_CONTACT_EMAIL', 'adambhonaker@gmail.com')})"
 _NWS_BASE = "https://api.weather.gov"
 
 # Grid-point URL cache: (lat_2dp, lon_2dp) → (forecast_url, forecast_hourly_url)
 # NWS grid point URLs are stable per location; 24 h TTL is safe.
-_grid_cache: TTLCache = TTLCache(maxsize=50, ttl=86400)
+_grid_cache: TTLCache = TTLCache(maxsize=200, ttl=86400)
 
-# Weather data cache: (lat_2dp, lon_2dp) → WeatherContext, TTL 12 min.
-_weather_cache: TTLCache = TTLCache(maxsize=50, ttl=720)
+# Weather data cache: (lat_2dp, lon_2dp) → WeatherContext, TTL 30 min.
+# Chicago at 2-decimal resolution has ~100 grid cells; 30-min TTL is safe since
+# weather changes slowly and reduces NWS API calls by ~2.5× vs 12-min TTL.
+_weather_cache: TTLCache = TTLCache(maxsize=200, ttl=1800)
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +138,8 @@ class WeatherService:
             props.get("forecast", ""),
             props.get("forecastHourly", ""),
         )
+        if not urls[0] or not urls[1]:
+            raise ValueError("NWS returned empty forecast URLs")
         _grid_cache[key] = urls
         return urls
 

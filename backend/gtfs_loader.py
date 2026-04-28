@@ -247,6 +247,7 @@ _geocode_pending: dict[str, tuple[float, float] | None] = {}
 _GEOCODE_FLUSH_INTERVAL = 30        # seconds between background flushes
 _GEOCODE_COMPACT_INTERVAL = 3600    # seconds between full snapshot rewrites
 _GEOCODE_COMPACT_THRESHOLD = 500    # journal entries that force an early compaction
+_GEOCODE_JOURNAL_LINE_LIMIT = 1000  # journal lines that force compaction regardless of entry count
 _geocode_last_compact: float = time.monotonic()
 _geocode_journal_entries: int = 0   # lines appended since last full snapshot
 
@@ -303,6 +304,7 @@ def _flush_geocode_cache_if_dirty() -> None:
         now = time.monotonic()
         should_compact = (
             _geocode_journal_entries + len(pending) >= _GEOCODE_COMPACT_THRESHOLD
+            or _geocode_journal_entries >= _GEOCODE_JOURNAL_LINE_LIMIT
             or now - _geocode_last_compact >= _GEOCODE_COMPACT_INTERVAL
         )
         if should_compact:

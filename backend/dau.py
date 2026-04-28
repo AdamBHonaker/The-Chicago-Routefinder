@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 from utils import CHICAGO_TZ
@@ -82,10 +83,17 @@ _lock = asyncio.Lock()
 # during normal operation.
 _counts_cache: dict[str, int] = _load()
 
+# Batch-write controls: flush to disk every _DAU_WRITE_BATCH new unique visitors
+# OR every _DAU_FLUSH_INTERVAL_SECONDS, whichever comes first.
+_DAU_WRITE_BATCH = 20
+_DAU_FLUSH_INTERVAL_SECONDS = 30
+_visitors_since_last_flush: int = 0
+_last_flush_time: float = 0.0
+
 
 async def record_visit(ip: str) -> None:
     """Hash the IP against today's salt and increment today's unique-visitor count."""
-    global _current_day, _seen_hashes, _base_count
+    global _current_day, _seen_hashes, _base_count, _visitors_since_last_flush, _last_flush_time
 
     async with _lock:
         # Recompute today inside the lock so a coroutine that was queued just
@@ -99,7 +107,7 @@ async def record_visit(ip: str) -> None:
             # previous day's final count and reset in-memory state.
             if _current_day:
                 _counts_cache[_current_day] = _base_count + len(_seen_hashes)
-                await loop.run_in_executor(None, _save, _counts_cache.copy())
+                await loop.run_in_executor(None, _save, _counts_cache)
             # Reload from disk so counts written by a previous process instance
             # (e.g. after a mid-day restart) are not lost.
             _counts_cache.clear()
@@ -107,6 +115,8 @@ async def record_visit(ip: str) -> None:
             _seen_hashes = set()
             _current_day = today
             _base_count = _counts_cache.get(today, 0)
+            _visitors_since_last_flush = 0
+            _last_flush_time = time.monotonic()
 
         # Compute the digest after confirming today is the authoritative date.
         hmac_key = (_DAILY_SALT + today).encode()
@@ -117,7 +127,16 @@ async def record_visit(ip: str) -> None:
 
         _seen_hashes.add(digest)
         _counts_cache[today] = _base_count + len(_seen_hashes)
-        await loop.run_in_executor(None, _save, _counts_cache.copy())
+        _visitors_since_last_flush += 1
+
+        now = time.monotonic()
+        if (
+            _visitors_since_last_flush >= _DAU_WRITE_BATCH
+            or now - _last_flush_time >= _DAU_FLUSH_INTERVAL_SECONDS
+        ):
+            await loop.run_in_executor(None, _save, _counts_cache)
+            _visitors_since_last_flush = 0
+            _last_flush_time = now
 
 
 async def get_counts() -> dict[str, int]:

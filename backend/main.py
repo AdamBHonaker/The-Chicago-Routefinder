@@ -3,7 +3,6 @@ import collections
 import os
 import time
 import traceback
-import xml.etree.ElementTree as ET
 from contextlib import asynccontextmanager
 from datetime import datetime
 
@@ -59,8 +58,14 @@ weather_service = WeatherService()
 # OrderedDict preserves insertion order so eviction of the oldest entry is O(1)
 # via popitem(last=False) rather than O(n) via min() over all entries.
 _response_cache: collections.OrderedDict[str, tuple[float, dict]] = collections.OrderedDict()
-_CACHE_TTL_SECONDS = 45       # seconds
+_CACHE_TTL_SECONDS = 120      # seconds
 _CACHE_MAX_SIZE    = 500      # entries
+
+# Cache hit/miss counters — logged every _CACHE_LOG_INTERVAL requests for tuning.
+_cache_hits:   int = 0
+_cache_misses: int = 0
+_cache_requests_total: int = 0
+_CACHE_LOG_INTERVAL = 100
 
 # Squared degree threshold for treating origin == destination (≈0.07 miles at Chicago's latitude).
 _SAME_LOCATION_THRESHOLD_DEG2: float = 0.001 ** 2   # degrees²
@@ -203,13 +208,17 @@ ALLOWED_ORIGINS = ["http://localhost:5173"] + [
 _ac_train_names: list[str] = []   # train parent-station display names
 _ac_neighborhood_names: list[str] = []  # title-cased neighborhood/landmark names
 _ac_bus_names: list[str] = []     # deduplicated bus stop display names
-# Inverted prefix index: 2- and 3-char lowercase prefixes → [(tier, score, suggestion)]
+# Master list of all suggestion dicts — each entry stored exactly once.
+_ac_master: list[dict] = []
+# Inverted prefix index: 2- and 3-char lowercase prefixes → [(tier, score, idx)]
+# idx is an integer index into _ac_master; avoids storing duplicate dict refs.
 # score 0 = full-name prefix (first word), score 1 = inner-word prefix
-_ac_prefix_index: dict[str, list[tuple[int, int, dict]]] = {}
+_ac_prefix_index: dict[str, list[tuple[int, int, int]]] = {}
 
 
 def _build_autocomplete_index() -> None:
-    global _ac_train_names, _ac_neighborhood_names, _ac_bus_names, _ac_prefix_index
+    global _ac_train_names, _ac_neighborhood_names, _ac_bus_names
+    global _ac_master, _ac_prefix_index
     train_stations, bus_stops = _load_stops()
     _ac_train_names = [s["name"] for s in train_stations]
     _ac_neighborhood_names = [name.title() for name in NEIGHBORHOOD_COORDS.keys()]
@@ -222,11 +231,14 @@ def _build_autocomplete_index() -> None:
             bus_names.append(s["name"])
     _ac_bus_names = bus_names
 
-    index: dict[str, list[tuple[int, int, dict]]] = {}
+    master: list[dict] = []
+    index: dict[str, list[tuple[int, int, int]]] = {}
 
     def _index_entry(name: str, tier: int, label_type: str) -> None:
-        nl = name.lower()
         suggestion = {"label": name, "value": name, "type": label_type}
+        idx = len(master)
+        master.append(suggestion)
+        nl = name.lower()
         added: set[str] = set()
         for i, word in enumerate(nl.split()):
             score = 0 if i == 0 else 1
@@ -234,7 +246,7 @@ def _build_autocomplete_index() -> None:
                 if len(word) >= length:
                     key = word[:length]
                     if key not in added:
-                        index.setdefault(key, []).append((tier, score, suggestion))
+                        index.setdefault(key, []).append((tier, score, idx))
                         added.add(key)
 
     for name in _ac_train_names:
@@ -244,11 +256,12 @@ def _build_autocomplete_index() -> None:
     for name in _ac_bus_names:
         _index_entry(name, 2, "bus")
 
+    _ac_master = master
     _ac_prefix_index = index
     print(
         f"[autocomplete] Index built: {len(_ac_train_names)} train stations, "
         f"{len(_ac_neighborhood_names)} neighborhoods, {len(_ac_bus_names)} bus stop names, "
-        f"{len(index)} prefix keys"
+        f"{len(index)} prefix keys, {len(master)} master entries"
     )
 
 
@@ -315,14 +328,13 @@ class RouteRequest(BaseModel):
     @field_validator("anthropic_api_key")
     @classmethod
     def validate_anthropic_key(cls, v: str | None) -> str | None:
+        # Only strip/nullify here — format validation happens in _validate_api_keys
+        # after the BYOK_ENABLED guard, so invalid strings are silently ignored
+        # when BYOK is disabled rather than returning HTTP 422.
         if v is not None:
             v = v.strip()
             if not v:
                 return None
-            if not v.startswith("sk-ant-"):
-                raise ValueError(
-                    "anthropic_api_key does not look like a valid Anthropic API key"
-                )
         return v
 
 
@@ -633,6 +645,8 @@ def _validate_api_keys(request: RouteRequest, byok_key: str | None) -> None:
     anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
     if not train_key and request.transit_mode != "Walk":
         raise HTTPException(status_code=500, detail="CTA_TRAIN_API_KEY not configured in backend/.env")
+    if byok_key and not byok_key.startswith("sk-ant-"):
+        raise HTTPException(status_code=422, detail="anthropic_api_key does not look like a valid Anthropic API key")
     if request.ai_enabled and not byok_key and (not anthropic_key or anthropic_key == "your_api_key_here"):
         raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not configured in backend/.env")
     if request.transit_mode in ("Bus", "All") and not bus_key:
@@ -707,6 +721,8 @@ async def _fetch_arrivals(
     """
     train_key   = os.getenv("CTA_TRAIN_API_KEY", "")
     bus_key     = os.getenv("CTA_BUS_API_KEY", "")
+    # Pre-filter to the 3 closest stations by walk time to avoid extra CTA API calls.
+    origin_stations = sorted(origin_stations, key=lambda s: s.get("walk_minutes", 0))[:3]
     walk_lookup = {s["mapid"]: s.get("walk_minutes", 0) for s in origin_stations}
 
     n_train_errors = 0
@@ -1145,6 +1161,23 @@ _CROWDEDNESS_LABELS: dict[CrowdednessLevel, str] = {
     CrowdednessLevel.VERY_HIGH: "very crowded",
 }
 
+# 1-minute cache for (time_period, day_type, hour) — these change at most once
+# every 15–30 minutes so re-computing on every leg of every request is wasteful.
+_crowdedness_period_cached: tuple | None = None
+_crowdedness_period_cache_ts: float = 0.0
+_CROWDEDNESS_PERIOD_TTL = 60.0  # seconds
+
+
+def _get_crowdedness_period() -> tuple:
+    """Return (time_period, day_type, hour), recomputing at most once per minute."""
+    global _crowdedness_period_cached, _crowdedness_period_cache_ts
+    now_mono = time.monotonic()
+    if _crowdedness_period_cached is None or now_mono - _crowdedness_period_cache_ts > _CROWDEDNESS_PERIOD_TTL:
+        now = datetime.now(_CHICAGO_TZ)
+        _crowdedness_period_cached = (*classify_time_period(now), now.hour)
+        _crowdedness_period_cache_ts = now_mono
+    return _crowdedness_period_cached
+
 
 def _crowdedness_for_routes(ranked: list[tuple]) -> dict[int, str]:
     """
@@ -1154,9 +1187,7 @@ def _crowdedness_for_routes(ranked: list[tuple]) -> dict[int, str]:
     takes the worst crowdedness level across all TransitLegs and converts it
     to a human-readable label for the Claude prompt.
     """
-    now = datetime.now(_CHICAGO_TZ)
-    time_period, day_type = classify_time_period(now)
-    now_hour = now.hour
+    time_period, day_type, now_hour = _get_crowdedness_period()
 
     labels: dict[int, str] = {}
     for i, (_total, _wait, route) in enumerate(ranked, 1):
@@ -1361,7 +1392,7 @@ def build_prompt(
     body = "\n\n".join(sections)
 
     alert_section = ""
-    significant_alerts = [a for a in (alerts or []) if a.get("severity_score", 0) >= 5]
+    significant_alerts = [a for a in (alerts or []) if a.get("severity_score", 0) >= 40]
     if significant_alerts:
         alert_lines = []
         for a in significant_alerts:
@@ -1599,9 +1630,10 @@ async def autocomplete(q: str = Query("", min_length=0)):
     key = query[:3] if len(query) >= 3 else query
     candidates = _ac_prefix_index.get(key, [])
 
-    ranked: list[tuple[int, int, dict]] = []
+    ranked: list[tuple[int, int, int]] = []
     seen: set[str] = set()
-    for tier, _base_score, suggestion in candidates:
+    for tier, _base_score, idx in candidates:
+        suggestion = _ac_master[idx]
         nl = suggestion["label"].lower()
         if nl.startswith(query):
             score = 0
@@ -1612,10 +1644,10 @@ async def autocomplete(q: str = Query("", min_length=0)):
         label = suggestion["label"]
         if label not in seen:
             seen.add(label)
-            ranked.append((tier, score, suggestion))
+            ranked.append((tier, score, idx))
 
     ranked.sort(key=lambda x: (x[0], x[1]))
-    return {"suggestions": [r[2] for r in ranked[:8]]}
+    return {"suggestions": [_ac_master[idx] for _, _, idx in ranked[:8]]}
 
 
 # ---------------------------------------------------------------------------
@@ -1623,7 +1655,7 @@ async def autocomplete(q: str = Query("", min_length=0)):
 # ---------------------------------------------------------------------------
 _ALERTS_CACHE_TTL = 300  # 5 minutes
 _alerts_cache: collections.OrderedDict[str, tuple[float, dict]] = collections.OrderedDict()
-_CTA_CUSTOMER_ALERTS_URL = "http://www.transitchicago.com/api/1.0/alerts.aspx"
+_CTA_CUSTOMER_ALERTS_URL = "https://www.transitchicago.com/api/1.0/alerts.aspx"
 _ALERTS_SEVERITY_ORDER = {"Major": 0, "Minor": 1, "Planned": 2}
 
 
@@ -1652,6 +1684,7 @@ async def alerts_endpoint():
             ) as resp:
                 text = await resp.text()
 
+        import xml.etree.ElementTree as ET  # lazy import — only used in this endpoint
         root = ET.fromstring(text)
         parsed: list[dict] = []
         for alert_el in root.findall("Alert"):
@@ -1722,17 +1755,35 @@ async def recommend(request: RouteRequest, http_request: Request):
     # cache miss and both launching the full expensive pipeline (stampede), and
     # ensures the rate-limit timestamp is written before any await yields control.
     async with _store_lock:
+        global _cache_hits, _cache_misses, _cache_requests_total
         if not _check_rate_limit(ip):
             raise HTTPException(
                 status_code=429,
                 detail="Too many requests. Please wait a minute before trying again.",
             )
+        _cache_requests_total += 1
         cached = _response_cache.get(key)
         if cached:
             if time.monotonic() < cached[0]:
                 _response_cache.move_to_end(key)  # promote to MRU position (LRU eviction)
+                _cache_hits += 1
+                if _cache_requests_total % _CACHE_LOG_INTERVAL == 0:
+                    print(
+                        f"[cache] {_cache_requests_total} requests | "
+                        f"hits={_cache_hits} misses={_cache_misses} "
+                        f"hit_rate={_cache_hits/_cache_requests_total:.1%} "
+                        f"size={len(_response_cache)}"
+                    )
                 return {**cached[1], "cache_hit": True}
             _response_cache.pop(key, None)  # evict stale entry
+        _cache_misses += 1
+        if _cache_requests_total % _CACHE_LOG_INTERVAL == 0:
+            print(
+                f"[cache] {_cache_requests_total} requests | "
+                f"hits={_cache_hits} misses={_cache_misses} "
+                f"hit_rate={_cache_hits/_cache_requests_total:.1%} "
+                f"size={len(_response_cache)}"
+            )
 
     loop = asyncio.get_running_loop()
 

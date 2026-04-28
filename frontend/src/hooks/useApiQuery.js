@@ -15,7 +15,10 @@
  * @param {() => Promise<Response>} fetcher  Async function that returns a
  *   fetch Response. Receives an AbortSignal as its sole argument.
  * @param {Array}  deps           React dependency array — query reruns when
- *   any dep changes (same semantics as useEffect deps).
+ *   any dep changes (same semantics as useEffect deps). IMPORTANT: this array
+ *   is spread directly into a useEffect dep list, so its length MUST be
+ *   constant across renders (React rules of hooks). Never pass a deps array
+ *   whose length varies — use a single stable derived key instead.
  * @param {object} [opts]
  * @param {number} [opts.refetchInterval]  Poll every N ms. 0 or omit to disable.
  * @param {boolean} [opts.enabled=true]    Set false to skip the fetch entirely.

@@ -16,6 +16,114 @@ Severity / Priority / Impact: 🔴 High · 🟡 Medium · 🟢 Low.
 
 ---
 
+# 2026-04-28 BUG-008 · `is_major` threshold was 7 instead of 70 in route alerts — FIXED
+
+## 🔴 Off-by-10× severity threshold caused nearly all alerts to be flagged as major — FIXED
+
+**File:** `backend/cta_client.py` line 330
+
+**What was happening:** `_fetch_alerts_for_route` marked an alert as `is_major` when `severity >= 7`. The CTA `SeverityScore` field runs 0–100, so with a threshold of 7, virtually every non-trivial alert (including routine planned work) was labelled major and prefixed with `"⚠ MAJOR —"` in the Claude prompt, degrading recommendation quality.
+
+**Fixed by:** Changed `"is_major": severity >= 7` to `"is_major": severity >= 70`, matching the threshold used by the `/alerts` public endpoint.
+
+---
+
+# 2026-04-28 BUG-009 · `significant_alerts` filter threshold was 5, far too low for a 0–100 score scale — FIXED
+
+## 🟡 Routine elevator alerts injected into Claude prompt as significant — FIXED
+
+**File:** `backend/main.py` line 1364
+
+**What was happening:** `significant_alerts = [a for a in (alerts or []) if a.get("severity_score", 0) >= 5]` included almost every alert in the Claude recommendation prompt. Combined with BUG-008, this flooded the prompt with routine/planned-work alerts.
+
+**Fixed by:** Raised the threshold to 40 (`severity_score >= 40`), matching the "Minor" floor used by the `/alerts` public endpoint.
+
+---
+
+# 2026-04-28 BUG-010 · Empty NWS grid URLs cached for 24 hours, causing sustained weather failures — FIXED
+
+## 🟡 Transient NWS empty-URL response permanently disabled weather for a coordinate for 24 h — FIXED
+
+**File:** `backend/weather_service.py` lines 134–138
+
+**What was happening:** `_get_grid_urls` cached a `("", "")` tuple when NWS returned a 200 OK with missing `forecast`/`forecastHourly` fields. All subsequent weather requests for that rounded lat/lon attempted to fetch an empty URL, raising an exception that `_safe_weather` silently swallowed, disabling weather for the entire 24-hour cache window.
+
+**Fixed by:** Added a guard before caching: `if not urls[0] or not urls[1]: raise ValueError("NWS returned empty forecast URLs")`. The exception propagates up to `_safe_weather` which catches it; the cache is never written, so the next request retries the `/points` fetch.
+
+---
+
+# 2026-04-28 BUG-011 · BYOK Pydantic validator raised HTTP 422 even when BYOK is disabled — FIXED
+
+## 🟡 Format validation fired before BYOK_ENABLED guard, incorrectly rejecting requests — FIXED
+
+**File:** `backend/main.py` lines 315–326, 629–640
+
+**What was happening:** The `validate_anthropic_key` field validator raised `ValueError` (→ HTTP 422) if `anthropic_api_key` did not start with `"sk-ant-"`, regardless of whether `BYOK_ENABLED` was true. Clients sending any non-`sk-ant-` string received a hard validation error even when the server was ignoring the field entirely.
+
+**Fixed by:** Removed the `sk-ant-` prefix check from the Pydantic validator (which now only strips/nullifies the value). Moved the prefix check into `_validate_api_keys()` under the `if byok_key` branch — it only runs when BYOK is enabled and the user actually supplied a key.
+
+---
+
+# 2026-04-28 BUG-012 · ServiceAlertsBar crashed when `alert.severity` was missing or null — FIXED
+
+## 🔴 `TypeError` on `null.toLowerCase()` crashed the entire alerts bar — FIXED
+
+**File:** `frontend/src/components/ServiceAlertsBar.jsx` lines 34–35
+
+**What was happening:** `alert.severity.toLowerCase()` was called and `alert.severity` was interpolated into CSS class names without a null guard. A missing or `null` severity field from the backend threw a `TypeError` that crashed the component with no error boundary.
+
+**Fixed by:** Added a nullish-coalescing fallback on both lines: `(alert.severity ?? "unknown").toLowerCase()`.
+
+---
+
+# 2026-04-28 BUG-013 · Train alert `⚠` badges never appeared — `pillLabel` vs. backend route name mismatch — FIXED
+
+## 🟡 `activeAlertRoutes` held `"Red Line"`; `pillLabel` was `"Red"` — `Set.has()` always returned false — FIXED
+
+**File:** `frontend/src/App.jsx` lines 508–514
+
+**What was happening:** `activeAlertRoutes` was built from `serviceAlerts.flatMap(a => a.routes)`, which produces full CTA names like `"Red Line"`. `RouteCard` compared against `pillLabel` (`leg.line?.replace(" Line", "")` = `"Red"`), so `activeAlertRoutes.has("Red")` never matched `"Red Line"` and the `⚠` badge was silently suppressed for every train leg.
+
+**Fixed by:** Added `.map((r) => r.replace(" Line", ""))` when building `activeAlertRoutes` in `App.jsx`, so the Set contains abbreviated names (`"Red"`, `"Blue"`) that match `pillLabel`. Bus routes are unaffected as they don't contain `" Line"`.
+
+---
+
+# 2026-04-28 BUG-014 · User-position dot silently lost if map style loads after trip starts — FIXED
+
+## 🟡 Early `return` when style unloaded left GPS dot permanently missing — FIXED
+
+**File:** `frontend/src/MapView.jsx` lines 383–417
+
+**What was happening:** The user-position `useEffect` began with `if (!map || !map.isStyleLoaded()) return;` with no deferred listener. If `tripActive` and `userPosition` were set before the MapLibre style finished loading (slow connection), the effect returned early and never added the blue GPS dot.
+
+**Fixed by:** Extracted the rendering logic into a `render()` function. When `!map.isStyleLoaded()`, it now defers with `map.once("load", render)` and returns `() => map.off("load", render)` as cleanup, mirroring the pattern already used by the route-rendering effect.
+
+---
+
+# 2026-04-28 BUG-015 · Service alerts fetch not aborted on component unmount — FIXED
+
+## 🟢 Missing AbortController caused stale state update in React 18 StrictMode — FIXED
+
+**File:** `frontend/src/App.jsx` lines 521–526
+
+**What was happening:** The `useEffect` fetching `/alerts` on mount had no AbortController. In React 18 StrictMode (dev), effects are double-invoked; the first mount's in-flight fetch completed after cleanup and called `setServiceAlerts` on an already-unmounted instance, producing a dev-mode warning.
+
+**Fixed by:** Added `const ctrl = new AbortController()`, passed `{ signal: ctrl.signal }` to `fetch`, and returned `() => ctrl.abort()` as the cleanup function.
+
+---
+
+# 2026-04-28 BUG-016 · `useApiQuery` spreads caller `deps` into effect dep array — length must be constant — FIXED
+
+## 🟢 Fragile hook contract — undocumented fixed-length requirement on `deps` argument — FIXED
+
+**File:** `frontend/src/hooks/useApiQuery.js` line 17–18 (JSDoc)
+
+**What was happening:** `}, [enabled, tick, ...deps])` spread the caller-supplied array directly into the `useEffect` dependency list. React's rules of hooks require constant dependency-array length. The contract was implicit and undocumented, risking stale or spurious re-fetches if any caller passed a variable-length `deps` array.
+
+**Fixed by:** Added an explicit warning to the JSDoc `@param {Array} deps` description: the array is spread into a `useEffect` dep list so its length must be constant across renders. Callers needing a variable-length dependency should pass a single stable derived key instead.
+
+---
+
 # 2026-04-27 BUG-024 · Direct bus routes ranked with zero wait time — buses always float to top — FIXED
 
 ## 🔴 `_build_arrival_lookup` ingested only train arrivals; bus routes from `find_routes()` got `wait = None` — FIXED
@@ -2719,3 +2827,267 @@ const isMultiStep = dirCount > 1;
 **What was inefficient:** Per-minute request count was computed as `sum(1 for t in window if now - t <= 60)` — a full scan over all hourly timestamps for the IP. At the default 50 req/hr cap this was at most O(50), but would become a hot path if the cap were raised significantly.
 
 **Implemented in:** Replaced with a right-to-left early-exit loop: `for t in reversed(window): if now - t <= 60: recent += 1; else: break`. Because the deque is insertion-ordered (ascending timestamps), iterating from the right encounters the newest entries first and stops as soon as it exits the 60-second window, reducing the average scan to O(recent_requests) instead of O(all_hourly_requests).
+
+
+---
+
+# 2026-04-28 Efficiency Improvements Batch — OPT-001, OPT-002, OPT-003, OPT-005, OPT-006, OPT-008, OPT-011, OPT-012, OPT-013, OPT-014, OPT-015, OPT-016, OPT-017, OPT-018, OPT-019
+
+## OPT-001 · DAU Batch Writes with Time-Based Flush — IMPLEMENTED
+
+**File:** backend/dau.py  
+**Impact:** High
+
+Replaced per-visit disk writes with dual-condition batched writes: _save() fires when _visitors_since_last_flush reaches 20 OR when 30 seconds have elapsed since the last flush (_last_flush_time), whichever comes first. Day-rollover forces an immediate flush and resets both counters. Eliminated the unnecessary .copy() when passing _counts_cache to _save() since the dict is already held exclusively under _lock. Reduces disk I/O ~20x at peak traffic; the 30-second timer ensures counts are durable even at low traffic.
+
+---
+
+## OPT-002 · Response Cache TTL 45 s to 120 s — IMPLEMENTED
+
+**File:** backend/main.py  
+**Impact:** High
+
+Changed _CACHE_TTL_SECONDS from 45 to 120. Route options change only when a new train or bus arrives, typically every 5-15 minutes. The 45-second TTL caused rapid repeat requests to miss the cache and relaunch the full pipeline unnecessarily.
+
+---
+
+## OPT-003 · Geocoding Journal Line-Count Compaction Trigger — IMPLEMENTED
+
+**File:** backend/gtfs_loader.py  
+**Impact:** High
+
+Added _GEOCODE_JOURNAL_LINE_LIMIT = 1000 and a third compaction condition: _geocode_journal_entries >= _GEOCODE_JOURNAL_LINE_LIMIT. At 100 new geocodes/day the journal could accumulate 3,000+ lines in a month, adding 50-100 ms to every cold startup (O(N) replay). The line-count trigger ensures compaction fires before replay becomes expensive.
+
+---
+
+## OPT-005 · Crowdedness Period 1-Minute Cache — IMPLEMENTED
+
+**File:** backend/main.py  
+**Impact:** Medium
+
+Extracted _get_crowdedness_period() which returns (time_period, day_type, hour) and caches the result for 60 seconds. _crowdedness_for_routes() now calls _get_crowdedness_period() instead of calling classify_time_period(datetime.now()) on every invocation. Savings compound across 5-15 legs per request x 10 requests/sec.
+
+---
+
+## OPT-006 · Weather Cache Sizing — IMPLEMENTED
+
+**File:** backend/weather_service.py  
+**Impact:** Medium
+
+_weather_cache: maxsize 50 to 200, TTL 720s (12 min) to 1800s (30 min). Chicago at 2-decimal-degree resolution has ~100 grid cells; the 50-entry cache was saturating and evicting valid entries. Weather changes on a 30-minute scale so the longer TTL reduces NWS API calls ~2.5x with no accuracy loss. _grid_cache maxsize also raised 50 to 200.
+
+---
+
+## OPT-004 · Autocomplete Index Stores Pointer Indices Instead of Duplicate Dict Refs — IMPLEMENTED
+
+**File:** backend/main.py  
+**Impact:** Medium
+
+Added _ac_master: list[dict] as a module-level master suggestion list. Each suggestion dict is now stored exactly once in _ac_master; _ac_prefix_index buckets store (tier, score, idx) integer tuples instead of full dict references. With ~5,000 unique names and 4+ prefix keys per name this cuts the number of in-memory dict objects from ~25,000+ to ~5,000 (~5x reduction). The /autocomplete endpoint dereferences via _ac_master[idx] at lookup time.
+
+---
+
+## OPT-008 · Bus Transfer Lookup Built Once Per Request — ALREADY RESOLVED
+
+**File:** backend/main.py  
+**Impact:** Low
+
+The original entry described _build_bus_transfer_lookup being called at lines 906 and 1830. In the current codebase it is called only once (line 908, inside _fetch_transfer_arrivals). This was already resolved in a prior refactor. Entry removed from active tracking.
+
+---
+
+## OPT-011 · Pre-Filter Origin Stations to 3 Closest — IMPLEMENTED
+
+**File:** backend/main.py (_fetch_arrivals)  
+**Impact:** Medium
+
+Added origin_stations = sorted(origin_stations, key=lambda s: s.get("walk_minutes", 0))[:3] at the top of _fetch_arrivals. resolve_location can return 5-8 nearby stations; only the 1-2 closest are ever useful. Each extra station adds a CTA Train Tracker API call. Filtering to 3 eliminates 2-5 unnecessary network requests per trip on average.
+
+---
+
+## OPT-012 · Walk Directions Capped at 15 Steps — IMPLEMENTED
+
+**File:** backend/walking.py (walk_directions)  
+**Impact:** Low
+
+Added _WALK_DIRECTIONS_MAX_STEPS = 15 and sliced the returned steps: list(steps[:_WALK_DIRECTIONS_MAX_STEPS]). Long walks through dense street grids can produce 20-40 steps. The UI shows only the first 5-10 before a toggle, so serializing 30+ steps was pure payload overhead.
+
+---
+
+## OPT-013 · Lazy Import of xml.etree.ElementTree — IMPLEMENTED
+
+**File:** backend/main.py  
+**Impact:** Low
+
+Removed top-level "import xml.etree.ElementTree as ET". Moved the import inline inside the /alerts endpoint handler where it is the only consumer. Reduces startup import time and keeps the module-level import list honest.
+
+---
+
+## OPT-014 · Cache Hit/Miss Instrumentation — IMPLEMENTED
+
+**File:** backend/main.py  
+**Impact:** Medium
+
+Added _cache_hits, _cache_misses, _cache_requests_total counters and a _CACHE_LOG_INTERVAL = 100. The /recommend cache read path increments the appropriate counter and prints a log line every 100 requests: "[cache] 100 requests | hits=12 misses=88 hit_rate=12.0% size=42". Costs nothing at runtime and makes future TTL/size tuning data-driven.
+
+---
+
+## OPT-015 · Unmemoized serviceAlerts.filter() Inline in JSX — IMPLEMENTED
+
+**File:** frontend/src/App.jsx  
+**Impact:** High
+
+Extracted serviceAlerts.filter((a) => !dismissedAlertIds.has(a.alert_id)) into a useMemo named visibleAlerts with deps [serviceAlerts, dismissedAlertIds]. The filter no longer runs on every keystroke in the origin/destination fields.
+
+---
+
+## OPT-016 · currentRouteSaved not memoized in useFavorites — IMPLEMENTED
+
+**File:** frontend/src/hooks/useFavorites.js  
+**Impact:** Medium
+
+Wrapped savedRoutes.some(...) in useMemo([savedRoutes, currentOrigin, currentDest]). The O(savedRoutes.length) scan no longer runs on every keystroke.
+
+---
+
+## OPT-017 · Alert Sort Re-runs on Every Render in ServiceAlertsBar — IMPLEMENTED
+
+**File:** frontend/src/components/ServiceAlertsBar.jsx  
+**Impact:** Medium
+
+Wrapped [...alerts].sort(...) in useMemo([alerts]). Moved the memo above the early-return guard to satisfy React rules of hooks. The sort only re-runs when the alerts array reference changes.
+
+---
+
+## OPT-018 · Blur Timeout in LocationInput Not Tracked for Cleanup — IMPLEMENTED
+
+**File:** frontend/src/App.jsx  
+**Impact:** Low
+
+Added blurTimerRef = useRef(null). Changed onBlur to store the timer ID: blurTimerRef.current = setTimeout(...). Added clearTimeout(blurTimerRef.current) to the cleanup useEffect alongside the other timer refs.
+
+---
+
+## OPT-019 · pinnedStops.some() Inside legs.map() in RouteLegs — IMPLEMENTED
+
+**File:** frontend/src/components/RouteCard.jsx  
+**Impact:** Low
+
+Added const pinnedIds = useMemo(() => new Set(pinnedStops?.map((s) => s.stop_id) ?? []), [pinnedStops]) at the top of RouteLegs. Replaced pinnedStops?.some(...) with pinnedIds.has(stopId). Lookup is now O(1) instead of O(pinnedStops.length) per leg.
+
+---
+
+## OPT-010 · Direction String Normalized at CTA Client Boundary — IMPLEMENTED
+
+**File:** backend/cta_client.py, backend/crowdedness.py  
+**Impact:** Low
+
+Changed prd.get("rtdir", "") to prd.get("rtdir", "").lower() in get_bus_arrivals() so every arrival dict carries a pre-lowercased direction string. Removed rtdir_lower = rtdir.lower() from rtdir_to_inbound_outbound() in crowdedness.py since the value is now already lowercase at the call site. Eliminates ~250 redundant string allocations per request (50 routes × 5 legs each).
+
+---
+
+# Technical Debt Paid Off
+
+---
+
+## 2026-04-28 TD-001 · Missing test coverage for six core backend modules — RESOLVED
+
+Added `backend/tests/test_weather_service.py`, `test_crowdedness.py`, `test_route_scoring.py`, and `test_dau.py` covering pure functions: `_parse_precip`, `_parse_wind`, `_feels_like`, `classify_time_period`, `rtdir_to_inbound_outbound`, `adjust_weights_for_weather`, `weight_hint_for_weather`, DAU helpers.
+
+---
+
+## 2026-04-28 TD-002 · Loose version pins in requirements.txt allow silent breaking upgrades — RESOLVED
+
+Added `<next_major>` upper bounds to all six open-ended `>=` pins: `anthropic>=0.50,<1`, `scikit-learn>=1.0,<2`, `networkx>=3.0,<4`, `igraph>=0.11,<1`, `scipy>=1.7,<2`, `cachetools>=5.3,<6`, `pytest>=8.0,<9`.
+
+---
+
+## 2026-04-28 TD-003 · CTA Customer Alerts endpoint used HTTP, not HTTPS — RESOLVED
+
+Changed `_CTA_CUSTOMER_ALERTS_URL` in `backend/main.py` from `http://www.transitchicago.com/...` to `https://www.transitchicago.com/...`.
+
+---
+
+## 2026-04-28 TD-004 · `_haversine_walk_minutes` fallback hardcoded 3.0 mph — RESOLVED
+
+Replaced the literal `3.0` in `backend/walking.py` with `_cfg.WALKING_SPEED_MPH` so the fallback honours the config value when `WALKING_SPEED_MPH` is changed via env var.
+
+---
+
+## 2026-04-28 TD-005 · NWS User-Agent hardcoded a personal email address — RESOLVED
+
+Made the contact email configurable via `NWS_CONTACT_EMAIL` env var in `backend/weather_service.py`. Defaults to the existing address if the env var is unset.
+
+---
+
+## 2026-04-28 TD-006 · Holiday list in crowdedness.py requires annual hand-maintenance — RESOLVED
+
+Added a startup-time `logging.warning` in `backend/crowdedness.py` that fires whenever the current Chicago year exceeds `_HOLIDAY_MAX_YEAR` (the highest year in `_HOLIDAYS`). The warning names the file and the specific action needed so it is actionable in Railway logs.
+
+---
+
+## 2026-04-28 TD-007 · `ALERTS_BASE` and `ROUTES_BASE` in cta_client.py not env-overridable — RESOLVED
+
+Applied the same `os.getenv(...)` pattern used for `_CTA_TRAIN_BASE` and `_CTA_BUS_BASE` to both constants in `backend/cta_client.py`. Env vars: `CTA_ALERTS_API_URL`, `CTA_ROUTES_API_URL`.
+
+---
+
+## 2026-04-28 TD-008 · `_DIRECTION_OVERRIDES` was a permanently empty dict — RESOLVED
+
+Removed the empty `_DIRECTION_OVERRIDES` dict and its lookup from `backend/crowdedness.py`. Inlined the heuristic directly in `rtdir_to_inbound_outbound`. The function signature is preserved for call-site compatibility.
+
+---
+
+## 2026-04-28 TD-009 · App.jsx was a 1155-line monolith with three embedded components — RESOLVED
+
+Extracted `LabelSavePanel`, `LocationInput`, and `SavedRoutesPanel` into dedicated files under `frontend/src/components/`. App.jsx imports them. `LocationInput` now imports `BACKEND_URL` from `constants.js` rather than inheriting a module-level closure.
+
+---
+
+## 2026-04-28 TD-010 · Hardcoded English strings bypassed i18n in multiple components — RESOLVED
+
+Added 15 translation keys to `frontend/public/locales/en/translation.json`. Updated: `ErrorBoundary.jsx` (via new `FallbackUI` functional wrapper), `RouteCard.jsx` (Stop/Start Trip), `MapView.jsx` (tile error, unlock button), `LocationInput.jsx` (ac_type badge), `WeatherStrip.jsx` (precip labels, gusts).
+
+---
+
+## 2026-04-28 TD-011 · Core hooks and key utility have zero unit test coverage — RESOLVED
+
+Added `frontend/src/tests/useApiQuery.test.js`, `useFavorites.test.js`, and `useLocalStorage.test.js` using Vitest `renderHook`. Covers success/error fetching, enabled flag, refetch, pin/unpin, route save/delete, limit error, localStorage round-trip and failure handling.
+
+---
+
+## 2026-04-28 TD-012 · Route-color lookup logic duplicated in three files — RESOLVED
+
+Exported `getRouteColor(line, fallback = "#4a9eff")` from `frontend/src/constants.js`. Updated `RouteCard.jsx`, `PinnedStopsBoard.jsx`, and `MapView.jsx` to use it; removed the three inline implementations.
+
+---
+
+## 2026-04-28 TD-013 · `isStopPinned()` in favorites.js was dead code — RESOLVED
+
+Removed `isStopPinned` from `frontend/src/favorites.js`. Removed corresponding tests from `favorites.test.js`. All consumers use `pinnedStops.some(...)` on the in-memory array directly.
+
+---
+
+## 2026-04-28 TD-014 · Magic timeout/delay values scattered inline in App.jsx — RESOLVED
+
+Added five named constants to `frontend/src/constants.js`: `AC_DEBOUNCE_MS`, `DROPDOWN_BLUR_DELAY_MS`, `GEO_ERROR_RESET_MS`, `GEO_UNAVAILABLE_RESET_MS`, `LIMIT_ERROR_DISMISS_MS`. Used in the extracted `LocationInput.jsx`.
+
+---
+
+## 2026-04-28 TD-015 · Commented-out bus-fullness filter left in App.jsx JSX — RESOLVED
+
+Deleted the 17-line commented-out `<select>` block from `frontend/src/App.jsx`. The `psgld` field is still absent from live CTA Bus Tracker responses; a GitHub issue tracks re-enabling when CTA populates the field.
+
+---
+
+## 2026-04-28 TD-016 · External tile-service URL hardcoded in MapView.jsx — RESOLVED
+
+Changed `DEFAULT_STYLE` in `frontend/src/MapView.jsx` to read from `import.meta.env.VITE_MAP_STYLE_URL`, falling back to the OpenFreeMap liberty style. Operators can now switch tile providers via env var without a code change.
+
+---
+
+## 2026-04-28 TD-017 · ErrorBoundary.jsx used inline styles disconnected from app CSS theme — RESOLVED
+
+Added `.error-boundary` and child CSS classes to `frontend/src/App.css` using CSS custom properties (`--bg`, `--text`, `--text-muted`, `--accent`) so the error screen responds to theming. Replaced all inline `style={{...}}` in `ErrorBoundary.jsx` with `className` references. Added a `FallbackUI` functional component so the error screen can use `useTranslation`.
+
+---

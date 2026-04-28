@@ -10,25 +10,22 @@ import RouteCard from "./components/RouteCard.jsx";
 import PinnedStopsBoard from "./components/PinnedStopsBoard.jsx";
 import ServiceAlertsBar from "./components/ServiceAlertsBar.jsx";
 import WeatherStrip from "./components/WeatherStrip.jsx";
-import { saveLocation, deleteLocation } from "./favorites.js";
 import { useFavorites } from "./hooks/useFavorites.js";
 import {
-  GEO_OPTIONS,
+  BACKEND_URL,
   TRIP_GEO_OPTIONS,
   OFF_ROUTE_THRESHOLD_METERS,
   RETRY_DELAYS_MS,
   BYOK_IDLE_TIMEOUT_MS,
   REROUTE_SUPPRESSION_MS,
 } from "./constants.js";
+import LabelSavePanel from "./components/LabelSavePanel.jsx";
+import LocationInput from "./components/LocationInput.jsx";
+import SavedRoutesPanel from "./components/SavedRoutesPanel.jsx";
 import { useApiQuery } from "./hooks/useApiQuery.js";
 import { useLocalStorage } from "./hooks/useLocalStorage.js";
 import { fetchWithRetry as _fetchWithRetry } from "./utils/fetchWithRetry.js";
 import { haversineMeters, pointToSegmentMeters, legEndCoord, distanceToPath } from "./utils/tripGeometry.js";
-
-// Falls back to localhost:8000 so `npm run dev` works out-of-the-box without a .env.local.
-// Production builds always have VITE_BACKEND_URL set via .env.production / Vercel env vars.
-// See frontend/.env.example for documentation. (TD-019)
-const BACKEND_URL  = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
 
 // ---------------------------------------------------------------------------
 // BYOK feature flag — set VITE_BYOK_ENABLED=true in frontend/.env to show
@@ -88,354 +85,8 @@ function renderMarkdown(text) {
 // distanceToPath) are imported from utils/tripGeometry.js (TD-041).
 const WALK_SPEED_FACTORS = { slow: 0.75, standard: 1.0, brisk: 1.25 };
 
-// ---------------------------------------------------------------------------
-// LabelSavePanel — shared inline panel for naming and saving a favourite.
-// Used by LocationInput (saving a location) and the route-save section.
-// Pass prefix="route-label" to use the route-label-save-* CSS classes. (TD-034)
-// ---------------------------------------------------------------------------
+// LabelSavePanel, LocationInput, and SavedRoutesPanel are in frontend/src/components/.
 
-function LabelSavePanel({ value, onChange, onSave, onCancel, placeholder, showError, prefix = "label" }) {
-  const { t } = useTranslation();
-  return (
-    <div className={`${prefix}-save-panel`}>
-      <input
-        type="text"
-        className={`${prefix}-save-input`}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") { e.preventDefault(); onSave(); }
-          if (e.key === "Escape") onCancel();
-        }}
-        maxLength={30}
-        placeholder={placeholder}
-        autoFocus
-      />
-      <button type="button" className={`${prefix}-save-btn`} onClick={onSave}>
-        {t("fav_save")}
-      </button>
-      <button type="button" className={`${prefix}-cancel-btn`} onClick={onCancel}>
-        {t("fav_cancel")}
-      </button>
-      {showError && <span className="fav-limit-error">{t("fav_limit_reached")}</span>}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// LocationInput — wraps a text field with a saved-location star and dropdown.
-//
-// State-management flow (TD-027):
-//   1. Editing — user types; each keystroke calls fetchAcSuggestions() which
-//      debounces 200 ms then fires the /autocomplete endpoint via an
-//      AbortController (previous in-flight request is cancelled first).
-//   2. Autocomplete — results land in acSuggestions; ArrowUp/Down move
-//      acActiveIndex; Enter or onMouseDown commits selectAcSuggestion().
-//   3. Saved-location dropdown — when the field is focused with fewer than
-//      2 chars but saved locations exist, the starred-locations list opens
-//      (dropdownOpen=true). It collapses when acSuggestions appear.
-//   4. Star / save — handleStarClick toggles saving mode; handleSaveLabel
-//      commits the typed label to favorites.js persistence.
-//   5. Blur timing — onBlur uses a 150 ms setTimeout before collapsing the
-//      dropdown so that onMouseDown on a list item fires before the list
-//      unmounts (a React synthetic-event ordering constraint).
-// ---------------------------------------------------------------------------
-
-function LocationInput({ value, onChange, placeholder, savedLocations, onSavedLocationsChange, showGeoBtn }) {
-  const { t } = useTranslation();
-  const [dropdownOpen, setDropdownOpen] = useState(false);
-  const [savingMode, setSavingMode] = useState(false);
-  const [labelDraft, setLabelDraft] = useState("");
-  const [limitError, setLimitError] = useState(false);
-  const [geoState, setGeoState] = useState("idle"); // 'idle' | 'loading' | 'denied' | 'error'
-  const limitTimerRef = useRef(null);
-  const geoTimerRef = useRef(null);
-
-  // Autocomplete state
-  const [acSuggestions, setAcSuggestions] = useState([]);
-  const [acActiveIndex, setAcActiveIndex] = useState(-1);
-  const acDebounceRef = useRef(null);
-  const acAbortRef = useRef(null);
-
-  const isSaved = savedLocations.some((loc) => loc.value === value);
-  const showStar = value.trim().length > 0;
-
-  useEffect(() => () => {
-    if (limitTimerRef.current) clearTimeout(limitTimerRef.current);
-    if (geoTimerRef.current) clearTimeout(geoTimerRef.current);
-    if (acDebounceRef.current) clearTimeout(acDebounceRef.current);
-    if (acAbortRef.current) acAbortRef.current.abort();
-  }, []);
-
-  function fetchAcSuggestions(query) {
-    if (acDebounceRef.current) clearTimeout(acDebounceRef.current);
-    if (acAbortRef.current) acAbortRef.current.abort();
-    if (query.trim().length < 2) {
-      setAcSuggestions([]);
-      setAcActiveIndex(-1);
-      return;
-    }
-    acDebounceRef.current = setTimeout(async () => {
-      const ctrl = new AbortController();
-      acAbortRef.current = ctrl;
-      try {
-        const res = await fetch(
-          `${BACKEND_URL}/autocomplete?q=${encodeURIComponent(query.trim())}`,
-          { signal: ctrl.signal }
-        );
-        if (!res.ok) return;
-        const data = await res.json();
-        setAcSuggestions(data.suggestions || []);
-        setAcActiveIndex(-1);
-      } catch (err) {
-        if (err.name !== "AbortError") setAcSuggestions([]);
-      }
-    }, 200);
-  }
-
-  function selectAcSuggestion(suggestion) {
-    onChange(suggestion.value);
-    setAcSuggestions([]);
-    setAcActiveIndex(-1);
-    if (acDebounceRef.current) clearTimeout(acDebounceRef.current);
-    if (acAbortRef.current) acAbortRef.current.abort();
-  }
-
-  function handleGeoClick() {
-    if (!navigator.geolocation) {
-      setGeoState("error");
-      geoTimerRef.current = setTimeout(() => setGeoState("idle"), 3000);
-      return;
-    }
-    setGeoState("loading");
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const coords = `${pos.coords.latitude.toFixed(6)},${pos.coords.longitude.toFixed(6)}`;
-        onChange(coords);
-        setGeoState("idle");
-      },
-      (err) => {
-        const isDenied = err.code === err.PERMISSION_DENIED;
-        setGeoState(isDenied ? "denied" : "error");
-        if (!isDenied) {
-          geoTimerRef.current = setTimeout(() => setGeoState("idle"), 4000);
-        }
-      },
-      GEO_OPTIONS
-    );
-  }
-
-  function handleStarClick() {
-    if (isSaved) {
-      const loc = savedLocations.find((l) => l.value === value);
-      if (loc) onSavedLocationsChange(deleteLocation(loc.id, savedLocations));
-    } else {
-      setLabelDraft(value.slice(0, 30));
-      setSavingMode(true);
-    }
-  }
-
-  function handleSaveLabel() {
-    const trimmedLabel = labelDraft.trim() || value.slice(0, 30);
-    const next = saveLocation(trimmedLabel, value, savedLocations);
-    if (next === null) {
-      setLimitError(true);
-      if (limitTimerRef.current) clearTimeout(limitTimerRef.current);
-      limitTimerRef.current = setTimeout(() => { setLimitError(false); setSavingMode(false); }, 3000);
-    } else {
-      onSavedLocationsChange(next);
-      setSavingMode(false);
-    }
-  }
-
-  return (
-    <>
-      <div className="field-wrapper">
-        <input
-          type="search"
-          inputMode="search"
-          enterKeyHint="go"
-          placeholder={placeholder}
-          value={value}
-          onChange={(e) => {
-            onChange(e.target.value);
-            fetchAcSuggestions(e.target.value);
-          }}
-          onFocus={() => {
-            if (value.trim().length >= 2) {
-              fetchAcSuggestions(value);
-            } else if (savedLocations.length > 0) {
-              setDropdownOpen(true);
-            }
-          }}
-          onBlur={() => setTimeout(() => {
-            setDropdownOpen(false);
-            setAcSuggestions([]);
-            setAcActiveIndex(-1);
-          }, 150)}
-          onKeyDown={(e) => {
-            if (acSuggestions.length === 0) return;
-            if (e.key === "ArrowDown") {
-              e.preventDefault();
-              setAcActiveIndex(i => Math.min(i + 1, acSuggestions.length - 1));
-            } else if (e.key === "ArrowUp") {
-              e.preventDefault();
-              setAcActiveIndex(i => Math.max(i - 1, -1));
-            } else if (e.key === "Enter" && acActiveIndex >= 0) {
-              e.preventDefault();
-              selectAcSuggestion(acSuggestions[acActiveIndex]);
-            } else if (e.key === "Escape") {
-              setAcSuggestions([]);
-              setAcActiveIndex(-1);
-            }
-          }}
-          autoComplete="off"
-          autoCorrect="off"
-          autoCapitalize="words"
-        />
-        {showStar && !savingMode && (
-          <button
-            type="button"
-            className={`star-btn${isSaved ? " star-btn--saved" : ""}`}
-            onClick={handleStarClick}
-            aria-label={isSaved ? t("fav_unsave_location") : t("fav_save_location")}
-            title={isSaved ? t("fav_unsave_location") : t("fav_save_location")}
-          >
-            {isSaved ? "★" : "☆"}
-          </button>
-        )}
-        {acSuggestions.length > 0 && (
-          <ul className="saved-dropdown" role="listbox" aria-label="Location suggestions">
-            {acSuggestions.map((s, i) => (
-              <li
-                key={i}
-                className={`saved-dropdown-item${i === acActiveIndex ? " saved-dropdown-item--active" : ""}`}
-                role="option"
-                aria-selected={i === acActiveIndex}
-                onMouseDown={(e) => { e.preventDefault(); selectAcSuggestion(s); }}
-              >
-                <span className="saved-dropdown-label">{s.label}</span>
-                <span className="ac-type-badge">
-                  {s.type === "train" ? "Train" : s.type === "bus" ? "Bus" : "Place"}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-        {dropdownOpen && savedLocations.length > 0 && acSuggestions.length === 0 && (
-          <ul className="saved-dropdown" role="listbox">
-            {savedLocations.slice(0, 5).map((loc) => (
-              <li key={loc.id} className="saved-dropdown-item" role="option">
-                <span
-                  className="saved-dropdown-label"
-                  onMouseDown={(e) => { e.preventDefault(); onChange(loc.value); setDropdownOpen(false); }}
-                >
-                  {loc.label}
-                </span>
-                <button
-                  type="button"
-                  className="saved-dropdown-delete"
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    const next = deleteLocation(loc.id, savedLocations);
-                    onSavedLocationsChange(next);
-                    if (next.length === 0) setDropdownOpen(false);
-                  }}
-                  aria-label={t("fav_delete")}
-                >
-                  ×
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-      {showGeoBtn && !savingMode && (
-        <div className="geo-btn-row">
-          <button
-            type="button"
-            className={`geo-btn${geoState === "loading" ? " geo-btn--loading" : ""}${geoState === "denied" || geoState === "error" ? " geo-btn--error" : ""}`}
-            onClick={handleGeoClick}
-            disabled={geoState === "loading"}
-            aria-label={t("geo_btn_label")}
-          >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-              <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/>
-            </svg>
-            {geoState === "loading"
-              ? t("geo_loading")
-              : geoState === "denied"
-              ? t("geo_denied")
-              : geoState === "error"
-              ? t("geo_error")
-              : t("geo_btn_label")}
-          </button>
-        </div>
-      )}
-      {showGeoBtn && geoState === "denied" && (
-        <div className="geo-denied-banner" role="alert">
-          <span>{t("geo_denied_help")}</span>
-          <button
-            type="button"
-            className="geo-denied-dismiss"
-            onClick={() => {
-              if (geoTimerRef.current) clearTimeout(geoTimerRef.current);
-              setGeoState("idle");
-            }}
-            aria-label="Dismiss"
-          >×</button>
-        </div>
-      )}
-      {savingMode && (
-        <LabelSavePanel
-          value={labelDraft}
-          onChange={setLabelDraft}
-          onSave={handleSaveLabel}
-          onCancel={() => setSavingMode(false)}
-          placeholder={t("fav_label_placeholder")}
-          showError={limitError}
-        />
-      )}
-    </>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// SavedRoutesPanel — collapsible panel listing saved origin/destination pairs.
-// ---------------------------------------------------------------------------
-
-function SavedRoutesPanel({ savedRoutes, onDeleteRoute, onRouteSelect }) {
-  const { t } = useTranslation();
-  return (
-    <div className="saved-routes-panel">
-      <p className="saved-routes-panel-heading">{t("fav_saved_routes_heading")}</p>
-      {savedRoutes.length === 0 ? (
-        <p className="saved-routes-empty">{t("fav_routes_empty")}</p>
-      ) : (
-        savedRoutes.map((route) => (
-          <div key={route.id} className="saved-route-row">
-            <span className="saved-route-label">{route.label}</span>
-            <button
-              type="button"
-              className="saved-route-go"
-              onClick={() => onRouteSelect(route.origin, route.destination)}
-            >
-              {t("fav_go")}
-            </button>
-            <button
-              type="button"
-              className="saved-route-delete"
-              onClick={() => onDeleteRoute(route.id)}
-              aria-label={t("fav_delete")}
-            >
-              ×
-            </button>
-          </div>
-        ))
-      )}
-    </div>
-  );
-}
 
 export default function App() {
   const { t, i18n } = useTranslation();
@@ -450,8 +101,10 @@ export default function App() {
 
   const [selectedRouteIndex, setSelectedRouteIndex] = useState(0);
 
-  // BYOK state — key persisted to sessionStorage (clears on tab close, safer than
-  // localStorage which any script on the origin could read).
+  // BYOK state — key persisted to sessionStorage (clears on tab close, NOT across tabs).
+  // sessionStorage and localStorage are equally readable by any same-origin JavaScript,
+  // including supply-chain-compromised npm deps. Accepted trade-off for BYOK UX; feature
+  // is opt-in and off by default (VITE_BYOK_ENABLED). Auto-cleared after idle timeout below.
   const [byokKey, setByokKey] = useState(() =>
     BYOK_ENABLED ? (sessionStorage.getItem("byok_api_key") || "") : ""
   );
@@ -472,7 +125,7 @@ export default function App() {
     pinnedStops,
     savingRoute, setSavingRoute,
     routeLabelDraft, setRouteLabelDraft,
-    routeLimitError,
+    routeLimitError, setRouteLimitError,
     currentRouteSaved,
     handleUnpin,
     handlePinToggle,
@@ -510,7 +163,12 @@ export default function App() {
       serviceAlerts
         .filter((a) => !dismissedAlertIds.has(a.alert_id))
         .flatMap((a) => a.routes)
+        .map((r) => r.replace(" Line", ""))
     ),
+    [serviceAlerts, dismissedAlertIds]
+  );
+  const visibleAlerts = useMemo(
+    () => serviceAlerts.filter((a) => !dismissedAlertIds.has(a.alert_id)),
     [serviceAlerts, dismissedAlertIds]
   );
 
@@ -519,10 +177,12 @@ export default function App() {
 
   // Fetch service alerts on mount (Feature Service Alerts)
   useEffect(() => {
-    fetch(`${BACKEND_URL}/alerts`)
+    const ctrl = new AbortController();
+    fetch(`${BACKEND_URL}/alerts`, { signal: ctrl.signal })
       .then((res) => res.ok ? res.json() : { alerts: [] })
       .then((data) => setServiceAlerts(data.alerts || []))
       .catch(() => {});
+    return () => ctrl.abort();
   }, []);
 
   // RTL support — flip document direction when an RTL language is selected.
@@ -920,23 +580,6 @@ export default function App() {
                     <option key={code} value={code}>{LANGUAGE_NAMES[code]}</option>
                   ))}
                 </select>
-                {/* Bus fullness filter — hidden until CTA populates the psgld field
-                    in Bus Tracker API responses. All current responses return psgld=""
-                    so the filter has no effect. Re-enable when CTA enables the data:
-                    1. Restore: const [busFullness, setBusFullness] = useState("All");
-                    2. Add bus_fullness: busFullness to the request body in handleSubmit.
-                    3. Uncomment this select.
-                <select
-                  value={busFullness}
-                  onChange={(e) => setBusFullness(e.target.value)}
-                  aria-label="Bus fullness"
-                >
-                  <option value="All">Any fullness</option>
-                  <option value="Empty">Empty</option>
-                  <option value="Half-Full">Half-full</option>
-                  <option value="Full">Full</option>
-                </select>
-                */}
               </div>
             </div>
             <p className="tagline">{t("tagline")}</p>
@@ -975,7 +618,7 @@ export default function App() {
             />
 
             <ServiceAlertsBar
-              alerts={serviceAlerts.filter((a) => !dismissedAlertIds.has(a.alert_id))}
+              alerts={visibleAlerts}
               onDismiss={handleAlertDismiss}
             />
 
@@ -991,6 +634,18 @@ export default function App() {
                   showGeoBtn
                 />
               </label>
+
+              <div className="swap-row">
+                <button
+                  type="button"
+                  className="swap-btn"
+                  onClick={() => { setOrigin(destination); setDestination(origin); }}
+                  aria-label={t("swap_directions")}
+                  title={t("swap_directions")}
+                >
+                  ⇅
+                </button>
+              </div>
 
               <label>
                 <span>{t("label_to")}</span>

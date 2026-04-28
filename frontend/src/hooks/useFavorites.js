@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import {
   getSavedLocations,
   getSavedRoutes,
@@ -32,8 +32,9 @@ export function useFavorites({ origin, destination }) {
 
   const currentOrigin = origin.trim();
   const currentDest   = destination.trim();
-  const currentRouteSaved = savedRoutes.some(
-    (r) => r.origin === currentOrigin && r.destination === currentDest
+  const currentRouteSaved = useMemo(
+    () => savedRoutes.some((r) => r.origin === currentOrigin && r.destination === currentDest),
+    [savedRoutes, currentOrigin, currentDest]
   );
 
   useEffect(() => () => {
@@ -94,7 +95,7 @@ export function useFavorites({ origin, destination }) {
     pinnedStops,
     savingRoute, setSavingRoute,
     routeLabelDraft, setRouteLabelDraft,
-    routeLimitError,
+    routeLimitError, setRouteLimitError,
     currentRouteSaved,
     handleUnpin,
     handlePinToggle,

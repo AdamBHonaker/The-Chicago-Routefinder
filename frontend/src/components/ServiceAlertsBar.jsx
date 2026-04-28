@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 
 const _SEVERITY_ORDER = { Major: 0, Minor: 1, Planned: 2 };
@@ -7,11 +7,14 @@ export default function ServiceAlertsBar({ alerts, onDismiss }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
 
-  if (!alerts || alerts.length === 0) return null;
-
-  const sorted = [...alerts].sort(
-    (a, b) => (_SEVERITY_ORDER[a.severity] ?? 3) - (_SEVERITY_ORDER[b.severity] ?? 3)
+  const sorted = useMemo(
+    () => [...(alerts ?? [])].sort(
+      (a, b) => (_SEVERITY_ORDER[a.severity] ?? 3) - (_SEVERITY_ORDER[b.severity] ?? 3)
+    ),
+    [alerts]
   );
+
+  if (!alerts || alerts.length === 0) return null;
 
   return (
     <div className="service-alerts-bar">
@@ -31,11 +34,11 @@ export default function ServiceAlertsBar({ alerts, onDismiss }) {
           {sorted.map((alert) => (
             <li
               key={alert.alert_id}
-              className={`service-alert service-alert--${alert.severity.toLowerCase()}`}
+              className={`service-alert service-alert--${(alert.severity ?? "unknown").toLowerCase()}`}
             >
               <div className="service-alert-header">
                 <span
-                  className={`service-alert-severity service-alert-severity--${alert.severity.toLowerCase()}`}
+                  className={`service-alert-severity service-alert-severity--${(alert.severity ?? "unknown").toLowerCase()}`}
                 >
                   {alert.severity}
                 </span>

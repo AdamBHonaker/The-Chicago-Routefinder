@@ -1,17 +1,18 @@
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import maplibregl from "maplibre-gl";
-import { LINE_COLORS, BUS_DIRECTION_COLORS } from "./constants.js";
+import { getRouteColor } from "./constants.js";
 
 // ---------------------------------------------------------------------------
 // Map defaults — overridable via props for future view modes
 // ---------------------------------------------------------------------------
 
-const DEFAULT_STYLE  = "https://tiles.openfreemap.org/styles/liberty";
+const DEFAULT_STYLE  = import.meta.env.VITE_MAP_STYLE_URL || "https://tiles.openfreemap.org/styles/liberty";
 const DEFAULT_CENTER = [-87.654, 41.966]; // Uptown, Chicago
 const DEFAULT_ZOOM   = 13;
 
 function legColor(leg) {
-  return LINE_COLORS[leg.line] ?? BUS_DIRECTION_COLORS[leg.line] ?? "#4a9eff";
+  return getRouteColor(leg.line);
 }
 
 // Backend returns [lat, lon]; GeoJSON / MapLibre expects [lon, lat].
@@ -273,6 +274,7 @@ export default function MapView({
   center       = DEFAULT_CENTER,
   zoom         = DEFAULT_ZOOM,
 }) {
+  const { t } = useTranslation();
   const containerRef  = useRef(null);
   const mapRef        = useRef(null);
   const routeLayerIds  = useRef([]);   // tracked IDs set during renderRoute
@@ -382,37 +384,45 @@ export default function MapView({
   // User position dot — shown during an active trip
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !map.isStyleLoaded()) return;
+    if (!map) return;
 
-    if (tripActive && userPosition) {
-      const geoData = {
-        type: "Feature",
-        geometry: { type: "Point", coordinates: [userPosition.lng, userPosition.lat] },
-      };
+    function render() {
+      if (tripActive && userPosition) {
+        const geoData = {
+          type: "Feature",
+          geometry: { type: "Point", coordinates: [userPosition.lng, userPosition.lat] },
+        };
 
-      if (!userPosLayerRef.current) {
-        map.addSource("user-position-source", { type: "geojson", data: geoData });
-        map.addLayer({
-          id:     "user-position-layer",
-          type:   "circle",
-          source: "user-position-source",
-          paint:  {
-            "circle-color":        "#4A90E2",
-            "circle-radius":       10,
-            "circle-stroke-width": 2,
-            "circle-stroke-color": "#ffffff",
-          },
-        });
-        userPosLayerRef.current = true;
-        // Center map on first GPS fix
-        map.flyTo({ center: [userPosition.lng, userPosition.lat], zoom: 15 });
-      } else {
-        map.getSource("user-position-source")?.setData(geoData);
-        try { map.setLayoutProperty("user-position-layer", "visibility", "visible"); } catch {}
+        if (!userPosLayerRef.current) {
+          map.addSource("user-position-source", { type: "geojson", data: geoData });
+          map.addLayer({
+            id:     "user-position-layer",
+            type:   "circle",
+            source: "user-position-source",
+            paint:  {
+              "circle-color":        "#4A90E2",
+              "circle-radius":       10,
+              "circle-stroke-width": 2,
+              "circle-stroke-color": "#ffffff",
+            },
+          });
+          userPosLayerRef.current = true;
+          // Center map on first GPS fix
+          map.flyTo({ center: [userPosition.lng, userPosition.lat], zoom: 15 });
+        } else {
+          map.getSource("user-position-source")?.setData(geoData);
+          try { map.setLayoutProperty("user-position-layer", "visibility", "visible"); } catch {}
+        }
+      } else if (userPosLayerRef.current) {
+        try { map.setLayoutProperty("user-position-layer", "visibility", "none"); } catch {}
       }
-    } else if (userPosLayerRef.current) {
-      try { map.setLayoutProperty("user-position-layer", "visibility", "none"); } catch {}
     }
+
+    if (!map.isStyleLoaded()) {
+      map.once("load", render);
+      return () => map.off("load", render);
+    }
+    render();
   // `mapRef` and `userPosLayerRef` are refs, not reactive values — omitting them is correct.
   }, [tripActive, userPosition]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -433,12 +443,12 @@ export default function MapView({
       <div ref={containerRef} className="map-container" />
       {styleError && (
         <div className="map-error">
-          Map tiles unavailable — check your connection or try again later.
+          {t("map_tiles_error")}
         </div>
       )}
       {route && !unlocked && !styleError && (
         <button className="map-unlock-btn" onClick={handleUnlock}>
-          🔓 Unlock map
+          {t("map_unlock_btn")}
         </button>
       )}
     </div>

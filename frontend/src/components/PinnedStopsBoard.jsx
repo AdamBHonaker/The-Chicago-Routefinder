@@ -1,14 +1,9 @@
 import { useTranslation } from "react-i18next";
-import { LINE_COLORS, BUS_DIRECTION_COLORS } from "../constants.js";
+import { LINE_COLORS, getRouteColor } from "../constants.js";
 
 function ArrivalPill({ route, destination, minutes }) {
   const isTrainLine = route in LINE_COLORS;
-  const isBusDir = route in BUS_DIRECTION_COLORS;
-  const color = isTrainLine
-    ? LINE_COLORS[route]
-    : isBusDir
-    ? BUS_DIRECTION_COLORS[route]
-    : "#555";
+  const color = getRouteColor(route, "#555");
   const label = isTrainLine ? route.replace(" Line", "") : route;
   const due = minutes === 0 ? "Due" : `${minutes} min`;
   return (

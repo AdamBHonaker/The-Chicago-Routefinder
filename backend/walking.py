@@ -321,6 +321,9 @@ def _walk_directions_impl(
         return ({"street": "Walk", "direction": "", "direction_full": "", "blocks": fallback_blocks, "block_type": "long", "minutes": total_min, "start_lat": origin_lat, "start_lon": origin_lon},)
 
 
+_WALK_DIRECTIONS_MAX_STEPS = 15
+
+
 def walk_directions(
     origin_lat: float,
     origin_lon: float,
@@ -328,7 +331,7 @@ def walk_directions(
     dest_lon: float,
 ) -> list[dict]:
     """
-    Return turn-by-turn walking directions as a list of steps:
+    Return turn-by-turn walking directions as a list of steps (capped at 15).
       [{"street": "Broadway", "direction": "S", "minutes": 1.2}, ...]
 
     Each step represents a continuous segment along a named street.
@@ -339,7 +342,8 @@ def walk_directions(
     Falls back to a single unnamed step if routing fails.
     Returns a fresh list on every call (safe to mutate).
     """
-    return list(_walk_directions_impl(origin_lat, origin_lon, dest_lat, dest_lon))
+    steps = _walk_directions_impl(origin_lat, origin_lon, dest_lat, dest_lon)
+    return list(steps[:_WALK_DIRECTIONS_MAX_STEPS])
 
 
 @lru_cache(maxsize=512)
@@ -429,4 +433,4 @@ def _haversine_walk_minutes(
     lat1: float, lon1: float, lat2: float, lon2: float
 ) -> float:
     """Straight-line walking time estimate — used as fallback only."""
-    return round(_haversine_miles(lat1, lon1, lat2, lon2) / 3.0 * 60, 1)  # 3 mph
+    return round(_haversine_miles(lat1, lon1, lat2, lon2) / _cfg.WALKING_SPEED_MPH * 60, 1)

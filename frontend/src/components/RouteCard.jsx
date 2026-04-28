@@ -1,6 +1,6 @@
-import { useState, memo } from "react";
+import { useState, memo, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { LINE_COLORS, BUS_DIRECTION_COLORS } from "../constants.js";
+import { LINE_COLORS, BUS_DIRECTION_COLORS, getRouteColor } from "../constants.js";
 
 function formatBlocks(b, blockType, t) {
   if (!blockType) return b === 1 ? `1 ${t("block_singular")}` : `${b} ${t("block_plural")}`;
@@ -76,6 +76,10 @@ function WalkLegItem({ leg, index, completedSteps, extraClass = "" }) {
 
 function RouteLegs({ legs, activeLegIndex, completedSteps, pinnedStops, onPinToggle, activeAlertRoutes }) {
   const { t } = useTranslation();
+  const pinnedIds = useMemo(
+    () => new Set(pinnedStops?.map((s) => s.stop_id) ?? []),
+    [pinnedStops]
+  );
   let seenTransit = false;
   return (
     <ol className="route-legs">
@@ -96,9 +100,7 @@ function RouteLegs({ legs, activeLegIndex, completedSteps, pinnedStops, onPinTog
           );
         }
         const isBus = leg.line in BUS_DIRECTION_COLORS;
-        const color = isBus
-          ? BUS_DIRECTION_COLORS[leg.line]
-          : (LINE_COLORS[leg.line] || "#4a9eff");
+        const color = getRouteColor(leg.line);
         const pillLabel = isBus
           ? leg.line_code
           : leg.line?.replace(" Line", "");
@@ -111,7 +113,7 @@ function RouteLegs({ legs, activeLegIndex, completedSteps, pinnedStops, onPinTog
             : null;
 
         const stopId    = leg.from_mapid;
-        const isPinned  = stopId && pinnedStops?.some((s) => s.stop_id === stopId);
+        const isPinned  = stopId && pinnedIds.has(stopId);
         const stopType  = isBus ? "bus" : "train";
         const hasAlert  = activeAlertRoutes?.has(pillLabel);
 
@@ -212,11 +214,11 @@ export default memo(function RouteCard({
           )}
           {tripActive ? (
             <button className="stop-trip-btn" onClick={onStopTrip}>
-              ■ Stop Trip
+              {t("route_stop_trip")}
             </button>
           ) : (
             <button className="start-trip-btn" onClick={onStartTrip}>
-              ▶ Start Trip
+              {t("route_start_trip")}
             </button>
           )}
           {tripGeoError && (

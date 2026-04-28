@@ -4,13 +4,26 @@ An AI-powered, real-time Chicago Transit Authority (CTA) route recommendation ap
 
 ## What it does
 
+### Core routing
 A user enters their origin and destination. The app:
-1. Resolves both locations to nearby CTA stops via Google Maps geocoding
-2. Runs a routing engine (GTFS + NetworkX + OSMnx) to calculate train and bus options including walking legs and transfers
-3. Fetches live CTA train and bus arrival times to compute real wait times
-4. Passes the ranked route options to Claude (Anthropic API) for a plain-English recommendation
-5. Displays structured route cards with leg-by-leg breakdowns
+1. Resolves both locations to nearby CTA stops via Google Maps geocoding, with autocomplete suggestions covering train stations, neighborhoods, and bus stops
+2. Runs a routing engine (GTFS + NetworkX + OSMnx) to calculate train, bus, and intermodal options including walking legs and transfers — with street-network turn-by-turn walk directions and long/short block classification
+3. Fetches live CTA train and bus arrival times to compute real wait times, including live arrivals at transfer stops
+4. Optionally passes the ranked route options to Claude (Anthropic API) for a plain-English recommendation (AI layer is opt-in via the settings panel)
+5. Displays structured route cards with leg-by-leg breakdowns, crowdedness estimates, and transfer wait countdowns
 6. Shows an interactive map with the route drawn on OpenFreeMap Liberty tiles, including transit photos for featured stops
+
+### Features
+- **Live weather** — NWS weather strip (temperature, feels-like, precipitation badge, wind gusts, NWS alerts) above results; walk times automatically penalized for rain, snow, ice, extreme cold, and high gusts; Claude weighted to favor lower-exposure routes on bad-weather days
+- **Service alerts** — Collapsible CTA service alerts bar above the search form with severity badges; affected route legs flagged with a ⚠ badge on route cards
+- **Walk mode** — A dedicated Walk transit mode that skips all CTA calls and returns a street-network walking route with turn-by-turn directions and a map polyline
+- **Pinned stops** — Pin any train station or bus stop from a result to a persistent home-screen arrivals board; each card shows live arrivals and a "Last train in X min" countdown badge for late-night use
+- **GPS trip tracking** — "Start Trip" activates GPS following: active leg highlighted, walk steps checked off as the user passes them, off-route detection with a one-tap re-route from current position
+- **Saved locations & routes** — Star any typed location or origin+destination pair; saved items appear in a quick-fill dropdown or one-tap panel
+- **Multi-language** — 22 languages with RTL support; browser language auto-detected; Claude responds in the selected language
+- **Walking speed** — Slow / Standard / Brisk pace selector in settings; applied to all walk legs and route ranking
+- **BYOK** — Bring Your Own Anthropic API key (opt-in, sessionStorage only)
+- **Rate limiting** — Per-IP sliding-window limiter (opt-in via Railway env var)
 
 > **Design principle:** The AI layer handles explanation and reasoning — not raw routing. Routing is deterministic, calculated in code for accuracy. Claude's job is the last mile: turning correct, code-generated answers into helpful, conversational recommendations.
 
@@ -18,10 +31,10 @@ A user enters their origin and destination. The app:
 
 | Layer | Technologies |
 |-------|-------------|
-| **Frontend** | React (PWA), MapLibre GL JS v4, OpenFreeMap Liberty tiles, Vite |
+| **Frontend** | React (PWA), MapLibre GL JS v4, OpenFreeMap Liberty tiles, Vite, i18next (22 languages) |
 | **Backend** | Python, FastAPI, NetworkX, OSMnx, scikit-learn, aiohttp |
 | **AI** | Claude (`claude-sonnet-4-6` / `claude-haiku-4-5-20251001`) via Anthropic Python SDK |
-| **Data** | CTA GTFS (static schedules), CTA Bus & Train Tracker APIs (real-time), CTA Alerts API, CTA Route Status API |
+| **Data** | CTA GTFS (static schedules), CTA Bus & Train Tracker APIs (real-time), CTA Alerts API, CTA Route Status API, NWS Weather API, Google Maps Geocoding API |
 | **Hosting** | Railway (backend) + Vercel (frontend) |
 
 ## Local development

@@ -17,12 +17,11 @@
  *  deleteRoute:
  *    - Removes correct item by id
  *
- *  pinStop / getPinnedStops / unpinStop / isStopPinned:
+ *  pinStop / getPinnedStops / unpinStop:
  *    - Pin a stop and retrieve it
  *    - Duplicate stop_id is silently ignored (returns existing array, not null)
  *    - MAX_ITEMS cap (returns null when at limit)
  *    - unpinStop removes correct entry
- *    - isStopPinned reflects current state
  *
  *  Error recovery:
  *    - Corrupted JSON in localStorage falls back to empty array
@@ -32,7 +31,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   getSavedLocations, saveLocation, deleteLocation,
   getSavedRoutes,   saveRoute,   deleteRoute,
-  getPinnedStops,   pinStop,     unpinStop,  isStopPinned,
+  getPinnedStops,   pinStop,     unpinStop,
 } from "../favorites.js";
 
 // ---------------------------------------------------------------------------
@@ -213,24 +212,3 @@ describe("unpinStop", () => {
   });
 });
 
-describe("isStopPinned", () => {
-  it("returns false when no stops are pinned", () => {
-    expect(isStopPinned("40380")).toBe(false);
-  });
-
-  it("returns true after pinning a stop", () => {
-    pinStop("train", "40380", "O'Hare", "Blue Line", []);
-    expect(isStopPinned("40380")).toBe(true);
-  });
-
-  it("returns false for a different stop_id", () => {
-    pinStop("train", "40380", "O'Hare", "Blue Line", []);
-    expect(isStopPinned("40900")).toBe(false);
-  });
-
-  it("returns false after the stop is unpinned", () => {
-    const current = pinStop("train", "40380", "O'Hare", "Blue Line", []);
-    unpinStop(current[0].id, current);
-    expect(isStopPinned("40380")).toBe(false);
-  });
-});

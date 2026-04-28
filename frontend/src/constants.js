@@ -1,4 +1,20 @@
 // ---------------------------------------------------------------------------
+// Backend URL — falls back to localhost:8000 so `npm run dev` works without .env.local.
+// Production builds always have VITE_BACKEND_URL set via .env.production / Vercel env vars.
+// ---------------------------------------------------------------------------
+export const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
+
+// ---------------------------------------------------------------------------
+// Timing constants for LocationInput and related UI (TD-014).
+// Named so the two different 3000 ms uses are distinguishable at call-sites.
+// ---------------------------------------------------------------------------
+export const AC_DEBOUNCE_MS          = 200;   // autocomplete keypress debounce
+export const DROPDOWN_BLUR_DELAY_MS  = 150;   // blur→close delay so mousedown fires first
+export const GEO_ERROR_RESET_MS      = 3000;  // geo unavailable / no-API error reset
+export const GEO_UNAVAILABLE_RESET_MS = 4000; // non-denied geo error reset (longer grace)
+export const LIMIT_ERROR_DISMISS_MS  = 3000;  // save-limit banner auto-dismiss
+
+// ---------------------------------------------------------------------------
 // Geolocation option objects — used in both the one-shot location detect flow
 // (handleGeoClick) and the live trip-tracking watchPosition call (startTrip).
 // Keeping them as named constants prevents the two call-sites from drifting
@@ -66,6 +82,14 @@ export function isValidByokKey(key) {
 // device. Do not raise without a documented security review.
 // ---------------------------------------------------------------------------
 export const BYOK_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+
+// ---------------------------------------------------------------------------
+// Route color lookup — shared by RouteCard, PinnedStopsBoard, and MapView (TD-012).
+// Checks LINE_COLORS first (train lines), then BUS_DIRECTION_COLORS, then fallback.
+// ---------------------------------------------------------------------------
+export function getRouteColor(line, fallback = "#4a9eff") {
+  return LINE_COLORS[line] ?? BUS_DIRECTION_COLORS[line] ?? fallback;
+}
 
 // ---------------------------------------------------------------------------
 // Reroute suppression window (TD-025).

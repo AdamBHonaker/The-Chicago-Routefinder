@@ -119,7 +119,7 @@ No database required. User accounts are not planned; saved locations, routes, an
 **Cost reduction strategies (all implemented):**
 - Claude Haiku for simple queries ✅ — single-option or single-leg routes use Haiku; all others use Sonnet
 - AI Toggle ✅ — Claude opt-in, off by default; zero token spend when disabled
-- Response caching ✅ — 45s TTL, 500-entry LRU cache; repeat queries skip all upstream I/O
+- Response caching ✅ — 120s TTL, 500-entry LRU cache; repeat queries skip all upstream I/O; hit/miss logged every 100 requests
 - BYOK ✅ — code complete; user's API key usage shifts off the app's variable cost base
 - Rate limiting ✅ — code complete, OFF by default; activate with `RATE_LIMIT_ENABLED=true` before public launch
 
@@ -256,7 +256,7 @@ All implemented features are documented in detail in [`FEATURES_IMPLEMENTED_HIST
 
 All five features shipped. NWS weather context, crowdedness estimates, and weather-adjusted routing now flow into every recommendation.
 
-1. **Feature Weather** — `backend/weather_service.py` (new). NWS two-step flow (grid-point URL cached 24h, forecast+alerts cached 12min via `cachetools.TTLCache`). `WeatherContext` injected into `build_prompt()`. Weather fetch runs before `_run_routing()` so the precip factor can be applied to walk legs.
+1. **Feature Weather** — `backend/weather_service.py` (new). NWS two-step flow (grid-point URL cached 24h, forecast+alerts cached 30min via `cachetools.TTLCache`, maxsize 200). `WeatherContext` injected into `build_prompt()`. Weather fetch runs before `_run_routing()` so the precip factor can be applied to walk legs.
 
 2. **Feature Crowdedness** — `backend/crowdedness.py` (new). `TimePeriod`/`DayType`/`CrowdednessLevel` enums; static 2025–2027 holiday set; `estimate_crowdedness()` uses live `psgld` first, heuristic fallback. Per-route `[est. crowdedness: ...]` annotation appended to each route option in the Claude prompt.
 
@@ -399,6 +399,7 @@ CTA-Transit-PWA/
 │   ├── crowdedness.py                  ← Crowdedness estimator: TimePeriod/DayType/CrowdednessLevel enums;
 │   │                                      CrowdednessEstimate Pydantic model; static 2025–2027 holiday set;
 │   │                                      classify_time_period(); estimate_crowdedness(); rtdir_to_inbound_outbound();
+│   │                                      rtdir_to_inbound_outbound() expects pre-lowercased rtdir (normalized at CTA client boundary);
 │   │                                      HIGH_TRAFFIC_TRAIN_STATIONS (10 curated mapids)
 │   ├── route_scoring.py                ← Weather-adjusted route ranking: DEFAULT_WEIGHTS dict;
 │   │                                      adjust_weights_for_weather() applies threshold-based deltas;
@@ -408,6 +409,7 @@ CTA-Transit-PWA/
 │   │                                      in-memory _seen_hashes set discarded on day rollover;
 │   │                                      counts written to dau.json (Railway persistent volume at /app/data);
 │   │                                      async record_visit(); non-blocking saves via run_in_executor;
+│   │                                      batched writes: flush every 20 new visitors OR 30 seconds (whichever first);
 │   │                                      get_counts() returns full {YYYY-MM-DD: count} history
 │   ├── fetch_gtfs.py                   ← Script to download/update CTA GTFS data
 │   ├── fetch_street_graph.py           ← Script to download/cache OSMnx street graph; applies ox.consolidate_intersections;
