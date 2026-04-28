@@ -15,32 +15,36 @@ RUN pip install -r requirements.txt
 
 COPY . .
 
-# NOTE: street_graph.graphml is intentionally NOT downloaded at build time.
-# The file lives in Git LFS but GitHub's LFS media endpoint returns 404
-# (likely bandwidth-quota exhausted on the free tier). The runtime falls back
-# to Haversine straight-line walking estimates via walking.py — see commit
-# 954c7fa ("Fix OOM crash: use Haversine for intermodal edges, defer street
-# graph load"). Walking times are degraded but the app deploys and serves.
+# Download the pre-built street graph from GitHub Releases (Feature K).
+# The repo is private, so a GitHub personal access token (read:packages or
+# contents scope) must be passed as the GITHUB_TOKEN build argument.
+# In Railway: Settings → Build → Build Arguments → GITHUB_TOKEN=<PAT>
 #
-# To restore street-network routing, see Feature K in
-# FEATURE_IMPLEMENTATION_PLANS.md (host the 120 MB graphml as a GitHub
-# Release asset / S3 / R2 / Railway volume and re-enable the curl step
-# preserved below).
-#
-# --- PRESERVED FOR FUTURE RESTORATION (Feature K) ---
-# ARG STREET_GRAPH_URL=https://media.githubusercontent.com/media/AdamBHonaker/CTA-Transit-PWA/main/backend/street_graph.graphml
-# RUN curl -fSL --retry 3 --retry-delay 2 -o street_graph.graphml "$STREET_GRAPH_URL" \
-#     && SIZE=$(wc -c < street_graph.graphml) \
-#     && echo "street_graph.graphml: $SIZE bytes" \
-#     && if [ "$SIZE" -lt 1048576 ]; then \
-#          echo "ERROR: street_graph.graphml is only $SIZE bytes — likely an LFS pointer or quota-exhausted response."; \
-#          head -c 500 street_graph.graphml; \
-#          exit 1; \
-#        fi \
-#     && if head -c 200 street_graph.graphml | grep -q "git-lfs.github.com"; then \
-#          echo "ERROR: street_graph.graphml is an LFS pointer stub, not the real file."; \
-#          exit 1; \
-#        fi
-# --- END PRESERVED ---
+# To update the graph (e.g. after NorthExpansion / SouthExpansion):
+#   1. Run: python fetch_street_graph.py --force  (from backend/)
+#   2. Create a new release tag (e.g. street-graph-v2) via gh release create
+#   3. Update STREET_GRAPH_URL below to the new tag's asset URL.
+ARG STREET_GRAPH_URL=https://github.com/AdamBHonaker/CTA-Transit-PWA/releases/download/street-graph-v1/street_graph.graphml
+ARG GITHUB_TOKEN
+RUN set -eu; \
+    if [ -n "${GITHUB_TOKEN:-}" ]; then \
+      curl -fSL --retry 3 --retry-delay 2 \
+           -H "Authorization: Bearer $GITHUB_TOKEN" \
+           -o street_graph.graphml "$STREET_GRAPH_URL"; \
+    else \
+      curl -fSL --retry 3 --retry-delay 2 \
+           -o street_graph.graphml "$STREET_GRAPH_URL"; \
+    fi \
+    && SIZE=$(wc -c < street_graph.graphml) \
+    && echo "street_graph.graphml: $SIZE bytes" \
+    && if [ "$SIZE" -lt 1048576 ]; then \
+         echo "ERROR: street_graph.graphml is only $SIZE bytes — likely an LFS pointer or truncated download."; \
+         head -c 500 street_graph.graphml; \
+         exit 1; \
+       fi \
+    && if head -c 200 street_graph.graphml | grep -q "git-lfs.github.com"; then \
+         echo "ERROR: street_graph.graphml is an LFS pointer stub, not the real file."; \
+         exit 1; \
+       fi
 
 CMD ["sh", "-c", "python fetch_gtfs.py && uvicorn main:app --host 0.0.0.0 --port $PORT --no-access-log --log-level warning"]

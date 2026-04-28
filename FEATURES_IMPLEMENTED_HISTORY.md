@@ -11,26 +11,252 @@ A log of features that have been designed and fully implemented. Entries are mov
 **Bolt-On** = self-contained, no dependencies on other planned features.
 **Structural** = depends on one or more other features before it can be fully built or realized.
 
-1. Feature A — Train Station Exit Guidance — **Bolt-On**
-2. Feature C — Multi-Leg Bus Routing (Bus + Bus Transfers) — **Bolt-On**
-3. Feature D — Live Arrivals at Transfer Stop — **Structural** (Dependency on Feature C)
-4. Feature E — Walk Leg Street-Level Distance Detail — **Bolt-On**
-5. Feature F — Street Abbreviation Normalization — **Bolt-On**
-6. Feature G — Long/Short Block Classification — **Bolt-On** (Dependency on Feature E)
-7. Feature B — Intermodal Routing (Train + Bus) — **Structural** (Dependency on Feature C)
-8. Feature H — Deduplicate Same-Line Station Candidates — **Bolt-On** (Dependency on Feature B)
-9. Feature I — CTA Alerts Integration — **Bolt-On**
-10. Rate Limiting — **Bolt-On**
-11. BYOK (Bring Your Own API Key) — **Bolt-On**
-12. Claude Response Caching — **Bolt-On**
-13. Multi-Leg Train Routing Gap 2 (Bus First/Last Mile) — **Structural** (Resolved by Feature B)
-14. Feature J — Deprecate `find_bus_routes()` in Favor of Unified Graph — **Bolt-On** (Dependency on Feature B)
-15. Claude Haiku for Simple Queries — **Bolt-On**
-16. Multi-Leg Train Routing — Shared-Track Edge Deduplication — **Structural**
-17. Feature Language — Multi-Language Support (i18n) — **Bolt-On**
-18. Feature Trip — Live Trip-in-Progress Routing — **Bolt-On**
-19. Feature Favorites — Saved Locations & Routes — **Bolt-On**
-20. Feature DAU — Daily Unique User Counting — **Bolt-On**
+1. Feature Weather UI — Weather Strip Display — **Bolt-On** (depends on Feature Weather ✅)
+2. Feature Precip Walk — Precipitation Walk-Speed Penalty — **Bolt-On**
+2. Feature Departure Window — Optimal Departure Timing Hint — **Bolt-On**
+3. Feature Weather Scoring — Weather-Adjusted Route Ranking — **Structural** (depends on Feature Weather ✅ + Feature Crowdedness ✅)
+4. Feature Crowdedness — CTA Vehicle Crowdedness Estimation — **Bolt-On**
+5. Feature Weather — Live Weather Integration — **Bolt-On**
+5. Feature Autocomplete — Location Input Suggestions — **Bolt-On**
+3. Feature A — Train Station Exit Guidance — **Bolt-On**
+4. Feature C — Multi-Leg Bus Routing (Bus + Bus Transfers) — **Bolt-On**
+5. Feature D — Live Arrivals at Transfer Stop — **Structural** (Dependency on Feature C)
+6. Feature E — Walk Leg Street-Level Distance Detail — **Bolt-On**
+7. Feature F — Street Abbreviation Normalization — **Bolt-On**
+8. Feature G — Long/Short Block Classification — **Bolt-On** (Dependency on Feature E)
+9. Feature B — Intermodal Routing (Train + Bus) — **Structural** (Dependency on Feature C)
+10. Feature H — Deduplicate Same-Line Station Candidates — **Bolt-On** (Dependency on Feature B)
+11. Feature I — CTA Alerts Integration — **Bolt-On**
+12. Rate Limiting — **Bolt-On**
+13. BYOK (Bring Your Own API Key) — **Bolt-On**
+14. Claude Response Caching — **Bolt-On**
+15. Multi-Leg Train Routing Gap 2 (Bus First/Last Mile) — **Structural** (Resolved by Feature B)
+16. Feature J — Deprecate `find_bus_routes()` in Favor of Unified Graph — **Bolt-On** (Dependency on Feature B)
+17. Claude Haiku for Simple Queries — **Bolt-On**
+18. Multi-Leg Train Routing — Shared-Track Edge Deduplication — **Structural**
+19. Feature Language — Multi-Language Support (i18n) — **Bolt-On**
+20. Feature Trip — Live Trip-in-Progress Routing — **Bolt-On**
+21. Feature Favorites — Saved Locations & Routes — **Bolt-On**
+22. Feature DAU — Daily Unique User Counting — **Bolt-On**
+23. Feature MultiLine — Multi-Pattern Train Graph — **Bolt-On**
+24. Feature WalkMode — Walk-Only Transit Mode — **Bolt-On**
+25. Feature Walk Speed — Walking Speed Preference — **Bolt-On**
+26. Feature Pinned Stops — Saved-Stop Arrivals Board — **Bolt-On**
+27. Feature Last Train — Last Train Countdown — **Bolt-On**
+28. Feature Crowdedness — CTA Vehicle Crowdedness Estimation — **Bolt-On**
+29. Feature Service Alerts — CTA Service Alerts Feed — **Bolt-On**
+30. Feature K — Restore Street-Network Walking Graph in Production — **Bolt-On**
+
+---
+
+# Feature K — Restore Street-Network Walking Graph in Production
+
+**Completed: 2026-04-28**
+
+**Overview:** `backend/street_graph.graphml` (79 MB OSMnx pedestrian network of Chicago) was absent at Railway runtime — rebuilding OOM-kills on the free tier and the old GitHub LFS download URL returned 404. The app was falling back to Haversine straight-line walking estimates throughout. This feature hosts the graphml as a GitHub Release asset and re-enables the Dockerfile curl step, transparently restoring street-routed walking, turn-by-turn directions, and curved walk-path polylines across the entire app.
+
+**What was implemented (2 chunks):**
+
+- **Chunk 1 — GitHub Release upload:**
+  - Created release tag `street-graph-v1` on `AdamBHonaker/CTA-Transit-PWA` via `gh release create`.
+  - Uploaded `backend/street_graph.graphml` (81,789,243 bytes / ~78 MB) as a release asset.
+  - Asset URL: `https://github.com/AdamBHonaker/CTA-Transit-PWA/releases/download/street-graph-v1/street_graph.graphml`
+  - Note: repo is private — download requires a GitHub PAT with `repo` or `contents:read` scope (see Dockerfile comment and Chunk 2 below).
+
+- **Chunk 2 — Dockerfile (`backend/Dockerfile`):**
+  - Removed the old commented-out LFS URL block and the degradation notice.
+  - Added `ARG STREET_GRAPH_URL` (defaulting to the `street-graph-v1` release asset URL) and `ARG GITHUB_TOKEN`.
+  - `RUN` step: conditionally passes `-H "Authorization: Bearer $GITHUB_TOKEN"` when the build arg is set, then performs the same two safety checks as before (size ≥ 1 MB; reject LFS pointer stub).
+  - **Railway setup required (one-time):** In the Railway service → Settings → Build → Build Arguments, add `GITHUB_TOKEN=<PAT>`. The PAT needs `Contents: Read` scope on the repo. This is a build-time secret only — not stored in the image.
+  - For future graph regenerations (NorthExpansion, SouthExpansion): run `python fetch_street_graph.py --force`, create `street-graph-v2` (etc.) via `gh release create`, and update `STREET_GRAPH_URL` in the Dockerfile.
+
+**Chunk 3 (production verification — requires manual Railway redeploy):**
+- Trigger a Railway redeploy and confirm build log shows `street_graph.graphml: 81789243 bytes`.
+- Confirm runtime startup log shows `[walking] igraph loaded: N vertices, M edges` (not `Street graph not found ... Haversine fallback`).
+- Spot-check one trip: walk directions should return multi-step named-street routes; walk path on map should follow streets rather than a straight line.
+
+**Files changed:** `backend/Dockerfile`
+**External actions:** GitHub Release `street-graph-v1` created with `street_graph.graphml` asset.
+
+---
+
+# Feature Weather UI — Weather Strip Display
+
+**Completed: 2026-04-27**
+
+**Overview:** The already-fetched `WeatherContext` (from Feature Weather) was invisible to riders — they could only see weather through Claude's prose. A compact `WeatherStrip` component now appears at the top of every result set, showing temperature, feels-like, short forecast, precipitation badge, and wind gusts at a glance. Active NWS alerts render as an amber one-liner below.
+
+**What was implemented (2 chunks):**
+
+- **Chunk 1 (`backend/main.py`):**
+  - Added `weather: "WeatherContext | None" = None` parameter to `_format_response()`.
+  - Serializes the weather context into the response under a new `"weather"` key: `{ temperature_f, feels_like_f, short_forecast, precipitation_type, precipitation_intensity, wind_gust_mph, alerts }`. `null` when weather is unavailable.
+  - Updated both `_format_response()` call sites to pass `weather=walk_weather` (Walk mode path) and `weather=weather` (main routing path). Purely additive — callers that don't read the new key are unaffected.
+
+- **Chunk 2 (frontend + i18n):**
+  - `frontend/src/components/WeatherStrip.jsx` (new): Props `weather` (serialized object or null). Returns `null` when weather is null. Line 1: temperature + feels-like (i18n'd) + short forecast text + precipitation badge (shown when `precipitation_type !== "none"`) + wind gust note (shown when `wind_gust_mph >= 15`). Line 2 (optional): amber alert bar `⚠ NWS: {alerts[0]}` when alerts present, truncated to 80 chars.
+  - `frontend/src/App.jsx`: Added `WeatherStrip` import. Added `weather: data.weather || null` to `setResult` in both `handleSubmit` and `handleReroute`. Mounts `<WeatherStrip weather={result.weather} />` at the top of the `.results` div, above the recommendation text.
+  - `frontend/src/App.css`: Added `.weather-strip` (0.85rem, cream-forward `var(--color-surface)` bg, `var(--color-border)` bottom border), `.weather-strip__main` (flex-wrap row), `.weather-strip__badge` (small pill), and `.weather-strip__alert` (`#fef3c7` amber bg, `#2c2c2c` text, 0.8rem). CSS variables include fallbacks for the current dark theme; tokens will activate fully with Feature Heritage.
+  - All 22 `frontend/public/locales/*/translation.json` files: Added `weather_feels_like` (`"feels like {{temp}}°F"` / native-language equivalents) and `weather_nws_alert` (`"NWS: {{headline}}"`) keys. NWS short-forecast text remains English (NWS data is English-only).
+
+---
+
+# Feature Precip Walk — Precipitation Walk-Speed Penalty
+
+**Completed: 2026-04-27**
+
+**Overview:** Automatically applies a walk-time multiplier based on live precipitation conditions before route ranking. Walk legs are made longer on rainy, snowy, icy, cold, or windy days — reflecting real reduced walking speed — without requiring the rider to manually select "Slow" pace.
+
+**What was implemented (both chunks in `backend/main.py`):**
+
+- **`_precip_walk_factor(weather: WeatherContext | None) -> float`** (placed after `_scale_walk_legs`): Returns a ≤1.0 multiplier from three penalty tiers:
+  - *Precipitation type/intensity*: no precip → 1.00; light rain/drizzle → 0.96; moderate rain → 0.90; heavy rain → 0.82; light snow/flurries → 0.92; moderate snow → 0.84; heavy snow/blizzard → 0.74; freezing rain or sleet → 0.78.
+  - *Wind penalty*: gusts > 35 mph → additional ×0.90 (Chicago elevated-platform hazard).
+  - *Extreme cold floor*: feels_like_f < 0°F → additional ×0.88 (bulky clothing, ice patches).
+  - Hard floor of 0.60 prevents absurd stacked-penalty results (e.g. blizzard + dangerous wind + extreme cold).
+- **`_run_routing()` updated**: gains a `weather: WeatherContext | None = None` parameter. Computes `effective_speed = request.walk_speed * _precip_walk_factor(weather)` and passes it to both `_scale_walk_legs` calls (unified-graph routes and bus-transfer routes). Single combined call per scoping decision 4.
+- **Walk mode updated**: `walk_effective_speed = request.walk_speed * _precip_walk_factor(walk_weather)` applied to `walk_min` inline in the Walk-mode early-return branch.
+- **Execution order change**: weather is now fetched with a standalone `await _safe_weather(origin_coords)` before `_run_routing()`. Removed from the subsequent `asyncio.gather(get_alerts, get_route_statuses)` call — alerts and route statuses are still concurrent.
+
+**Scoping decisions taken:**
+1. All precipitation multipliers accepted as proposed (conservative, Chicago-appropriate).
+2. Wind penalty (×0.90 at >35 mph gusts) included.
+3. Extreme cold floor (×0.88 at feels_like < 0°F) included.
+4. Combined into one `_scale_walk_legs` call: `effective_speed = walk_speed * precip_factor`.
+5. Weather fetch moved before routing (serial single await, uses 12-min cache so negligible latency).
+
+---
+
+# Feature Service Alerts — CTA Service Alerts Feed
+
+**Completed: 2026-04-27**
+
+**Overview:** Fetches all active CTA service alerts (delays, reroutes, outages) from the CTA Customer Alerts XML API and surfaces them as a collapsible bar on the home view (above the search form) and as small ⚠ warning badges on route card transit legs for affected routes.
+
+**What was implemented (2 chunks):**
+
+- **Chunk 1 (`backend/main.py` — new `GET /alerts` endpoint):**
+  - `import xml.etree.ElementTree as ET` and `import aiohttp` added to imports.
+  - `_ALERTS_CACHE_TTL = 300`, `_alerts_cache` (5-min `OrderedDict` TTL cache, single key `"alerts"`).
+  - `GET /alerts`: fetches `http://www.transitchicago.com/api/1.0/alerts.aspx?outputType=XML&accessibility=N` with `aiohttp`, parses XML, maps each `<Alert>` to `{ alert_id, headline, short_description, routes, severity }`. Severity: score ≥ 70 → Major, 40–69 → Minor, < 40 → Planned. Route names normalized (`removesuffix(" Line")` so "Red Line" → "Red"). Sorted Major → Minor → Planned. Returns `{ "alerts": [] }` on any failure; logs via `traceback.print_exc()`; never raises.
+
+- **Chunk 2 (frontend):**
+  - **`frontend/src/components/ServiceAlertsBar.jsx`** (new): Props `alerts`, `onDismiss(alertId)`. Returns `null` when no alerts. Collapsed default shows count badge; expanded shows alert cards sorted Major → Minor → Planned with severity badge, route list, headline, short description, and dismiss button.
+  - **`frontend/src/components/RouteCard.jsx`**: Added `activeAlertRoutes: Set<string>` prop threaded through `RouteCard` → `RouteLegs`. Transit legs check `activeAlertRoutes?.has(pillLabel)` (pillLabel = stripped train name or bus line_code) and render a `⚠` `.leg-alert-badge` when matched.
+  - **`frontend/src/App.jsx`**: Imports `ServiceAlertsBar`; adds `serviceAlerts`, `dismissedAlertIds` (initialized from `sessionStorage["dismissed_alert_ids"]`), and `activeAlertRoutes` (useMemo Set) state. `useEffect` on mount fetches `GET /alerts` and populates `serviceAlerts`. `handleAlertDismiss` writes back to `sessionStorage`. `ServiceAlertsBar` mounted between `PinnedStopsBoard` and the search form. `activeAlertRoutes` passed to each `RouteCard`.
+  - **`frontend/src/App.css`**: `.service-alerts-bar`, `.service-alerts-toggle`, `.service-alerts-list`, `.service-alert`, `.service-alert--major/minor/planned`, `.service-alert-severity--major/minor/planned`, `.leg-alert-badge` styles added.
+  - **22 locale files**: `alerts_active_count` and `alerts_dismiss` keys added to all locales.
+
+**Files changed:** `backend/main.py`, `frontend/src/App.jsx`, `frontend/src/App.css`, `frontend/src/components/ServiceAlertsBar.jsx` (new), `frontend/src/components/RouteCard.jsx`, all 22 `frontend/public/locales/*/translation.json`.
+
+---
+
+# Feature Weather Scoring — Weather-Adjusted Route Ranking
+
+**Completed: 2026-04-27**
+
+**Overview:** Adds a weather-aware weight-adjustment layer to the Claude recommendation pipeline. When live weather data is available, a short "Weight guidance:" hint is appended to the weather section of the Claude prompt (prompt-only path — `_rank_routes()` ordering is unchanged). Claude uses the hint to verbally bias its recommendation toward lower-exposure options on cold/rainy/windy days.
+
+**What was implemented (2 chunks):**
+
+- **Chunk 1 (`backend/route_scoring.py` — new):**
+  - `DEFAULT_WEIGHTS = {travel_time: 0.35, outdoor_exposure: 0.25, crowdedness: 0.20, reliability: 0.15, transfers: 0.05}` — baseline weight dict per scoping decision 2.
+  - `adjust_weights_for_weather(base_weights, weather) -> dict`: applies threshold-based deltas (coldest-first for temperature: `< 0°F` → outdoor_exposure +0.20, travel_time −0.10; `< 15°F` → +0.10/−0.05), heavy precipitation (type != NONE and intensity == "heavy" → outdoor_exposure +0.15, travel_time −0.10), and high gusts (> 35 mph → reliability +0.05). Clamps negatives to 0, then normalizes to sum 1.0. Returns `dict(base_weights)` unchanged when `weather is None`.
+  - `weight_hint_for_weather(weather) -> str`: derives a human-readable one-line hint from the same threshold conditions ("Weight guidance: outdoor exposure heavily prioritized due to dangerous wind chill."). Returns `""` when no thresholds fire or weather is None. Temperature thresholds are coldest-first with mutual exclusion (mirrors `adjust_weights_for_weather`).
+
+- **Chunk 2 (`backend/main.py`):**
+  - `from route_scoring import weight_hint_for_weather` added to imports.
+  - In `build_prompt()`, after `_format_weather_for_prompt(weather)` builds the weather section, calls `weight_hint_for_weather(weather)` and appends the result (when non-empty) as a new line in `weather_section`. The hint appears as a single line directly after the weather conditions line — one token-efficient addition.
+
+**Scoping decisions taken:**
+1. Prompt-only (not numeric re-rank) — `_rank_routes()` unchanged.
+2. Default weights accepted as proposed.
+3. Weather thresholds and deltas accepted as proposed.
+4. Isolated module `backend/route_scoring.py`.
+
+---
+
+# Feature Departure Window — Optimal Departure Timing Hint
+
+**Completed: 2026-04-27**
+
+**Overview:** When precipitation is present or forecast to change within the next few hours, Claude now receives a departure-timing hint enabling advice like "if you can leave in about 2 hours the rain should clear." The hint is derived from `WeatherContext.hourly_forecast` (already fetched on every request) — zero additional API calls and no new files.
+
+**What was implemented (2 chunks, both in `backend/main.py`):**
+
+- **Chunk 1 — `_departure_window_hint(weather)`:** New helper placed immediately after `_format_weather_for_prompt`. Receives `WeatherContext | None`; returns `""` when `weather` is `None` or `len(hourly_forecast) < 2`. Scans `hourly_forecast[:3]` starting at index 1 (index 0 = too imminent to be actionable) for two signal types:
+  - Improving: `current_type != NONE` and a future period has `type == NONE` → `"(forecast: clears in ~{i+1}h)"`
+  - Worsening: `current_type == NONE` and a future period has `type != NONE` → `"(forecast: {type.value} starts in ~{i+1}h)"`
+  - Returns `""` if no qualifying transition is found.
+
+- **Chunk 2 — wire-up:** `_format_weather_for_prompt` gained optional `hint: str = ""` parameter; when non-empty it is appended inline to the existing conditions line. In `build_prompt()`, `_departure_window_hint(weather)` is called once (stored in `departure_hint`) and passed into `_format_weather_for_prompt(weather, departure_hint)`. When `departure_hint` is non-empty, one sentence — `"If conditions improve soon, mention the optimal departure window."` — is appended to the end-of-prompt instruction (only on relevant days, to avoid token waste on clear days).
+
+**Example prompt output (rain clearing in 2h):**
+```
+Current weather: Rain, 52°F (feels like 47°F), precipitation: rain (moderate) (forecast: clears in ~2h)
+```
+
+**Scoping decisions taken:**
+1. Minimum gap index ≥ 1 (index 0 imminent = not actionable).
+2. Hint computed once in `build_prompt()`, passed as parameter to avoid double-calling `_departure_window_hint`.
+3. Departure instruction added conditionally — only when hint is non-empty.
+4. Both improving and worsening transitions detected; steady conditions emit no hint.
+
+---
+
+# Feature Crowdedness — CTA Vehicle Crowdedness Estimation
+
+**Completed: 2026-04-27**
+
+**Overview:** Added a heuristic crowdedness estimator that annotates each Claude route option with an `[est. crowdedness: X]` tag. The estimator considers time period (PEAK / REGULAR / OFF_PEAK), day type (WEEKDAY / WEEKEND / HOLIDAY), travel direction (inbound/outbound relative to the Loop), position along the route (bell-curve factor), and known high-traffic stops. When CTA's Bus Tracker `psgld` field returns non-empty data it takes priority with `confidence="high"`; otherwise the heuristic produces `confidence="medium"` at peak and `"low"` otherwise. Claude weaves crowding context naturally into its recommendations.
+
+**What was implemented (3 chunks):**
+
+- **Chunk 1+2 (`backend/crowdedness.py` — new):**
+  - `TimePeriod` enum (`PEAK/REGULAR/OFF_PEAK`), `DayType` enum (`WEEKDAY/WEEKEND/HOLIDAY`), `CrowdednessLevel` enum (`LOW/MODERATE/HIGH/VERY_HIGH`), `CrowdednessEstimate` Pydantic model (`score: float`, `level`, `confidence`, `factors` dict).
+  - `CHICAGO_TZ = ZoneInfo("America/Chicago")` defined locally to avoid coupling to `cta_client.py`.
+  - Static `_HOLIDAYS` set covering 2025–2027 US federal + Illinois state holidays (hand-maintained; ~5 min/year update).
+  - `_TIME_PERIOD_CONFIG`: weekday PEAK 06:30–09:30 + 15:30–18:30; REGULAR 09:30–15:30 + 18:30–21:00; OFF_PEAK fallback. Weekend/holiday REGULAR 09:00–21:00; OFF_PEAK fallback.
+  - `classify_time_period(dt, holidays=None) -> (TimePeriod, DayType)` — normalises to Chicago local time, handles timezone-aware and naive datetimes.
+  - `BASE_SCORES = {PEAK: 0.75, REGULAR: 0.45, OFF_PEAK: 0.20}`.
+  - `_direction_multiplier(direction, time_period, current_hour)`: AM peak inbound → 1.2 (outbound 0.8); PM peak outbound → 1.2; non-peak → 1.0.
+  - `_stop_position_factor(position, total)`: bell curve `0.6 + 0.4 * sin(pos/total * π)`.
+  - `HIGH_TRAFFIC_TRAIN_STATIONS`: 10 curated mapids verified against `stops.txt` — Clark/Lake (40380, ×1.35), Washington/Wells (40730, ×1.30), Harold Washington Library (40850, ×1.25), Belmont (41320, ×1.25), Howard (40900, ×1.20), Fullerton (41220, ×1.20), Chicago Red (41450, ×1.20), O'Hare (40890, ×1.15), Midway (40930, ×1.15), 95th/Dan Ryan (40450, ×1.15).
+  - `HIGH_TRAFFIC_BUS_STOPS = {}` — empty at launch per scoping decision.
+  - `rtdir_to_inbound_outbound(route_short_name, rtdir)`: heuristic (Southbound/Eastbound → inbound) + `_DIRECTION_OVERRIDES` dict for exceptions.
+  - `estimate_crowdedness(...)`: live `psgld` path (EMPTY→LOW, HALF_EMPTY→MODERATE, FULL→HIGH, confidence "high") and heuristic path (`base * dir_mult * pos_factor * ht_mult`, clamped [0,1]).
+  - `CROWDEDNESS_LEVEL_ORDER` dict for enum comparison without relying on Enum ordering.
+
+- **Chunk 3 (`backend/main.py`):**
+  - Imports `classify_time_period`, `estimate_crowdedness`, `rtdir_to_inbound_outbound`, `CrowdednessLevel`, `CROWDEDNESS_LEVEL_ORDER`, and `CHICAGO_TZ` (as `_CROWD_TZ`) from `crowdedness`.
+  - `_CROWDEDNESS_LABELS` dict mapping levels to prompt-friendly strings (light / moderate / busy / very crowded).
+  - `_crowdedness_for_routes(ranked) -> dict[int, str]`: computes current Chicago time, calls `classify_time_period`, iterates all `TransitLeg`s per route, calls `estimate_crowdedness()` with `stop_sequence_position=1, total_stops=2` (midpoint approximation), takes the worst level across legs, returns per-route-index label dict.
+  - `_format_routes()` updated: calls `_crowdedness_for_routes(ranked)` once, appends `[est. crowdedness: {label}]` to each route option line when transit legs are present.
+  - Bus legs use `rtdir_to_inbound_outbound(leg.line_code, leg.line)` for direction; train legs default to `"inbound"` (conservative).
+  - Automatic live-override: `estimate_crowdedness` already prefers non-empty `psgld` — no further change needed when CTA restores real data.
+
+**Scoping decisions taken:**
+1. Static holiday list (no `holidays` library dependency).
+2. Heuristic + override dict for direction mapping.
+3. Curated train-only high-traffic list; bus stops empty.
+4. Base scores and direction multipliers accepted as proposed.
+5. Prompt-only surfacing (no UI crowdedness badge in v1).
+
+---
+
+# Feature Weather — Live Weather Integration
+
+**Completed: 2026-04-27**
+
+**Overview:** Integrated the NWS (weather.gov) API to inject live weather context into Claude's `/recommend` pipeline. `WeatherContext` (current conditions, near-term hourly forecast, and active NWS alerts) is fetched per request for the origin coordinates and appended as a single concise line in `build_prompt()`. Claude naturally weaves weather into its recommendation — e.g. flagging freezing rain, dangerous wind chills, or heavy snow when advising on outdoor vs. covered routing options.
+
+**What was implemented (3 chunks, all in `backend/weather_service.py` + `backend/main.py` + `backend/requirements.txt`):**
+
+- **Chunk 1 (Data models):** `backend/weather_service.py` — `PrecipitationType` enum (`NONE/RAIN/SNOW/SLEET/FREEZING_RAIN`), `PrecipitationInfo`, `WindInfo`, `CurrentWeather`, `ForecastPoint`, and `WeatherContext` (current + `hourly_forecast[:6]` + `alerts[:3]` + `fetched_at`). All Pydantic `BaseModel` subclasses.
+
+- **Chunk 2 (WeatherService + cache):** `WeatherService` class with `async get_weather_context(lat, lon) → WeatherContext`. NWS two-step flow: `GET /points/{lat},{lon}` returns grid-point metadata (cached 24 h via `cachetools.TTLCache`); `GET forecastHourly` + `GET /alerts/active?point=…` fetched concurrently via `asyncio.gather` (cached 12 min). Cache key is rounded lat/lon to 2 decimal places. `_parse_wind()` handles `"10 mph"` and `"5 to 10 mph"` forms. `_feels_like()` applies NWS wind-chill formula (≤50°F + wind ≥3 mph) and Steadman heat-index approximation (≥80°F, 45% RH default). `_parse_precip()` infers type + intensity from NWS short-forecast text. `User-Agent: CTA-Transit-PWA/1.0 (adambhonaker@gmail.com)` per NWS requirements. `cachetools>=5.3` added to `requirements.txt`.
+
+- **Chunk 3 (Integration):** `backend/main.py` — `weather_service = WeatherService()` module-level singleton. `_safe_weather(origin_coords)` async helper wraps `get_weather_context` in try/except (non-fatal; returns `None` on failure). `_format_weather_for_prompt(weather)` formats one-line summary: `Current weather: {condition}, {temp:.0f}°F (feels like {feels:.0f}°F), precipitation: {type}[ ({intensity})][, wind gusts {gusts:.0f} mph]` plus optional `Weather alerts: …` line. Weather fetched concurrently with CTA alerts via `asyncio.gather(get_alerts(…), get_route_statuses(), _safe_weather(origin_coords))` — zero added latency. `build_prompt()` gained `weather: WeatherContext | None = None` param; injects weather section and updates end-of-prompt instruction to `"Keep it to 3-4 sentences; incorporate weather context naturally within those sentences, not as a separate paragraph."` Walk mode path also fetches weather via `asyncio.gather` alongside the three walk-engine calls. `import traceback` added to `main.py`.
 
 ---
 
@@ -114,15 +340,15 @@ A log of features that have been designed and fully implemented. Entries are mov
 
 ---
 
-# Feature I — CTA Alerts Integration
+# Feature I — CTA Alerts Integration + Route Status
 
-**Completed: 2026-04-17**
+**Completed: 2026-04-17 | Updated: 2026-04-24**
 
-**Overview:** After routes are calculated, active service alerts are fetched from the CTA Detailed Alerts API for every transit line/route involved in the ranked results. Disruptions surfaced in the UI and included in Claude's prompt.
+**Overview:** After routes are calculated, active service alerts are fetched from the CTA Alerts API for every transit line/route involved in the ranked results. System-wide route statuses are also fetched in parallel from the CTA Route Status API. Both are included in Claude's prompt and disruptions are surfaced in the UI.
 
-**What was implemented (3 chunks):**
-- **I-1 (`cta_client.py`):** `ALERTS_BASE` URL constant, `_TRAIN_LINE_TO_ALERT_ID` dict (maps internal line_code → Alerts API route id), `_fetch_alerts_for_route(session, route_id)` (async fetch, timeout 5s, returns `[]` on error), `get_alerts(route_ids)` (concurrent gather, dedup by `alert_id`, sorted by `severity_score` descending).
-- **I-2 (`main.py`):** `get_alerts` and `_TRAIN_LINE_TO_ALERT_ID` imported from `cta_client`. `_alert_ids_from_routes(ranked_routes)` helper extracts deduplicated Alerts API ids from all `TransitLeg`s. Alerts fetched after `ranked_routes` finalized. `build_prompt()` gained `alerts` param — alerts with `severity_score >= 5` appended as "Active service alerts on your route" block. `alerts` key added to response payload with 7 fields per alert.
+**What was implemented (3 chunks, updated 2026-04-24):**
+- **I-1 (`cta_client.py`):** `ALERTS_BASE` constant (`https://lapi.transitchicago.com/api/1.0/alerts.aspx` — updated 2026-04-24 from dead `www.transitchicago.com/api/1.0/detailed_alerts.aspx` endpoint), `_TRAIN_LINE_TO_ALERT_ID` dict (maps internal line_code → Alerts API route id), `_fetch_alerts_for_route(session, route_id)` (async fetch, timeout 5s, returns `[]` on error), `get_alerts(route_ids)` (concurrent gather, dedup by `alert_id`, sorted by `severity_score` descending). Also added: `ROUTES_BASE` constant (`https://lapi.transitchicago.com/api/1.0/routes.aspx`), `get_route_statuses()` (single async call returning all lines; each dict has `service_id`, `route`, `status`, `status_color`).
+- **I-2 (`main.py`):** `get_alerts`, `get_route_statuses`, and `_TRAIN_LINE_TO_ALERT_ID` imported from `cta_client`. `_alert_ids_from_routes(ranked_routes)` helper extracts deduplicated Alerts API ids from all `TransitLeg`s. `get_alerts` and `get_route_statuses` fetched concurrently via `asyncio.gather` after `ranked_routes` finalized. `build_prompt()` gained `alerts` and `route_statuses` params — alerts with `severity_score >= 5` appended as "Active service alerts on your route" block; routes where `status != "Normal Service"` appended as "Current system-wide route disruptions" block. `alerts` key added to response payload with 7 fields per alert.
 - **I-3 (`App.jsx` / `App.css`):** `alerts` stored in result state. Rendered between recommendation text and route cards when non-empty. Major alerts (`is_major: true`) get red left border + bold red headline; minor alerts get yellow border. Capped at 3 with "and N more" link. Alert styles in `App.css` (`.alerts-section`, `.alert-item`, `.alert-item--major`, `.alert-item--minor`, `.alert-headline`, `.alert-impact`, `.alerts-more`).
 
 ---
@@ -425,3 +651,129 @@ Frontend:
 - Set env vars: `DAILY_SALT=<random-secret>`, `DAU_ADMIN_TOKEN=<random-secret>`, `APP_ENV=production`.
 
 **Data access:** `GET /admin/dau` with `Authorization: Bearer <DAU_ADMIN_TOKEN>` returns the full `{"YYYY-MM-DD": count, ...}` JSON object.
+
+---
+
+# Feature MultiLine — Multi-Pattern Train Graph
+
+**Completed: 2026-04-25**
+
+**Overview:** Fixed two related bugs that caused certain CTA train lines — most critically the Purple Line — to never appear in routing recommendations.
+
+**Root cause (Bug 1 — rush-hour-only express services missing from graph):** The transit graph was built by selecting one representative trip per `(route_id, direction_id)`, choosing the weekday trip whose first-stop departure was closest to noon. Purple Express only runs during rush hours. GTFS data confirmed: 135 weekday Purple trips have 9 stops (Evanston local, Linden→Howard) while 55 trips have 43 stops (Purple Express, Linden→Loop). The noon selector reliably picked a local trip, so no Purple edges existed south of Howard — Purple Line could never route to downtown.
+
+**Secondary bug (Bug 2 — shared-track line suppression):** On segments where two lines serve the same consecutive stops (e.g. Red/Purple at Belmont→Fullerton, Green/Pink at Loop elevated stations), only one edge is stored per `(from, to)` node pair. The competing line was saved in an `all_routes` edge attribute but `_dedup_stations_by_line` read only the primary `line` attribute, making shared-track lines invisible to station deduplication.
+
+**What was implemented (2 chunks, `backend/transit_graph.py` only):**
+- **Chunk 1:** Changed representative trip selection in `_stream_all_stop_sequences` from "closest to noon" to "most parent-station stops, tie-break by noon proximity." This selects Purple Express (43 stops) over the Evanston local (9 stops). For all other lines with full-length all-day service the selection is unchanged — no regression risk.
+- **Chunk 2:** Rewrote the `station_lines` collection in `_dedup_stations_by_line` to also iterate the `all_routes` attribute on each edge, so every line serving a shared-track segment is visible to station deduplication.
+
+---
+
+# Feature Autocomplete — Location Input Suggestions
+
+**Completed: 2026-04-25**
+
+**Overview:** As the user types in the origin or destination field, a dropdown of up to 8 matching suggestions appears covering CTA train stations, named neighborhoods/landmarks, and deduplicated bus stop names. Selecting a suggestion fills the field exactly. The autocomplete dropdown takes priority over the saved-locations dropdown while the user is actively typing; when the field is cleared or blurred, the saved-locations dropdown resumes normal behavior.
+
+**What was implemented (1 chunk, Chunk 2 / Google Places deferred):**
+
+- **Backend (`backend/main.py`):** `_build_autocomplete_index()` runs at startup (inside `lifespan`) and populates three module-level lists: `_ac_train_names` (~145 CTA parent station names from `_load_stops()`), `_ac_neighborhood_names` (title-cased keys from `NEIGHBORHOOD_COORDS`), and `_ac_bus_names` (bus stop names deduplicated by lowercase name). `_ac_score(query, name) -> int | None` returns 0 (prefix), 1 (word-start), 2 (substring), or `None` (no match). `GET /autocomplete?q=<str>` returns `{"suggestions": [...]}` with objects `{label, value, type}` where type is `"train"`, `"neighborhood"`, or `"bus"`. Results are sorted by (tier, match-quality score) and capped at 8. Requires `Query` added to FastAPI imports and `_load_stops` added to gtfs_loader imports.
+- **Frontend (`frontend/src/App.jsx`):** `LocationInput` gains `acSuggestions` (list), `acActiveIndex` (int), `acDebounceRef`, and `acAbortRef`. The `onChange` handler calls `fetchAcSuggestions()` which debounces 200 ms then fetches `/autocomplete`, cancelling any in-flight request via `AbortController`. The autocomplete dropdown reuses `.saved-dropdown` / `.saved-dropdown-item` CSS and shows above the saved-locations dropdown (which is now gated on `acSuggestions.length === 0`). Keyboard navigation: `ArrowDown`/`ArrowUp` move `acActiveIndex`, `Enter` selects the highlighted item, `Escape` closes without selecting. `onBlur` clears suggestions after 150 ms (so `onMouseDown` on an item fires first). On focus with an existing value ≥ 2 chars, autocomplete fires immediately.
+- **Frontend (`frontend/src/App.css`):** Added `.ac-type-badge` (small muted uppercase label) and `.saved-dropdown-item--active` (active-highlight background) rules.
+
+**Deferred (Chunk 2):** Google Places Autocomplete API integration for street address suggestions — deferred pending Places API enablement in GCP Console.
+
+---
+
+# Feature WalkMode — Walk-Only Transit Mode
+
+**Completed: 2026-04-27**
+
+**Overview:** Added a fourth transit mode option — **Walk** — to the mode selector. When selected, the app skips all CTA train/bus API calls and instead computes a street-network walking route between origin and destination using the existing `walking.py` infrastructure, returning turn-by-turn directions, an estimated walking time, and a polyline path.
+
+**What was implemented (2 chunks):**
+
+- **Backend (`backend/main.py`):**
+  - Added `"Walk"` to `_VALID_TRANSIT_MODES`. Updated `RouteRequest` transit_mode comment. Updated `_validate_api_keys` to skip the `CTA_TRAIN_API_KEY` requirement when `transit_mode == "Walk"`.
+  - Added `Route` to `transit_graph` imports and new `walking` module imports (`_walk_minutes`, `_walk_directions`, `_walk_path`).
+  - Added `"Walk"` entry to `mode_constraints` in `build_prompt()`: `"The rider wants to WALK. Provide a brief summary of the walking route and estimated time. Do not mention transit."`
+  - Added Walk mode early-return branch in `recommend()` after the cache check: geocodes origin/destination directly (no CTA stop lookup required), runs `walk_minutes`/`walk_directions`/`walk_path` concurrently via `asyncio.gather` + `run_in_executor`, applies `walk_speed` scaling, wraps result in a single `WalkLeg` + `Route`, builds prompt, optionally calls Claude, formats and caches the response using the existing `_format_response` schema. All CTA API calls (arrivals, routing, transfer arrivals, alerts) are entirely bypassed.
+
+- **Frontend + i18n (`frontend/src/App.jsx`, all 22 locale files):**
+  - Added `<option value="Walk">{t("mode_walk")}</option>` to the transit mode selector after the Bus option.
+  - Added `"mode_walk"` key to all 22 `frontend/public/locales/*/translation.json` files with native-language translations (en: Walk, es: Caminar, fr: Marche, ar: مشي, zh/yue: 步行, hi/ne: पैदल/हिँडाइ, ur/pa: پیدل/ਪੈਦਲ, gu: ચાલો, ko: 걷기, ja: 徒歩（とほ）, ru: Пешком, uk: Пішки, pl: Pieszo, ro: Mers pe jos, vi: Đi bộ, tl: Maglakad, yo: Rìn, ps: پلي, it: A piedi).
+  - No changes needed to result rendering — the walk-only response uses the existing `WalkLeg` schema that RouteCard already renders.
+
+---
+
+# Feature Walk Speed — Walking Speed Preference
+
+**Completed: 2026-04-27**
+
+**Overview:** Users set their walking pace (Slow / Standard / Brisk) in the Settings panel. The preference is stored in `localStorage`, and the corresponding multiplier is sent as `walk_speed` in the `/recommend` request body. The backend applies the multiplier to every `WalkLeg` before route ranking so both displayed walk times and route ordering reflect the user's actual pace.
+
+**What was implemented (2 chunks):**
+
+- **Backend (`backend/main.py`):**
+  - Added `Field` to the pydantic import.
+  - Added `walk_speed: float = Field(default=1.0, ge=0.5, le=2.0)` to `RouteRequest`. `walk_speed=1.0` is a no-op; standard requests omit the field and get the default.
+  - Added `walk_speed` to `_cache_key()` so different pace preferences cache separately.
+  - Added `_scale_walk_legs(routes, walk_speed)` helper: iterates all `WalkLeg`s in a route list, multiplies `leg.minutes` by `1 / walk_speed` (rounded to 1 decimal), then updates `route.walk_minutes_total`. No-op when `walk_speed == 1.0`.
+  - Refactored `_run_routing()`: `find_routes()` result is stored as `raw_routes`, `_scale_walk_legs` is called before `_rank_routes`. For bus transfer routes from `find_bus_transfer_routes()`, walk legs are scaled and tuple totals are rebuilt before `_rank_bus_routes`.
+
+- **Frontend (`frontend/src/components/SettingsPanel.jsx`, `frontend/src/App.jsx`, `frontend/src/App.css`, all 22 locale files):**
+  - `SettingsPanel.jsx`: Added `walkSpeed` and `onWalkSpeedChange` props. Renders a three-button segmented toggle (Slow | Standard | Brisk) using `.walk-speed-toggle` / `.walk-speed-btn` / `.walk-speed-btn--active` CSS classes. Labels use `t("settings_walk_speed_{speed}")` i18n keys.
+  - `App.jsx`: Added `walkSpeed` state (initialized from `localStorage.getItem("cta_walk_speed") || "standard"`). Added `WALK_SPEED_FACTORS = { slow: 0.75, standard: 1.0, brisk: 1.25 }` constant. Added `handleWalkSpeedChange(speed)` handler (writes to state + localStorage). Both fetch bodies (GPS reroute and normal submit) conditionally include `walk_speed: WALK_SPEED_FACTORS[walkSpeed]` when the factor is not 1.0. Props `walkSpeed` and `onWalkSpeedChange` passed to `SettingsPanel`.
+  - `App.css`: Added `.walk-speed-toggle`, `.walk-speed-btn`, `.walk-speed-btn:last-child`, `.walk-speed-btn:hover`, and `.walk-speed-btn--active` rules.
+  - All 22 `frontend/public/locales/*/translation.json` files: Added `settings_walk_speed_label`, `settings_walk_speed_slow`, `settings_walk_speed_standard`, `settings_walk_speed_brisk`, and `settings_walk_speed_hint` keys with native-language translations.
+
+---
+
+## Feature Pinned Stops — Saved-Stop Arrivals Board
+
+**Completed: 2026-04-27**
+
+**Overview:** Users can pin individual transit stops (train stations or bus stops) from any route result leg to a persistent home-screen board that shows live arrivals without typing an origin/destination. Persists in `localStorage`; live arrivals fetched on demand.
+
+**What was implemented (3 chunks):**
+
+- **Backend (`backend/main.py`, `backend/transit_graph.py`):**
+  - Added `"from_mapid": leg.from_mapid` to the `TransitLeg` serialization branch in `_format_response()` so the frontend knows which stop to offer for pinning.
+  - Added `GET /stop-arrivals` endpoint: accepts `stops` as repeated `type:stop_id` query params (e.g. `train:40500`), gathers train and bus arrivals concurrently via `asyncio.gather`, caps at 3 arrivals per stop, returns `{ "arrivals": { "<stop_id>": { "arrivals": [...] } } }`. Non-fatal per-stop errors logged but not surfaced. 30 s `OrderedDict` TTL cache (200-entry cap) keyed on sorted stop list string.
+
+- **Frontend storage (`frontend/src/favorites.js`):**
+  - Added `PINNED_KEY = "cta_pinned_stops"` constant (separate namespace from locations/routes).
+  - Added four functions following the existing plain-module pattern: `getPinnedStops()`, `pinStop(type, stop_id, label, route_hint)` (returns `null` at 10-stop cap), `unpinStop(id)`, `isStopPinned(stop_id)`.
+
+- **Frontend UI (`frontend/src/components/PinnedStopsBoard.jsx` new, `frontend/src/components/RouteCard.jsx`, `frontend/src/App.jsx`, `frontend/src/App.css`):**
+  - `PinnedStopsBoard.jsx`: New component. Header with title + refresh button. Horizontally scrollable row of stop cards each showing label, route_hint badge, up to 3 `ArrivalPill` sub-components (colored by `LINE_COLORS`/`BUS_DIRECTION_COLORS`), and unpin (×) button. Returns `null` when `stops.length === 0`.
+  - `RouteCard.jsx`: Pin button (📍/📌) on each transit leg. Derives `stopId = leg.from_mapid`, calls `onPinToggle(stopType, stopId, leg.from, leg.line_code, isPinned)` via prop callback. Walk legs omitted.
+  - `App.jsx`: Added `pinnedStops` state (initialized from `getPinnedStops()`), `pinnedArrivals` state, `fetchPinnedArrivals()` async function, `handlePinToggle()` handler wiring `pinStop`/`unpinStop` + state updates. `useEffect` fetches arrivals on mount if stops exist. `PinnedStopsBoard` rendered above the search form. `pinnedStops` and `onPinToggle` passed to each `RouteCard`.
+  - `App.css`: Added `.pin-btn` / `.pin-btn--pinned` and full PinnedStopsBoard CSS (`.psb`, `.psb-card`, `.psb-arrival-pill`, etc.).
+
+---
+
+## Feature Last Train — Last Train Countdown
+
+**Completed: 2026-04-27**
+
+**Overview:** Pinned train station cards show a countdown badge ("Last train in X min") when within 0–120 minutes of the last scheduled weekday departure for that station. Motivates late-night app opens and repeat visits.
+
+**What was implemented (3 chunks):**
+
+- **Backend graph (`backend/transit_graph.py`):**
+  - Added module-level `_last_departure: dict[tuple[str, str], str] = {}` dict.
+  - Extended `_stream_all_stop_sequences()` to return a 3-tuple, accumulating `last_dep: dict[tuple[str, str], tuple[float, str]]` keyed on `(parent_mapid, direction_id)` — the latest departure time string (by parsed minutes) seen across all weekday train trips per station/direction pair. Both directions `"0"` and `"1"` tracked independently.
+  - `_build_graph()` unpacks the 3-tuple and assigns `_last_departure` via `global`.
+  - Added `get_last_departure(mapid: str, direction_id: str) -> str | None` public helper.
+
+- **Backend endpoint (`backend/main.py`):**
+  - Added `from datetime import datetime` and `from zoneinfo import ZoneInfo` imports; defined `_CHICAGO_TZ = ZoneInfo("America/Chicago")`.
+  - Added `_parse_gtfs_time_mins(t: str) -> float` — handles 24:xx/25:xx post-midnight GTFS times naturally (h×60+m+s/60, no special case needed).
+  - Added `_last_dep_minutes(mapid: str, now_chicago: datetime) -> int | None` — computes `now_mins` (offset by +1440 when hour < 3 to align with GTFS 24:xx/25:xx encoding), checks both direction `"0"` and `"1"`, returns the maximum minutes-until-last-departure in the 0–120 window (or `None`).
+  - Extended `/stop-arrivals` handler: for each train stop in the response, calls `_last_dep_minutes(stop_id, now_chicago)` and includes `"last_departure_minutes": int` in the payload when the value is in range.
+
+- **Frontend (`frontend/src/components/PinnedStopsBoard.jsx`):**
+  - `PinnedStopsBoard` reads `data.last_departure_minutes` per stop card.
+  - Renders a badge below the arrival pills: "Last train in X min". Styled amber (`.psb-last-train`, `#78350f` bg / `#fbbf24` text) normally; red (`.psb-last-train--urgent`, `#7f1d1d` bg / `#f87171` text) when ≤ 15 min. Hidden when `last_departure_minutes` is absent.
