@@ -4,6 +4,11 @@ Shared utility functions and constants for the CTA Transit backend.
 
 import math
 from typing import Any
+from zoneinfo import ZoneInfo
+
+# Canonical Chicago timezone — import this rather than constructing ZoneInfo("America/Chicago")
+# inline across modules.
+CHICAGO_TZ = ZoneInfo("America/Chicago")
 
 # Minutes added to total trip time for each line transfer.
 TRANSFER_PENALTY_MINUTES: float = 3
@@ -121,17 +126,14 @@ CHICAGO_BBOX_OSMNX: tuple  = (CHICAGO_WEST, CHICAGO_SOUTH, CHICAGO_EAST, CHICAGO
 # ---------------------------------------------------------------------------
 # Street-graph bounding box — tighter than full Chicago for Railway memory limits.
 #
-# Current coverage: Howard St (north, 42.019) → ~21st St/Cermak Rd (south, 41.856)
-#                   Pulaski Rd (west, -87.726) → Lakefront (east, -87.520)
+# Current coverage: Linden/Dempster-Skokie (north, 42.083) → 95th/Dan Ryan (south, 41.718)
+#                   Dempster-Skokie/Midway corridor (west, -87.757) → Lakefront (east, -87.520)
 #
-# To expand southward to 50th St (~41.803) and westward to Cicero Ave (~-87.745):
-#   1. Verify Railway plan RAM (≥2 GB free after graph load).
-#   2. Lower STREET_GRAPH_SOUTH to 41.80 and STREET_GRAPH_WEST to -87.75 here.
-#   3. Re-run fetch_street_graph.py to download the updated graph.
-#   4. Re-deploy and confirm the server starts without OOM on Railway.
+# Expanded by Feature NorthExpansion (Yellow + Purple north of Howard) and
+# Feature SouthExpansion (Red/Green/Orange south terminals) — regenerated together.
 # ---------------------------------------------------------------------------
-STREET_GRAPH_SOUTH: float = 41.8560
-STREET_GRAPH_NORTH: float = 42.0190
-STREET_GRAPH_WEST:  float = -87.7260
+STREET_GRAPH_SOUTH: float = 41.7180
+STREET_GRAPH_NORTH: float = 42.0830
+STREET_GRAPH_WEST:  float = -87.7570
 STREET_GRAPH_EAST:  float = -87.5200
 STREET_GRAPH_BBOX_OSMNX: tuple = (STREET_GRAPH_WEST, STREET_GRAPH_SOUTH, STREET_GRAPH_EAST, STREET_GRAPH_NORTH)

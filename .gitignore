@@ -22,6 +22,9 @@ __pycache__/
 .venv/
 venv/
 *.egg-info/
+# Shell misparse artefact: `pip install pkg>=X.Y` without quoting writes a file
+# named `=X.Y` in the cwd. Ignore any such files in the repo root or backend/.
+=*
 
 # Node / React
 node_modules/

@@ -2,7 +2,7 @@
 
 Known issues catalogued for future fixing. Severity: 🔴 High · 🟡 Medium · 🟢 Low.
 
-> **Process:** When a bug in this file is fixed, **delete its entry from this file** and add a corresponding entry to [`BUGS_FIXED_HISTORY.md`](BUGS_FIXED_HISTORY.md) documenting what was changed and how. This file should only ever contain bugs that have not yet been resolved.
+> **Process:** When a bug in this file is fixed, **delete its entry from this file** and add a corresponding entry to the **Bugs Fixed** section of [`RESOLVED_HISTORY.md`](RESOLVED_HISTORY.md) documenting what was changed and how. This file should only ever contain bugs that have not yet been resolved.
 
 ---
 
@@ -16,3 +16,4 @@ Known issues catalogued for future fixing. Severity: 🔴 High · 🟡 Medium ·
 **Fix:** Add ≥10 transit photos to `frontend/public/transit-photos/` and update the `PHOTOS` array in `frontend/src/App.jsx` to match the filenames. Then commit and let Vercel redeploy.
 
 ---
+

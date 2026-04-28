@@ -31,27 +31,13 @@ import networkx as nx
 
 from gtfs_loader import GTFS_DIR, find_nearest_train_stations, find_nearest_bus_stops
 from utils import haversine_miles as _haversine_miles, SpatialGrid, TRANSFER_PENALTY_MINUTES
+from cta_client import LINE_NAMES
 from walking import (
     walk_minutes as street_walk_minutes,
     walk_path as street_walk_path,
     walk_directions as street_walk_directions,
 )
 import config as _cfg
-
-# ---------------------------------------------------------------------------
-# CTA line metadata
-# ---------------------------------------------------------------------------
-
-LINE_NAMES = {
-    "Red":  "Red Line",
-    "Blue": "Blue Line",
-    "Brn":  "Brown Line",
-    "G":    "Green Line",
-    "Org":  "Orange Line",
-    "P":    "Purple Line",
-    "Pink": "Pink Line",
-    "Y":    "Yellow Line",
-}
 
 # Default transfer time at a station when switching lines (minutes)
 _TRANSFER_MINUTES = TRANSFER_PENALTY_MINUTES
@@ -129,6 +115,12 @@ _thread_local: threading.local = threading.local()
 # it without re-streaming stop_times.txt a second time.
 _bus_seq_cache: dict[tuple[str, str], list[tuple]] | None = None
 
+# Last scheduled departure per (parent_mapid, direction_id) — populated during
+# startup and used by the /stop-arrivals endpoint for Feature Last Train.
+# Keys: (parent_mapid_str, direction_id_str), Values: GTFS departure time string (HH:MM:SS,
+# may be "24:xx"/"25:xx" for post-midnight CTA service runs).
+_last_departure: dict[tuple[str, str], str] = {}
+
 
 # ---------------------------------------------------------------------------
 # Route / Leg data structures
@@ -187,12 +179,16 @@ class Route:
 # GTFS small-file loaders
 # ---------------------------------------------------------------------------
 
-def _load_parent_stations() -> dict[str, dict]:
+def _load_station_data() -> tuple[dict[str, dict], dict[str, str]]:
     """
-    Returns {mapid: {name, lat, lon}} for all train parent stations.
-    These are the 40000-range location_type=1 entries in stops.txt.
+    Single-pass read of stops.txt that returns both train-station dicts.
+
+    Returns:
+      parent_stations    — {mapid: {name, lat, lon}} for location_type=1 entries (40000–49999)
+      platform_to_parent — {platform_stop_id: parent_mapid} for platform stops (30000–39999)
     """
     stations: dict[str, dict] = {}
+    mapping:  dict[str, str]  = {}
     with open(GTFS_DIR / "stops.txt", encoding="utf-8-sig") as f:
         for row in csv.DictReader(f):
             try:
@@ -205,25 +201,22 @@ def _load_parent_stations() -> dict[str, dict]:
                     "lat":  float(row["stop_lat"].strip()),
                     "lon":  float(row["stop_lon"].strip()),
                 }
+            elif 30000 <= sid <= 39999:
+                parent = row.get("parent_station", "").strip()
+                if parent:
+                    mapping[str(sid)] = parent
+    return stations, mapping
+
+
+def _load_parent_stations() -> dict[str, dict]:
+    """Thin wrapper kept for isolated callers/tests — use _load_station_data() in bulk."""
+    stations, _ = _load_station_data()
     return stations
 
 
 def _load_platform_to_parent() -> dict[str, str]:
-    """
-    Returns {platform_stop_id: parent_mapid} for train platform stops (30000–39999).
-    Relies on the parent_station column in stops.txt (confirmed present in CTA GTFS).
-    """
-    mapping: dict[str, str] = {}
-    with open(GTFS_DIR / "stops.txt", encoding="utf-8-sig") as f:
-        for row in csv.DictReader(f):
-            try:
-                sid = int(row["stop_id"].strip())
-            except ValueError:
-                continue
-            if 30000 <= sid <= 39999:
-                parent = row.get("parent_station", "").strip()
-                if parent:
-                    mapping[str(sid)] = parent
+    """Thin wrapper kept for isolated callers/tests — use _load_station_data() in bulk."""
+    _, mapping = _load_station_data()
     return mapping
 
 
@@ -325,7 +318,7 @@ def _stream_all_stop_sequences(
     platform_to_parent: dict[str, str],   # {platform_stop_id: parent_mapid}
     bus_stop_lookup:    dict[str, dict],  # {stop_id: {name, lat, lon}}
     bus_route_map:      dict[str, str],   # {route_id: route_short_name}
-) -> tuple[dict[str, list[tuple[str, float]]], dict[tuple[str, str], list[tuple]]]:
+) -> tuple[dict[str, list[tuple[str, float]]], dict[tuple[str, str], list[tuple]], dict[tuple[str, str], str]]:
     """
     Single-pass stream of stop_times.txt that simultaneously builds:
       - train_selected : {trip_id: [(parent_mapid, arrival_min), ...]}
@@ -333,6 +326,9 @@ def _stream_all_stop_sequences(
       - bus_result     : {(route_short_name, direction_id): [(stop_id, stop_name,
                            lat, lon, arr_minutes), ...]}
                          (same output as get_bus_stop_sequences)
+      - last_dep_times : {(parent_mapid, direction_id): latest_departure_time_str}
+                         (Feature Last Train — latest GTFS departure across ALL train
+                          weekday trips; times may be "24:xx"/"25:xx" for post-midnight)
 
     Replaces the old _stream_stop_sequences and eliminates the second
     dedicated stop_times.txt pass that get_bus_stop_sequences previously
@@ -349,6 +345,9 @@ def _stream_all_stop_sequences(
     # --- raw accumulators ---
     train_raw: dict[str, list] = {tid: [] for tid in train_candidates}
     bus_raw:   dict[str, list] = {tid: [] for tid in bus_candidates}
+    # Feature Last Train: track latest departure per (parent_mapid, direction_id)
+    # across ALL train weekday trips (not just representative ones).
+    last_dep: dict[tuple[str, str], tuple[float, str]] = {}  # key -> (minutes, time_str)
 
     all_candidate_tids = set(train_candidates) | set(bus_candidates)
     rows_read = 0
@@ -374,6 +373,13 @@ def _stream_all_stop_sequences(
                 sid = row.get("stop_id", "").strip()
                 parent = platform_to_parent.get(sid, sid)
                 train_raw[tid].append((seq, parent, arr_min))
+                # Feature Last Train: track latest departure per station/direction
+                dep_str = (row.get("departure_time") or arr_str).strip()
+                did = train_dirs.get(tid, "0")
+                key = (parent, did)
+                prev = last_dep.get(key)
+                if prev is None or arr_min > prev[0]:
+                    last_dep[key] = (arr_min, dep_str)
 
             if tid in bus_raw:
                 sid = row.get("stop_id", "").strip()
@@ -404,7 +410,14 @@ def _stream_all_stop_sequences(
 
     train_selected: dict[str, list[tuple[str, float]]] = {}
     for (rid, did), tids in train_groups.items():
-        best = min(tids, key=lambda t: abs(train_first.get(t, 0.0) - _TARGET_NOON_MINUTES))
+        # Prefer the longest trip (most parent-station stops) so that rush-hour-only
+        # express services (e.g. Purple Express, which only runs Linden→Loop at peak)
+        # are chosen over shorter all-day locals. Tie-break by noon proximity so
+        # travel-time estimates reflect typical midday schedules.
+        best = max(tids, key=lambda t: (
+            len(train_sorted.get(t, [])),
+            -abs(train_first.get(t, 0.0) - _TARGET_NOON_MINUTES),
+        ))
         seq_list: list[tuple[str, float]] = []
         for _, parent, arr_min in train_sorted[best]:
             seq_list.append((parent, arr_min))
@@ -450,7 +463,11 @@ def _stream_all_stop_sequences(
     n_pairs = len(bus_result)
     print(f"[transit_graph] Bus sequences built: {n_pairs} route/direction pairs")
 
-    return train_selected, bus_result
+    # Feature Last Train: extract time strings from accumulator
+    last_dep_times: dict[tuple[str, str], str] = {k: v[1] for k, v in last_dep.items()}
+    print(f"[transit_graph] Last-departure lookup built: {len(last_dep_times)} station/direction pairs")
+
+    return train_selected, bus_result, last_dep_times
 
 
 def _load_transfer_edges(
@@ -512,8 +529,7 @@ def _build_graph() -> tuple[nx.DiGraph, dict[str, dict]]:
     print("[transit_graph] Building CTA transit graph …")
     t0 = time.time()
 
-    parent_stations    = _load_parent_stations()
-    platform_to_parent = _load_platform_to_parent()
+    parent_stations, platform_to_parent = _load_station_data()
     train_route_ids    = _load_train_route_ids()
     selected_trips, trip_dirs = _load_representative_trips(train_route_ids)
 
@@ -524,7 +540,7 @@ def _build_graph() -> tuple[nx.DiGraph, dict[str, dict]]:
     bus_stop_lookup = _load_bus_stop_lookup()
     bus_trip_route, bus_trip_dir = _load_bus_candidate_trips(set(bus_route_map.keys()))
 
-    stop_seqs, bus_result = _stream_all_stop_sequences(
+    stop_seqs, bus_result, last_dep_times = _stream_all_stop_sequences(
         selected_trips, trip_dirs,
         bus_trip_route, bus_trip_dir,
         platform_to_parent,
@@ -536,6 +552,10 @@ def _build_graph() -> tuple[nx.DiGraph, dict[str, dict]]:
     # without re-streaming stop_times.txt.
     global _bus_seq_cache
     _bus_seq_cache = bus_result
+
+    # Cache last-departure times for Feature Last Train (/stop-arrivals endpoint).
+    global _last_departure
+    _last_departure = last_dep_times
 
     G = nx.DiGraph()
 
@@ -826,6 +846,18 @@ def get_station_coords(mapid: str) -> tuple[float, float] | None:
     _, stations = _build_graph()
     s = stations.get(mapid)
     return (s["lat"], s["lon"]) if s else None
+
+
+def get_last_departure(mapid: str, direction_id: str) -> str | None:
+    """
+    Return the latest scheduled GTFS departure time string (HH:MM:SS, may be
+    "24:xx"/"25:xx" for post-midnight CTA runs) for a train parent station in
+    a given direction, or None if unknown.
+
+    Populated during startup by _build_graph() / _stream_all_stop_sequences().
+    Used by the /stop-arrivals endpoint for Feature Last Train.
+    """
+    return _last_departure.get((mapid, direction_id))
 
 
 @lru_cache(maxsize=512)
@@ -1329,11 +1361,14 @@ def _dedup_stations_by_line(G: nx.DiGraph, stations: list[dict]) -> list[dict]:
         if mapid not in G:
             result.append(s)
             continue
-        station_lines = {
-            data.get("line", "")
-            for _, _, data in G.edges(mapid, data=True)
-            if data.get("line") and data.get("edge_type") == "transit"
-        }
+        station_lines: set[str] = set()
+        for _, _, data in G.edges(mapid, data=True):
+            if data.get("edge_type") != "transit":
+                continue
+            if data.get("line"):
+                station_lines.add(data["line"])
+            for _, (_, line_name) in (data.get("all_routes") or {}).items():
+                station_lines.add(line_name)
         if not station_lines or station_lines - covered_lines:
             result.append(s)
             covered_lines |= station_lines

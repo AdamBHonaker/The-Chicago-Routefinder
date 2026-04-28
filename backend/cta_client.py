@@ -11,18 +11,41 @@ resolved by gtfs_loader.find_nearest_bus_stops() and passed in from main.py.
 import asyncio
 import os
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
 import aiohttp
 import config as _cfg
+from utils import CHICAGO_TZ
 
 # Tracks raw psgld values seen from the API — logged once per unique value so
 # we can verify the actual format against our normalization assumption.
 
-CHICAGO_TZ = ZoneInfo("America/Chicago")
-
 _CTA_TRAIN_BASE = os.getenv("CTA_TRAIN_API_URL", "https://lapi.transitchicago.com/api/1.0")
 _CTA_BUS_BASE   = os.getenv("CTA_BUS_API_URL",   "https://www.ctabustracker.com/bustime/api/v3")
+
+# Long-lived session shared across all CTA API calls.
+# Initialised by init_session() during FastAPI lifespan startup and closed by
+# close_session() at shutdown. Falls back to creating a temporary session if
+# called before init (e.g. in isolated unit tests).
+_session: aiohttp.ClientSession | None = None
+
+
+async def init_session() -> None:
+    global _session
+    _session = aiohttp.ClientSession()
+
+
+async def close_session() -> None:
+    global _session
+    if _session is not None:
+        await _session.close()
+        _session = None
+
+
+def _get_session() -> aiohttp.ClientSession:
+    if _session is not None:
+        return _session
+    # Fallback for tests / isolated calls — caller is responsible for closing
+    return aiohttp.ClientSession()
 
 TRAIN_BASE = f"{_CTA_TRAIN_BASE}/ttarrivals.aspx"
 BUS_BASE   = f"{_CTA_BUS_BASE}/getpredictions"
@@ -123,12 +146,12 @@ async def get_train_arrivals(
     `stations` is a list of dicts from station_lookup.find_stations().
     Returns (arrivals_sorted_by_minutes, n_errors).
     """
-    async with aiohttp.ClientSession() as session:
-        tasks = [
-            _fetch_station_arrivals(session, s["mapid"], s["name"], train_key)
-            for s in stations
-        ]
-        results = await asyncio.gather(*tasks)
+    session = _get_session()
+    tasks = [
+        _fetch_station_arrivals(session, s["mapid"], s["name"], train_key)
+        for s in stations
+    ]
+    results = await asyncio.gather(*tasks)
 
     all_arrivals: list[dict] = []
     for result in results:
@@ -235,10 +258,10 @@ async def get_bus_arrivals(
         return [], 0
 
     chunks = [stop_ids[i:i + 10] for i in range(0, len(stop_ids), 10)]
-    async with aiohttp.ClientSession() as session:
-        results = await asyncio.gather(
-            *[_fetch_bus_chunk(session, chunk, bus_key, routes) for chunk in chunks]
-        )
+    session = _get_session()
+    results = await asyncio.gather(
+        *[_fetch_bus_chunk(session, chunk, bus_key, routes) for chunk in chunks]
+    )
 
     all_arrivals: list[dict] = []
     n_errors = 0
@@ -256,7 +279,7 @@ async def get_bus_arrivals(
 # Alerts API  (public — no key required)
 # ---------------------------------------------------------------------------
 
-ALERTS_BASE = "http://www.transitchicago.com/api/1.0/detailed_alerts.aspx"
+ALERTS_BASE = "https://lapi.transitchicago.com/api/1.0/alerts.aspx"
 
 # Maps app-internal line_code values to the lowercase routeid the Alerts API expects
 _TRAIN_LINE_TO_ALERT_ID = {
@@ -323,10 +346,10 @@ async def get_alerts(route_ids: list[str]) -> list[dict]:
     if not route_ids:
         return []
 
-    async with aiohttp.ClientSession() as session:
-        results = await asyncio.gather(
-            *[_fetch_alerts_for_route(session, rid) for rid in route_ids]
-        )
+    session = _get_session()
+    results = await asyncio.gather(
+        *[_fetch_alerts_for_route(session, rid) for rid in route_ids]
+    )
 
     seen: set[str] = set()
     deduped: list[dict] = []
@@ -339,3 +362,48 @@ async def get_alerts(route_ids: list[str]) -> list[dict]:
 
     deduped.sort(key=lambda a: a["severity_score"], reverse=True)
     return deduped
+
+
+# ---------------------------------------------------------------------------
+# Route Status API  (public — no key required)
+# ---------------------------------------------------------------------------
+
+ROUTES_BASE = "https://lapi.transitchicago.com/api/1.0/routes.aspx"
+
+
+async def get_route_statuses() -> list[dict]:
+    """
+    Fetch current CTA route statuses for all lines.
+    Returns a list of dicts with keys: service_id, route, status, status_color.
+    Returns [] on any failure.
+    """
+    try:
+        session = _get_session()
+        async with session.get(
+            ROUTES_BASE,
+            params={"outputType": "JSON"},
+            timeout=aiohttp.ClientTimeout(total=5),
+        ) as resp:
+            data = await resp.json(content_type=None)
+    except Exception as exc:
+        print(f"[cta_client] WARNING: Route Status API fetch failed: {exc}")
+        return []
+
+    routes_raw = data.get("CTARoutes", {}).get("RouteInfo", [])
+    if isinstance(routes_raw, dict):
+        routes_raw = [routes_raw]
+    if not isinstance(routes_raw, list):
+        return []
+
+    statuses = []
+    for r in routes_raw:
+        try:
+            statuses.append({
+                "service_id": r.get("ServiceId", ""),
+                "route": r.get("Route", ""),
+                "status": r.get("RouteStatus", ""),
+                "status_color": r.get("RouteStatusColor", ""),
+            })
+        except Exception:
+            continue
+    return statuses

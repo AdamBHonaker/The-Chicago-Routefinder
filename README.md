@@ -21,7 +21,7 @@ A user enters their origin and destination. The app:
 | **Frontend** | React (PWA), MapLibre GL JS v4, OpenFreeMap Liberty tiles, Vite |
 | **Backend** | Python, FastAPI, NetworkX, OSMnx, scikit-learn, aiohttp |
 | **AI** | Claude (`claude-sonnet-4-6` / `claude-haiku-4-5-20251001`) via Anthropic Python SDK |
-| **Data** | CTA GTFS (static schedules), CTA Bus & Train Tracker APIs (real-time) |
+| **Data** | CTA GTFS (static schedules), CTA Bus & Train Tracker APIs (real-time), CTA Alerts API, CTA Route Status API |
 | **Hosting** | Railway (backend) + Vercel (frontend) |
 
 ## Local development
@@ -67,5 +67,5 @@ Standalone scripts in `backend/` that run independently of the server:
 - [cta_app_handoff_prompt.md](cta_app_handoff_prompt.md) — Full project brief, architecture, decisions, and phase history
 - [docs/archive/MAP_IMPLEMENTATION_PLAN.md](docs/archive/MAP_IMPLEMENTATION_PLAN.md) — Map feature design decisions and implementation plan
 - [FEATURE_IMPLEMENTATION_PLANS.md](FEATURE_IMPLEMENTATION_PLANS.md) — Chunked implementation plans for upcoming features and post-launch enhancement ideas
-- [BUGS_TO_BE_FIXED.md](BUGS_TO_BE_FIXED.md) — Open bugs (0 🔴 high, 0 🟡 medium, 1 🟢 low); [BUGS_FIXED_HISTORY.md](BUGS_FIXED_HISTORY.md) — Log of all resolved bugs
+- [BUGS_TO_BE_FIXED.md](BUGS_TO_BE_FIXED.md) — Open bugs (0 🔴 high, 0 🟡 medium, 1 🟢 low); [RESOLVED_HISTORY.md](RESOLVED_HISTORY.md) — Log of all resolved bugs, paid-off technical debt, and implemented efficiency improvements
 - [HUMAN_TODO.md](HUMAN_TODO.md) — Tasks requiring human action (accounts, API keys, deployment steps)

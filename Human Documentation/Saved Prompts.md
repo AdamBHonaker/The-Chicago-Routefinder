@@ -6,9 +6,15 @@ Your task is to complete scoping work needed for [This Enhancement]. This should
 
 --
 
+## Scoping Prompt from other LLM Research
+
+Your task is to complete scoping work needed for the attached document. I created the attached document thinking about ideas and options with other LLMS, and I want to bring those into this context. First you'll need to review the document and identify each different feature / change for scoping, then scope them out and document where appropriate. After completing scoping work for the feature, it should be deleted from the attached document. Specifically, focus on information between lines [ ] and [ ]. You can ignore other lines at this time.
+
+--
+
 ## Feature Code Development Prompt
 
-You are a master code writer and documentation updater. Your task is to develop and implement the code for Feature E in the selected file, and after writing this code, you should update the following files as needed:
+You are a master code writer and documentation updater. Your task is to develop and implement the code for Feature E in FEATURE_IMPLEMENTATION_PLANS.md, and after writing this code, you should update the following files as needed:
 
 - cta_app_handoff_prompt.md
 - FEATURE_IMPLEMENTATION_PLANS.md
@@ -18,11 +24,11 @@ You are a master code writer and documentation updater. Your task is to develop 
 
 ## Efficiency Improvement Development Prompt
 
-You are a master code writer and documentation updater. You love to make code run more efficiently. Your task is to write the code needed to improve code efficiency based on the suggestion in [OPT-XXX] within Efficiency_Improvements.md, and after writing this code, you should update the following documentation as needed:
+You are a master code writer and documentation updater. Your task is to write the code needed to improve code efficiency based on the suggestion in [OPT-XXX] within Efficiency_Improvements.md. After writing this code, you should update the following documentation as needed:
 
 - cta_app_handoff_prompt.md
 - Efficiency_Improvements.md
-- Efficiency_Improvement_History.md
+- RESOLVED_HISTORY.md
 
 After completing, recheck the requirements and confirm you feel confident the code is truly more efficient, and that no new bugs have been introduced.
 
@@ -30,11 +36,11 @@ After completing, recheck the requirements and confirm you feel confident the co
 
 ## Technical Debt Payoff Prompt
 
-You are a master code writer and documentation updater. You love to pay off techical debt. Your task is to write the code needed to pay off the technical debt items I identify here: [TD-XXX] in Technical_Debt.md, and after writing this code, you should update the following documentation as needed:
+You are a master code writer and documentation updater. Your task is to write the code needed to pay off the technical debt items I identify here: [TD-XXX] in Technical_Debt.md. After writing this code, you should update the following documentation as needed:
 
 - cta_app_handoff_prompt.md
 - Technical_Debt.md
-- Technical_Debt_Paid_Off.md
+- RESOLVED_HISTORY.md
 
 After completing, recheck the requirements and confirm you feel confident the technical debt is fully paid off.
 
@@ -42,11 +48,11 @@ After completing, recheck the requirements and confirm you feel confident the te
 
 ## Bug Fix Development Prompt
 
-You are a master code writer and documentation updater who loves to fix bugs. Your task is to write the code needed to fix these bugs in BUGS_TO_BE_FIXED.md: [BUG-XXX]  .After writing this code, you should update the following documentation as needed:
+You are a master code writer and documentation updater who loves to fix bugs. Your task is to write the code needed to fix these bugs in BUGS_TO_BE_FIXED.md: [BUG-XXX]  .After writing this code, update the following documentation as needed:
 
 - cta_app_handoff_prompt.md
 - BUGS_TO_BE_FIXED.md
-- BUGS_FIXED_HISTORY.md
+- RESOLVED_HISTORY.md
 
 After completing, recheck the requirements and confirm the bug is truly fixed.
 

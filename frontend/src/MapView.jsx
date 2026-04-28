@@ -17,6 +17,13 @@ function legColor(leg) {
 // Backend returns [lat, lon]; GeoJSON / MapLibre expects [lon, lat].
 const toGeo = ([lat, lon]) => [lon, lat];
 
+// Returns true only for a two-element array where both values are finite numbers.
+// Guards against null, undefined, empty arrays, [null, null], and plain objects.
+const isValidCoord = (c) =>
+  Array.isArray(c) && c.length === 2 &&
+  typeof c[0] === "number" && isFinite(c[0]) &&
+  typeof c[1] === "number" && isFinite(c[1]);
+
 // ---------------------------------------------------------------------------
 // Layer management helpers
 // ---------------------------------------------------------------------------
@@ -54,30 +61,23 @@ function _trackLayer(map, cfg, layerIds) {
 // ---------------------------------------------------------------------------
 
 function renderRoute(map, route, originCoords, destCoords, layerIds, sourceIds) {
-  const { legs } = route;
-  if (!legs?.length) return;
+  if (!route?.legs?.length) return;
+  try {
+    _renderRouteInner(map, route, originCoords, destCoords, layerIds, sourceIds);
+  } catch (err) {
+    console.error("[MapView] renderRoute failed:", err);
+  }
+}
 
-  // Accumulate every coordinate for auto-fit bounds (in GeoJSON [lon, lat] order)
-  const allGeoCoords = [];
-
-  // Precompute per-leg colors once so Pass 2 doesn't re-invoke legColor.
-  const legColors = legs.map(leg => leg.type === "transit" ? legColor(leg) : null);
-
-  // Pre-transform all path/shape coordinates once — avoids repeated .map(toGeo) across passes.
-  const legGeoCoords = legs.map(leg => {
-    if (leg.type === "walk")    return (leg.path  ?? []).map(toGeo);
-    if (leg.type === "transit") return (leg.shape ?? []).map(toGeo);
-    return [];
-  });
-
-  // ── Pass 1: polylines ────────────────────────────────────────────────────
-
+// renderPolylines — Pass 1 of route rendering.
+// Adds one LineString layer per leg (dashed grey for walk, solid colored for transit).
+// Pushes all rendered coordinates into allGeoCoords for auto-fit bounds. (TD-037)
+function renderPolylines(map, legs, legGeoCoords, legColors, allGeoCoords, layerIds, sourceIds) {
   legs.forEach((leg, i) => {
     if (leg.type === "walk") {
       const coords = legGeoCoords[i];
       if (coords.length < 2) return;
       coords.forEach(c => allGeoCoords.push(c));
-
       _trackSource(map, `route-walk-${i}`, {
         type: "geojson",
         data: { type: "Feature", geometry: { type: "LineString", coordinates: coords } },
@@ -88,13 +88,10 @@ function renderRoute(map, route, originCoords, destCoords, layerIds, sourceIds) 
         source: `route-walk-${i}`,
         paint:  { "line-color": "#888888", "line-width": 3, "line-dasharray": [2, 2] },
       }, layerIds);
-
     } else if (leg.type === "transit") {
       const coords = legGeoCoords[i];
       if (coords.length < 2) return;
       coords.forEach(c => allGeoCoords.push(c));
-
-      const color = legColors[i];
       _trackSource(map, `route-transit-${i}`, {
         type: "geojson",
         data: { type: "Feature", geometry: { type: "LineString", coordinates: coords } },
@@ -104,82 +101,87 @@ function renderRoute(map, route, originCoords, destCoords, layerIds, sourceIds) 
         type:   "line",
         source: `route-transit-${i}`,
         layout: { "line-cap": "round", "line-join": "round" },
-        paint:  { "line-color": color, "line-width": 5 },
+        paint:  { "line-color": legColors[i], "line-width": 5 },
       }, layerIds);
     }
   });
+}
 
-  // ── Pass 2: markers (rendered after all lines so they sit on top) ─────────
-
+// renderStopMarkers — Pass 2 of route rendering.
+// Adds board/exit circle markers and evenly-sampled intermediate stop dots
+// for each transit leg. Rendered after polylines so markers sit on top. (TD-037)
+function renderStopMarkers(map, legs, legGeoCoords, legColors, layerIds, sourceIds) {
   legs.forEach((leg, i) => {
-    if (leg.type === "transit") {
-      const color = legColors[i];
+    if (leg.type !== "transit") return;
+    const color = legColors[i];
 
-      // Board / exit stop markers
-      const boardExit = [];
-      if (leg.from_coords) boardExit.push({ coord: toGeo(leg.from_coords), label: `Board ${leg.line}`, color });
-      if (leg.to_coords)   boardExit.push({ coord: toGeo(leg.to_coords),   label: `Exit ${leg.line}`,  color });
+    // Board / exit stop markers — guard against missing or malformed coordinate arrays.
+    const boardExit = [];
+    if (isValidCoord(leg.from_coords)) boardExit.push({ coord: toGeo(leg.from_coords), label: `Board ${leg.line}`, color });
+    if (isValidCoord(leg.to_coords))   boardExit.push({ coord: toGeo(leg.to_coords),   label: `Exit ${leg.line}`,  color });
 
-      if (boardExit.length) {
-        _trackSource(map, `route-boardexit-${i}`, {
+    if (boardExit.length) {
+      _trackSource(map, `route-boardexit-${i}`, {
+        type: "geojson",
+        data: {
+          type: "FeatureCollection",
+          features: boardExit.map(({ coord, label, color: c }) => ({
+            type: "Feature",
+            geometry:   { type: "Point", coordinates: coord },
+            properties: { label, color: c },
+          })),
+        },
+      }, sourceIds);
+      _trackLayer(map, {
+        id:     `route-boardexit-circle-${i}`,
+        type:   "circle",
+        source: `route-boardexit-${i}`,
+        paint:  {
+          "circle-radius":       7,
+          "circle-color":        ["get", "color"],
+          "circle-stroke-width": 2,
+          "circle-stroke-color": "#ffffff",
+        },
+      }, layerIds);
+    }
+
+    // Intermediate stops — evenly sampled from the clipped shape.
+    const geoShape = legGeoCoords[i];
+    if (geoShape.length > 10) {
+      const step = Math.max(3, Math.floor(geoShape.length / 10));
+      const intermFeatures = [];
+      for (let j = step; j < geoShape.length - step; j += step) {
+        intermFeatures.push({
+          type: "Feature",
+          geometry:   { type: "Point", coordinates: geoShape[j] },
+          properties: { color },
+        });
+      }
+      if (intermFeatures.length) {
+        _trackSource(map, `route-stops-${i}`, {
           type: "geojson",
-          data: {
-            type: "FeatureCollection",
-            features: boardExit.map(({ coord, label, color: c }) => ({
-              type: "Feature",
-              geometry:   { type: "Point", coordinates: coord },
-              properties: { label, color: c },
-            })),
-          },
+          data: { type: "FeatureCollection", features: intermFeatures },
         }, sourceIds);
         _trackLayer(map, {
-          id:     `route-boardexit-circle-${i}`,
+          id:     `route-stops-circle-${i}`,
           type:   "circle",
-          source: `route-boardexit-${i}`,
+          source: `route-stops-${i}`,
           paint:  {
-            "circle-radius":       7,
-            "circle-color":        ["get", "color"],
+            "circle-radius":       4,
+            "circle-color":        "#ffffff",
             "circle-stroke-width": 2,
-            "circle-stroke-color": "#ffffff",
+            "circle-stroke-color": ["get", "color"],
           },
         }, layerIds);
       }
-
-      // Intermediate stops — evenly sampled from the clipped shape
-      const geoShape = legGeoCoords[i];
-      if (geoShape.length > 10) {
-        const step = Math.max(3, Math.floor(geoShape.length / 10));
-        const intermFeatures = [];
-        for (let j = step; j < geoShape.length - step; j += step) {
-          intermFeatures.push({
-            type: "Feature",
-            geometry:   { type: "Point", coordinates: geoShape[j] },
-            properties: { color },
-          });
-        }
-
-        if (intermFeatures.length) {
-          _trackSource(map, `route-stops-${i}`, {
-            type: "geojson",
-            data: { type: "FeatureCollection", features: intermFeatures },
-          }, sourceIds);
-          _trackLayer(map, {
-            id:     `route-stops-circle-${i}`,
-            type:   "circle",
-            source: `route-stops-${i}`,
-            paint:  {
-              "circle-radius":       4,
-              "circle-color":        "#ffffff",
-              "circle-stroke-width": 2,
-              "circle-stroke-color": ["get", "color"],
-            },
-          }, layerIds);
-        }
-      }
     }
   });
+}
 
-  // Origin dot — use explicit originCoords prop; fall back to first leg path
+// renderOriginDestMarkers — Pass 3 of route rendering.
+// Adds a blue origin dot and a dark destination dot using the explicit coord
+// props if available, falling back to the first/last leg path point. (TD-037)
+function renderOriginDestMarkers(map, legs, originCoords, destCoords, layerIds, sourceIds) {
   const originPt = originCoords
     ? [originCoords[1], originCoords[0]]   // [lat,lon] → [lon,lat]
     : (() => { const p = legs[0]?.path?.[0]; return p ? toGeo(p) : null; })();
@@ -201,7 +203,6 @@ function renderRoute(map, route, originCoords, destCoords, layerIds, sourceIds) 
     }, layerIds);
   }
 
-  // Destination dot — use explicit destCoords prop; fall back to last leg path
   const lastLegPath = legs.length > 0 ? legs[legs.length - 1]?.path : null;
   const destPt = destCoords
     ? [destCoords[1], destCoords[0]]       // [lat,lon] → [lon,lat]
@@ -223,6 +224,27 @@ function renderRoute(map, route, originCoords, destCoords, layerIds, sourceIds) 
       },
     }, layerIds);
   }
+}
+
+function _renderRouteInner(map, route, originCoords, destCoords, layerIds, sourceIds) {
+  const { legs } = route;
+
+  // Precompute per-leg colors once to avoid re-invoking legColor in each pass.
+  const legColors = legs.map(leg => leg.type === "transit" ? legColor(leg) : null);
+
+  // Pre-transform all path/shape coordinates once — avoids repeated .map(toGeo).
+  const legGeoCoords = legs.map(leg => {
+    if (leg.type === "walk")    return (leg.path  ?? []).map(toGeo);
+    if (leg.type === "transit") return (leg.shape ?? []).map(toGeo);
+    return [];
+  });
+
+  // Accumulate rendered coordinates for auto-fit bounds (GeoJSON [lon, lat] order).
+  const allGeoCoords = [];
+
+  renderPolylines(map, legs, legGeoCoords, legColors, allGeoCoords, layerIds, sourceIds);
+  renderStopMarkers(map, legs, legGeoCoords, legColors, layerIds, sourceIds);
+  renderOriginDestMarkers(map, legs, originCoords, destCoords, layerIds, sourceIds);
 
   // ── Auto-fit: snap to bounding box of all route coordinates ───────────────
   if (allGeoCoords.length > 0) {
@@ -261,13 +283,23 @@ export default function MapView({
 
   // Initialize map once after the container div mounts.
   //
-  // React 18 StrictMode (dev only) double-invokes effects: run → cleanup → run.
-  // MapLibre GL v5 uses WebGL2 and its context isn't fully released synchronously
-  // by map.remove(), so the immediate second init produces a silent black canvas.
+  // In development, React 18 StrictMode double-invokes every effect:
+  //   mount → (cleanup) → mount
+  // This is intentional to surface side-effect bugs, but it breaks MapLibre:
+  // WebGL2 context teardown is deferred to the browser's GPU process and is
+  // NOT complete by the time map.remove() returns synchronously. The immediate
+  // second init therefore tries to create a new WebGL2 context while the old
+  // one still occupies the canvas, producing a silent blank (black) map.
   //
-  // Fix: defer initialization with setTimeout(0). StrictMode's cleanup cancels
-  // the first timer before it fires; only the second effect's timer survives,
-  // by which point the previous WebGL context is fully torn down.
+  // Fix: defer init with setTimeout(0).
+  // StrictMode's cleanup fires synchronously and calls clearTimeout() on the
+  // first timer before it fires. Only the second effect's timer survives to
+  // the next task queue slot, by which point the GPU process has finished
+  // tearing down the previous WebGL2 context.
+  //
+  // In production, StrictMode is not active and effects run exactly once, so
+  // this setTimeout adds no observable latency — it merely defers init past
+  // any synchronous DOM measurements that share the same task.
   useEffect(() => {
     let map = null;
 
@@ -321,6 +353,8 @@ export default function MapView({
       map?.remove();
       mapRef.current = null;
     };
+  // Intentionally empty deps: props (style, center, zoom) are construction-time
+  // values; re-running this effect would destroy and recreate the WebGL context.
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
 
@@ -341,6 +375,8 @@ export default function MapView({
       map.once("load", render);
       return () => map.off("load", render);
     }
+  // `renderRoute` and `clearRouteLayers` are stable module-level functions;
+  // `routeLayerIds`/`routeSourceIds` are refs — none are reactive values.
   }, [route, originCoords, destCoords]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // User position dot — shown during an active trip
@@ -377,6 +413,7 @@ export default function MapView({
     } else if (userPosLayerRef.current) {
       try { map.setLayoutProperty("user-position-layer", "visibility", "none"); } catch {}
     }
+  // `mapRef` and `userPosLayerRef` are refs, not reactive values — omitting them is correct.
   }, [tripActive, userPosition]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleUnlock() {

@@ -41,6 +41,7 @@ _coord_kdtree: "cKDTree | None" = None
 _vertex_lats: "np.ndarray | None" = None
 _vertex_lons: "np.ndarray | None" = None
 _graph_load_failed: bool = False
+_lcc_vertex_ids: "np.ndarray | None" = None
 
 
 def _parse_geometry_inplace(G: ig.Graph) -> None:
@@ -64,7 +65,7 @@ def _parse_geometry_inplace(G: ig.Graph) -> None:
 
 def _load_graph() -> "ig.Graph | None":
     """Load street graph once; returns None (and never retries) if unavailable."""
-    global _graph_cache, _coord_kdtree, _vertex_lats, _vertex_lons, _graph_load_failed
+    global _graph_cache, _coord_kdtree, _vertex_lats, _vertex_lons, _graph_load_failed, _lcc_vertex_ids
 
     if _graph_cache is not None:
         return _graph_cache
@@ -109,24 +110,48 @@ def _load_graph() -> "ig.Graph | None":
 
         # Build coordinate arrays and spatial index — set before _graph_cache so any
         # thread that sees _graph_cache is not None also sees fully-initialized state.
-        lons = np.array([v["x"] for v in G.vs], dtype=np.float64)
-        lats = np.array([v["y"] for v in G.vs], dtype=np.float64)
-        _vertex_lats = lats
-        _vertex_lons = lons
-        _coord_kdtree = cKDTree(np.column_stack([lons, lats]))
-        _graph_cache = G
+        # Wrapped in try/except so a corrupt pickle (e.g., missing "x"/"y" vertex
+        # attributes) sets _graph_load_failed and stops retrying instead of raising
+        # KeyError on every routing request (BUG-009).
+        try:
+            lons = np.array([v["x"] for v in G.vs], dtype=np.float64)
+            lats = np.array([v["y"] for v in G.vs], dtype=np.float64)
+            _vertex_lats = lats
+            _vertex_lons = lons
+            # Restrict spatial index to the largest weakly-connected component so that
+            # _get_nearest_node never returns a vertex unreachable from the rest of the
+            # graph — the root cause of "path unavailable" errors when a geocoded point
+            # snaps to a disconnected peripheral vertex.
+            try:
+                comps = G.clusters(mode="WEAK")
+            except AttributeError:
+                comps = G.connected_components(mode="weak")
+            lcc_ids = np.array(max(comps, key=len), dtype=np.int64)
+            _lcc_vertex_ids = lcc_ids
+            _coord_kdtree = cKDTree(np.column_stack([lons[lcc_ids], lats[lcc_ids]]))
+            if len(lcc_ids) < G.vcount():
+                print(f"[walking] LCC: {len(lcc_ids):,}/{G.vcount():,} vertices in main component")
+            _graph_cache = G
+        except Exception as e:
+            print(f"[walking] Failed to build coordinate arrays ({type(e).__name__}: {e}) — walking will use Haversine fallback.")
+            _graph_load_failed = True
+            return None
 
     return _graph_cache
 
 
 @lru_cache(maxsize=2048)
 def _get_nearest_node(lat: float, lon: float) -> "int | None":
-    """Return the nearest igraph vertex index for a lat/lon coordinate; None if graph unavailable."""
+    """Return the nearest LCC vertex index; None if graph unavailable or point is >1 km from any vertex."""
     if _load_graph() is None:
         return None
     try:
-        _, idx = _coord_kdtree.query([lon, lat])
-        return int(idx)
+        _, kdtree_idx = _coord_kdtree.query([lon, lat])
+        graph_idx = int(_lcc_vertex_ids[kdtree_idx])
+        # Reject geocoded points that fall outside the street-network coverage area.
+        if _haversine_miles(lat, lon, _vertex_lats[graph_idx], _vertex_lons[graph_idx]) * 1609.34 > 1000:
+            return None
+        return graph_idx
     except Exception:
         return None
 

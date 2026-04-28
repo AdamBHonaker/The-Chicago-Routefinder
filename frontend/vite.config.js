@@ -1,6 +1,7 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
+// Vitest types are referenced via vite.config.js — no separate vitest.config needed.
 
 export default defineConfig({
   plugins: [
@@ -80,5 +81,14 @@ export default defineConfig({
   ],
   server: {
     port: 5173,
+  },
+  test: {
+    environment: "jsdom",
+    globals: true,
+    include: ["src/tests/**/*.test.js"],
+    coverage: {
+      provider: "v8",
+      include: ["src/utils/**", "src/hooks/**", "src/favorites.js"],
+    },
   },
 });

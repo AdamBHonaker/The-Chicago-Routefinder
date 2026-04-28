@@ -102,7 +102,9 @@ No database required. User accounts are not planned; saved locations, routes, an
 
 - Ad-supported model — free to all users, revenue generated through ads
 - No subscription tier planned at this stage
-- Ad network integration to be added after user base is established (Phase 7)
+- **Phase 1 (now):** House ads only — contextual affiliate banners styled to match the Heritage Organic UI. No external ad scripts, no third-party cookies, no layout disruption.
+- **Phase 2 (after meaningful user base):** Evaluate EthicalAds or Carbon Ads — developer/tech-adjacent networks with clean, text-only units that are less visually intrusive than display ads.
+- **Google AdSense:** Deliberately avoided for now. Auto-placed display ads are very likely to clash with the Heritage Organic design and hurt retention. Revisit only if revenue is critically needed and aesthetic controls can be guaranteed.
 - Stripe not needed for V1
 
 ---
@@ -122,6 +124,51 @@ No database required. User accounts are not planned; saved locations, routes, an
 - Rate limiting ✅ — code complete, OFF by default; activate with `RATE_LIMIT_ENABLED=true` before public launch
 
 > Owner has no fixed staffing costs — significant structural cost advantage over competitors
+
+---
+
+## Monetization Strategy — Full Decision Record
+
+This is the single canonical reference for all ad/monetization decisions. The implementation plan in `FEATURE_IMPLEMENTATION_PLANS.md` → Feature Monetization follows from these decisions.
+
+### Philosophy
+Preserving the Heritage Organic UI is the top priority. An ad that looks out of place is worse than no ad — it signals low quality and hurts retention. Every monetization decision is filtered through this constraint first.
+
+### Phase 1 — House Ads (current focus)
+- **What:** A static `<a>` banner at the bottom of the results panel. Inline React component (`AdSlot`), no external scripts, no cookies, no third-party dependencies.
+- **Styling:** Cream background (`--color-bg`), `--color-border` top-divider, charcoal text (`--color-text`). Must look like a contextual tip, not a foreign element. Heritage Organic must be completely preserved.
+- **Placement:** Below the last RouteCard, inside the left panel. Never shown on empty/loading state.
+- **Content:** Contextual affiliate links for Chicago commuter gear — battery packs, noise-canceling headphones, rain gear, commuter bags. See affiliate product table below.
+- **Env vars (Vercel):** `VITE_HOUSE_AD_ENABLED` (default `false` locally), `VITE_HOUSE_AD_URL`, `VITE_HOUSE_AD_TEXT` — all swappable without a redeploy.
+- **Affiliate program:** Amazon Associates is the practical starting point. Apply at affiliate-program.amazon.com with the live app URL.
+
+### Phase 2 — Developer-Friendly Ad Networks (deferred)
+Revisit after reaching meaningful traffic. Both require applying with a live site and have minimum traffic/content requirements.
+- **EthicalAds** (ethicalads.io) — text-only, developer/tech audience, no behavioral tracking. Closest to house-ad aesthetics of any network. Preferred if a network is ever adopted.
+- **Carbon Ads** (carbonads.com) — similar positioning, slightly more design-heavy. Second choice.
+
+### Google AdSense — Explicitly Deferred
+Auto-placed display ads cannot be reliably constrained to the Heritage Organic visual language. The risk of visual regression outweighs the revenue upside at current traffic levels. Only revisit if:
+- Revenue is critically needed AND
+- AdSense offers layout/style controls sufficient to guarantee the ad looks native
+
+### Affiliate Product Reference (House Ad Candidates)
+Content strategy: contextual, local, utility-focused items that solve real Chicago commuter pain points.
+
+| Category | Top Picks | Chicago Pain Point |
+| :--- | :--- | :--- |
+| **Noise canceling** | Sony WH-1000XM6 | Blocks "L" screeching and platform noise |
+| **Open-ear / safety** | Shokz OpenDots ONE | Hear "Doors Closing" while staying aware |
+| **Power** | Nestout 15000mAh; Anker 313 PowerCore 10K | Dead phone = missed train |
+| **Rain gear** | Repel Windproof Travel Umbrella | Blue Line platforms are fully exposed |
+| **Footwear** | Sorel Emelie III; Hunter Commando Boots | Puddles at every platform gap |
+| **Bags** | Nordace Siena; Travelon Anti-Theft Heritage | Pickpocket risk + daily carry |
+| **Cold** | North Face Etip Gloves | Touch-screen gloves for fare tap |
+| **Reading** | Kindle Paperwhite | Waterproof for rainy platform waits |
+| **CTA gear** | CTAGifts.com | Local, on-brand |
+| **Tracking** | Apple AirTag; Tile Mate | Lost bag recovery |
+
+**Copy tip:** Lead with the Chicago-specific use case, not the product name. e.g. "Survive the Blue Line platform in January →" converts better than "Buy North Face Gloves →".
 
 ---
 
@@ -184,7 +231,7 @@ No database required. User accounts are not planned; saved locations, routes, an
 | 5.6 | Map feature — MapLibre GL JS + GTFS shapes + OSMnx walk geometry | ✅ Complete (2026-04-09) |
 | 6 | Deploy publicly (Vercel + Railway + custom domain) | ✅ Complete (2026-04-14) |
 | 6.5 | Weather & Crowdedness Context | ✅ Complete (2026-04-27) |
-| 7 | Monetization (AdSense) | ⬜ Pending |
+| 7 | Monetization (House Ads first; third-party networks deferred) | ⬜ Pending |
 
 ---
 
@@ -488,7 +535,7 @@ Run from `frontend/` with: `npm test`
 3. Run remaining UI checks: confirm 40/60 panel ratio on desktop, 300px/350px min-heights on mobile
 4. (Optional) Add a custom domain in Vercel dashboard → Settings → Domains
 5. **Next feature work:** Feature NorthExpansion or Feature SouthExpansion (both depend on Feature K street graph). See `FEATURE_IMPLEMENTATION_PLANS.md`.
-6. Phase 7: Monetization (AdSense) — after confirming live app is stable
+6. Phase 7: Monetization (House Ads first) — implement `AdSlot` component after confirming live app is stable; defer third-party ad networks until user base is established. See "Monetization Strategy — Full Decision Record" section above.
 
 **Bug status:** 0 🔴 high + 0 🟡 medium + 1 🟢 low bugs open (BUG-007 transit photos asset gap) — see `BUGS_TO_BE_FIXED.md`.
 

@@ -2,13 +2,19 @@ import asyncio
 import collections
 import os
 import time
+import traceback
+import xml.etree.ElementTree as ET
 from contextlib import asynccontextmanager
+from datetime import datetime
 
-from fastapi import FastAPI, HTTPException, Request, Header
+import aiohttp
+
+from fastapi import FastAPI, HTTPException, Request, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from dotenv import load_dotenv
 import anthropic
+
 
 # load_dotenv() must be called before importing local modules.
 # gtfs_loader.py reads GOOGLE_MAPS_API_KEY at module level (import time),
@@ -19,16 +25,32 @@ import dau
 
 from gtfs_loader import (
     resolve_location, geocode_google, NEIGHBORHOOD_COORDS,
-    fuzzy_match_neighborhood, _normalize_street_abbr,
+    fuzzy_match_neighborhood, _normalize_street_abbr, _load_stops,
 )
-from cta_client import get_train_arrivals, get_bus_arrivals, get_alerts, _TRAIN_LINE_TO_ALERT_ID, LINE_NAMES
+from cta_client import get_train_arrivals, get_bus_arrivals, get_alerts, get_route_statuses, _TRAIN_LINE_TO_ALERT_ID, LINE_NAMES, init_session as _init_cta_session, close_session as _close_cta_session
 from transit_graph import (
     find_routes, find_bus_transfer_routes, warm_up, get_bus_stop_sequences,
-    WalkLeg, TransitLeg, get_station_coords, get_station_by_name,
+    WalkLeg, TransitLeg, Route, get_station_coords, get_station_by_name,
+    get_last_departure,
 )
+from walking import (
+    walk_minutes as _walk_minutes,
+    walk_directions as _walk_directions,
+    walk_path as _walk_path,
+)
+from weather_service import WeatherService, WeatherContext, PrecipitationType
+from route_scoring import weight_hint_for_weather
+from crowdedness import (
+    classify_time_period, estimate_crowdedness, rtdir_to_inbound_outbound,
+    CrowdednessLevel, CROWDEDNESS_LEVEL_ORDER,
+)
+from utils import CHICAGO_TZ as _CHICAGO_TZ
 
 # Anthropic client — created once at startup, reused across all requests
 _claude_client = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
+
+# Weather service — module-level singleton, manages its own TTL caches internally
+weather_service = WeatherService()
 
 # ---------------------------------------------------------------------------
 # Response cache
@@ -43,14 +65,22 @@ _CACHE_MAX_SIZE    = 500      # entries
 # Squared degree threshold for treating origin == destination (≈0.07 miles at Chicago's latitude).
 _SAME_LOCATION_THRESHOLD_DEG2: float = 0.001 ** 2   # degrees²
 
+# ---------------------------------------------------------------------------
+# /stop-arrivals cache (Feature Pinned Stops + Feature Last Train)
+# ---------------------------------------------------------------------------
+_STOP_ARRIVALS_TTL = 30   # seconds
+_stop_arrivals_cache: collections.OrderedDict[str, tuple[float, dict]] = collections.OrderedDict()
+
 
 def _cache_key(origin: str, destination: str, transit_mode: str, bus_fullness: str,
-               byok: bool = False, ai_enabled: bool = False, language: str = "en") -> str:
+               byok: bool = False, ai_enabled: bool = False, language: str = "en",
+               walk_speed: float = 1.0) -> str:
     # Include a BYOK flag so BYOK and shared-quota requests never share cache
     # entries — a non-BYOK user would otherwise be served a response whose
     # Claude call was paid for by a BYOK user (and vice-versa).
     # Include ai_enabled because the recommendation field differs between AI-on and AI-off responses.
     # Include language so responses in different languages are cached separately.
+    # Include walk_speed so different pace preferences are cached separately.
     return "|".join([
         origin.lower().strip(),
         destination.lower().strip(),
@@ -59,6 +89,7 @@ def _cache_key(origin: str, destination: str, transit_mode: str, bus_fullness: s
         "byok" if byok else "",
         "ai" if ai_enabled else "",
         language or "en",
+        str(walk_speed),
     ])
 
 # ---------------------------------------------------------------------------
@@ -86,10 +117,20 @@ _rate_store: dict[str, collections.deque] = {}
 
 
 def _client_ip(http_request: Request) -> str:
-    """Extract client IP, honoring X-Forwarded-For when behind Railway/Vercel proxy."""
+    """Extract client IP, using Railway's trusted proxy headers to prevent spoofing.
+
+    Clients can freely forge any entries at the start of X-Forwarded-For. Railway's
+    load balancer appends the actual connection IP at the end of the chain, so reading
+    the last entry gives the IP Railway observed — which a client cannot forge.
+    X-Real-IP (if present) is preferred as it is set exclusively by the Railway LB.
+    """
+    real_ip = http_request.headers.get("x-real-ip", "").strip()
+    if real_ip:
+        return real_ip
     forwarded = http_request.headers.get("x-forwarded-for", "")
     if forwarded:
-        return forwarded.split(",")[0].strip()
+        # Use the last (rightmost) entry — appended by Railway's LB, not client-supplied
+        return forwarded.split(",")[-1].strip()
     return http_request.client.host if http_request.client else "unknown"
 
 
@@ -111,8 +152,17 @@ def _check_rate_limit(ip: str) -> bool:
     # Per-hour check
     if len(window) >= _RATE_LIMIT_RPH:
         return False
-    # Per-minute check (count entries in the last 60 s)
-    recent = sum(1 for t in window if now - t <= 60)
+    # Per-minute check — iterate from the right (newest entries) and stop as
+    # soon as we exceed the 60-second window. Because the deque is insertion-
+    # ordered (ascending), the rightmost entry is always the most recent, so
+    # we stop early as soon as we hit a timestamp older than 60 s instead of
+    # scanning all hourly entries.
+    recent = 0
+    for t in reversed(window):
+        if now - t <= 60:
+            recent += 1
+        else:
+            break
     if recent >= _RATE_LIMIT_RPM:
         return False
     window.append(now)
@@ -147,13 +197,71 @@ ALLOWED_ORIGINS = ["http://localhost:5173"] + [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Autocomplete index — built once at startup from GTFS + neighborhood data
+# ---------------------------------------------------------------------------
+_ac_train_names: list[str] = []   # train parent-station display names
+_ac_neighborhood_names: list[str] = []  # title-cased neighborhood/landmark names
+_ac_bus_names: list[str] = []     # deduplicated bus stop display names
+# Inverted prefix index: 2- and 3-char lowercase prefixes → [(tier, score, suggestion)]
+# score 0 = full-name prefix (first word), score 1 = inner-word prefix
+_ac_prefix_index: dict[str, list[tuple[int, int, dict]]] = {}
+
+
+def _build_autocomplete_index() -> None:
+    global _ac_train_names, _ac_neighborhood_names, _ac_bus_names, _ac_prefix_index
+    train_stations, bus_stops = _load_stops()
+    _ac_train_names = [s["name"] for s in train_stations]
+    _ac_neighborhood_names = [name.title() for name in NEIGHBORHOOD_COORDS.keys()]
+    seen: set[str] = set()
+    bus_names: list[str] = []
+    for s in bus_stops:
+        nl = s["name"].lower()
+        if nl not in seen:
+            seen.add(nl)
+            bus_names.append(s["name"])
+    _ac_bus_names = bus_names
+
+    index: dict[str, list[tuple[int, int, dict]]] = {}
+
+    def _index_entry(name: str, tier: int, label_type: str) -> None:
+        nl = name.lower()
+        suggestion = {"label": name, "value": name, "type": label_type}
+        added: set[str] = set()
+        for i, word in enumerate(nl.split()):
+            score = 0 if i == 0 else 1
+            for length in (2, 3):
+                if len(word) >= length:
+                    key = word[:length]
+                    if key not in added:
+                        index.setdefault(key, []).append((tier, score, suggestion))
+                        added.add(key)
+
+    for name in _ac_train_names:
+        _index_entry(name, 0, "train")
+    for name in _ac_neighborhood_names:
+        _index_entry(name, 1, "neighborhood")
+    for name in _ac_bus_names:
+        _index_entry(name, 2, "bus")
+
+    _ac_prefix_index = index
+    print(
+        f"[autocomplete] Index built: {len(_ac_train_names)} train stations, "
+        f"{len(_ac_neighborhood_names)} neighborhoods, {len(_ac_bus_names)} bus stop names, "
+        f"{len(index)} prefix keys"
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await _init_cta_session()
     print("[main] Warming up transit graph ...")
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, warm_up)
+    _build_autocomplete_index()
     print("[main] Ready.")
     yield
+    await _close_cta_session()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -166,14 +274,14 @@ app.add_middleware(
 )
 
 
-_VALID_TRANSIT_MODES  = {"All", "Train", "Bus"}
+_VALID_TRANSIT_MODES  = {"All", "Train", "Bus", "Walk"}
 _VALID_BUS_FULLNESS   = {"All", "Empty", "Half-Full", "Full"}
 
 
 class RouteRequest(BaseModel):
     origin: str
     destination: str
-    transit_mode: str = "All"   # "All" | "Train" | "Bus"
+    transit_mode: str = "All"   # "All" | "Train" | "Bus" | "Walk"
     bus_fullness: str = "All"   # "All" | "Empty" | "Half-Full" | "Full"
     # BYOK — only honoured when BYOK_ENABLED=true in backend/.env.
     # When BYOK is disabled, this field is accepted but silently ignored so the
@@ -185,6 +293,10 @@ class RouteRequest(BaseModel):
     # BCP-47 language code (e.g. "es", "ar", "ja"). When non-null and not "en",
     # build_prompt() appends a language instruction so Claude responds in that language.
     language: str | None = None
+    # Walking pace multiplier. 1.0 = standard (~15 min/mile). Applied as:
+    #   adjusted_minutes = baseline_minutes / walk_speed
+    # Slow: 0.75 (33% longer), Standard: 1.0 (no-op), Brisk: 1.25 (20% shorter).
+    walk_speed: float = Field(default=1.0, ge=0.5, le=2.0)
 
     @field_validator("transit_mode")
     @classmethod
@@ -258,13 +370,19 @@ def _coords_for_location(
 
 def _build_arrival_lookup(
     train_arrivals: list[dict],
+    bus_arrivals: list[dict] | None = None,
+    bus_stop_walk_map: dict[str, float] | None = None,
 ) -> dict[tuple[str, str], dict[str, int]]:
     """
     (line_code, station_mapid) -> {destNm: earliest_catchable_minutes}
 
     Groups arrivals by destination so _rank_routes can select the one going in
     the correct direction.  Arrivals where arrives_in_minutes < walk_minutes
-    are skipped — the user cannot reach the station in time for those trains.
+    are skipped — the user cannot reach the stop in time.
+
+    For trains: keyed by (line_code, station_mapid).
+    For buses:  keyed by (route, stop_id) — bus_stop_walk_map provides the
+    walk time to each stop so uncatchable buses are filtered the same way.
     """
     lookup: dict[tuple[str, str], dict[str, int]] = {}
     for a in train_arrivals:
@@ -277,6 +395,21 @@ def _build_arrival_lookup(
         dests = lookup.setdefault(key, {})
         if dest not in dests or minutes < dests[dest]:
             dests[dest] = minutes
+    if bus_arrivals and bus_stop_walk_map is not None:
+        for a in bus_arrivals:
+            stop_id = a.get("stop_id", "")
+            route   = a.get("route", "")
+            if not stop_id or not route:
+                continue
+            key = (route, stop_id)
+            dest = a.get("destination", "")
+            minutes = a["arrives_in_minutes"]
+            walk = bus_stop_walk_map.get(stop_id, 0.0)
+            if minutes < walk:
+                continue
+            dests = lookup.setdefault(key, {})
+            if dest not in dests or minutes < dests[dest]:
+                dests[dest] = minutes
     return lookup
 
 
@@ -462,15 +595,15 @@ def _format_transfer_arrivals(arrivals: list[dict]) -> str:
 def _is_simple_query(ranked_routes: list[tuple]) -> bool:
     """
     A query is 'simple' if there is exactly one ranked route and that route
-    contains exactly one TransitLeg (direct ride, no transfer). Walk legs are
-    not counted. Simple queries are routed to Haiku for cost savings; all
-    others use Sonnet.
+    contains at most one TransitLeg (walk-only or direct ride, no transfer).
+    Walk legs are not counted. Simple queries are routed to Haiku for cost
+    savings; all others use Sonnet.
     """
     if len(ranked_routes) != 1:
         return False
     _, _, route = ranked_routes[0]
     transit_legs = [leg for leg in route.legs if isinstance(leg, TransitLeg)]
-    return len(transit_legs) == 1
+    return len(transit_legs) <= 1
 
 
 def _alert_ids_from_routes(ranked_routes: list[tuple]) -> list[str]:
@@ -498,7 +631,7 @@ def _validate_api_keys(request: RouteRequest, byok_key: str | None) -> None:
     train_key     = os.getenv("CTA_TRAIN_API_KEY", "")
     bus_key       = os.getenv("CTA_BUS_API_KEY", "")
     anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
-    if not train_key:
+    if not train_key and request.transit_mode != "Walk":
         raise HTTPException(status_code=500, detail="CTA_TRAIN_API_KEY not configured in backend/.env")
     if request.ai_enabled and not byok_key and (not anthropic_key or anthropic_key == "your_api_key_here"):
         raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not configured in backend/.env")
@@ -542,11 +675,9 @@ async def _resolve_locations(
             ),
         )
 
-    origin_coords = await loop.run_in_executor(
-        None, _coords_for_location, request.origin, origin_stations
-    )
-    dest_coords = await loop.run_in_executor(
-        None, _coords_for_location, request.destination, dest_stations
+    origin_coords, dest_coords = await asyncio.gather(
+        loop.run_in_executor(None, _coords_for_location, request.origin, origin_stations),
+        loop.run_in_executor(None, _coords_for_location, request.destination, dest_stations),
     )
 
     if origin_coords and dest_coords:
@@ -598,6 +729,66 @@ async def _fetch_arrivals(
     return train_arrivals, bus_arrivals, n_train_errors, n_bus_errors
 
 
+def _scale_walk_legs(routes: list, walk_speed: float) -> None:
+    """Multiply every WalkLeg.minutes by 1/walk_speed in-place, then update walk_minutes_total.
+
+    walk_speed=1.0 is a no-op (standard pace). Called before _rank_routes so
+    ranking and displayed times both reflect the user's actual walking pace.
+    """
+    if walk_speed == 1.0:
+        return
+    factor = 1.0 / walk_speed
+    for route in routes:
+        scaled_walk = 0.0
+        for leg in route.legs:
+            if isinstance(leg, WalkLeg):
+                leg.minutes = round(leg.minutes * factor, 1)
+                scaled_walk += leg.minutes
+        route.walk_minutes_total = round(scaled_walk, 1)
+
+
+def _precip_walk_factor(weather: "WeatherContext | None") -> float:
+    """Return a multiplicative walk-speed factor (<=1.0) based on precipitation, wind, and cold.
+
+    Combines three penalties: precipitation type/intensity, wind gusts >35 mph (x0.90),
+    and feels_like <0F (x0.88). Floor of 0.60 prevents absurd stacked-penalty results.
+    """
+    if weather is None:
+        return 1.0
+    c = weather.current
+    ptype = c.precipitation.type
+    intensity = c.precipitation.intensity  # "light" | "moderate" | "heavy" | ""
+
+    if ptype == PrecipitationType.NONE:
+        base_factor = 1.0
+    elif ptype in (PrecipitationType.FREEZING_RAIN, PrecipitationType.SLEET):
+        base_factor = 0.78
+    elif ptype == PrecipitationType.RAIN:
+        if intensity == "heavy":
+            base_factor = 0.82
+        elif intensity == "moderate":
+            base_factor = 0.90
+        else:
+            base_factor = 0.96
+    elif ptype == PrecipitationType.SNOW:
+        if intensity == "heavy":
+            base_factor = 0.74
+        elif intensity == "moderate":
+            base_factor = 0.84
+        else:
+            base_factor = 0.92
+    else:
+        base_factor = 1.0
+
+    factor = base_factor
+    if c.wind.gust_mph and c.wind.gust_mph > 35:
+        factor *= 0.90
+    if c.feels_like_f < 0:
+        factor *= 0.88
+
+    return max(0.60, factor)
+
+
 async def _run_routing(
     request: RouteRequest,
     origin_coords: tuple | None,
@@ -606,28 +797,32 @@ async def _run_routing(
     origin_bus_stops: list[dict],
     train_arrivals: list[dict],
     bus_arrivals: list[dict],
+    weather: "WeatherContext | None" = None,
 ) -> list[tuple]:
     """Run the unified routing engine and return ranked (total, wait, route) tuples."""
     ranked_routes: list[tuple] = []
     if not origin_coords or not dest_coords:
         return ranked_routes
 
+    precip_factor = _precip_walk_factor(weather)
+    effective_speed = request.walk_speed * precip_factor
+
     # Unified-graph routing (trains + direct bus + intermodal).
     # Feature J (2026-04-18): find_routes() is the sole source of direct
     # bus-only itineraries; Bus mode post-filters to drop routes with train legs.
     try:
-        arrival_lookup = _build_arrival_lookup(train_arrivals)
-        ranked_routes = _rank_routes(
-            find_routes(
-                origin_lat=origin_coords[0],
-                origin_lon=origin_coords[1],
-                dest_lat=dest_coords[0],
-                dest_lon=dest_coords[1],
-                origin_stations=origin_stations,
-                n_routes=5,
-            ),
-            arrival_lookup,
+        bus_stop_walk_map = {s["stop_id"]: s["walk_minutes"] for s in origin_bus_stops}
+        arrival_lookup = _build_arrival_lookup(train_arrivals, bus_arrivals, bus_stop_walk_map)
+        raw_routes = find_routes(
+            origin_lat=origin_coords[0],
+            origin_lon=origin_coords[1],
+            dest_lat=dest_coords[0],
+            dest_lon=dest_coords[1],
+            origin_stations=origin_stations,
+            n_routes=5,
         )
+        _scale_walk_legs(raw_routes, effective_speed)
+        ranked_routes = _rank_routes(raw_routes, arrival_lookup)
         if request.transit_mode == "Bus":
             ranked_routes = [
                 (total, wait, route)
@@ -644,7 +839,7 @@ async def _run_routing(
     # edges, so find_bus_transfer_routes() handles them separately.
     if request.transit_mode in ("Bus", "All") and bus_arrivals and origin_bus_stops:
         try:
-            transfer_ranked = find_bus_transfer_routes(
+            transfer_ranked_raw = find_bus_transfer_routes(
                 origin_lat=origin_coords[0],
                 origin_lon=origin_coords[1],
                 dest_lat=dest_coords[0],
@@ -653,8 +848,19 @@ async def _run_routing(
                 origin_bus_stops=origin_bus_stops,
                 n_routes=2,
             )
-            if transfer_ranked:
-                transfer_ranked = _rank_bus_routes(transfer_ranked)
+            if transfer_ranked_raw:
+                _scale_walk_legs(
+                    [r for _t, _w, r in transfer_ranked_raw],
+                    effective_speed,
+                )
+                # Rebuild totals after walk scaling (total was computed before scaling)
+                transfer_ranked_raw = [
+                    (route.total_minutes_no_wait + (w or 0), w, route)
+                    for _t, w, route in transfer_ranked_raw
+                ]
+                transfer_ranked = _rank_bus_routes(transfer_ranked_raw)
+            else:
+                transfer_ranked = []
             ranked_routes = sorted(
                 ranked_routes + transfer_ranked,
                 key=lambda x: x[0],
@@ -720,6 +926,12 @@ async def _fetch_transfer_arrivals(ranked_routes: list[tuple]) -> list[dict]:
     return transfer_train_arrivals + transfer_bus_arrivals
 
 
+# Static system instruction passed to every Claude request.
+# Marked ephemeral so the Anthropic API caches it server-side (5-min TTL),
+# avoiding re-billing these tokens on every call.
+_CLAUDE_SYSTEM_PROMPT = "You are a helpful Chicago transit assistant."
+
+
 async def _call_claude(
     claude_client: anthropic.AsyncAnthropic,
     prompt: str,
@@ -741,6 +953,11 @@ async def _call_claude(
         message = await claude_client.messages.create(
             model=model,
             max_tokens=max_tokens,
+            system=[{
+                "type": "text",
+                "text": _CLAUDE_SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }],
             messages=[{"role": "user", "content": prompt}],
         )
         text_block = next((c for c in message.content if hasattr(c, "text")), None)
@@ -764,11 +981,24 @@ def _format_response(
     origin_stations: list[dict],
     alerts: list[dict],
     ranked_routes: list[tuple],
+    weather: "WeatherContext | None" = None,
 ) -> dict:
     """Assemble the final JSON-serialisable response dict."""
     return {
         "recommendation": recommendation,
         "model_used": model_used,
+        "weather": (
+            {
+                "temperature_f":           round(weather.current.temperature_f),
+                "feels_like_f":            round(weather.current.feels_like_f),
+                "short_forecast":          weather.current.short_forecast,
+                "precipitation_type":      weather.current.precipitation.type.value,
+                "precipitation_intensity": weather.current.precipitation.intensity,
+                "wind_gust_mph":           weather.current.wind.gust_mph,
+                "alerts":                  weather.alerts,
+            }
+            if weather is not None else None
+        ),
         "origin_coords": list(origin_coords) if origin_coords else None,
         "dest_coords":   list(dest_coords)   if dest_coords   else None,
         "train_arrivals": train_arrivals,
@@ -807,6 +1037,7 @@ def _format_response(
                                 "from_coords":           leg.shape_points[0]  if leg.shape_points else None,
                                 "to_coords":             leg.shape_points[-1] if leg.shape_points else None,
                                 "transfer_wait_minutes": leg.transfer_wait_minutes,
+                                "from_mapid":            leg.from_mapid,
                             }
                             if isinstance(leg, TransitLeg)
                             else {
@@ -822,6 +1053,137 @@ def _format_response(
             for total, wait, route in ranked_routes
         ],
     }
+
+
+# ---------------------------------------------------------------------------
+# Feature Weather — helpers
+# ---------------------------------------------------------------------------
+
+async def _safe_weather(
+    origin_coords: tuple | None,
+) -> "WeatherContext | None":
+    """Fetch weather for origin_coords; return None on any failure (non-fatal)."""
+    if not origin_coords:
+        return None
+    try:
+        return await weather_service.get_weather_context(
+            origin_coords[0], origin_coords[1]
+        )
+    except Exception:
+        traceback.print_exc()
+        return None
+
+
+def _format_weather_for_prompt(weather: WeatherContext, hint: str = "") -> str:
+    """Format a one-line weather summary for the Claude prompt.
+
+    hint is from _departure_window_hint(); when non-empty it is appended to the
+    current-conditions line so the full weather context stays on one line.
+    """
+    c = weather.current
+
+    if c.precipitation.type == PrecipitationType.NONE:
+        precip_str = "none"
+    elif c.precipitation.intensity:
+        precip_str = f"{c.precipitation.type.value} ({c.precipitation.intensity})"
+    else:
+        precip_str = c.precipitation.type.value
+
+    gust_str = ""
+    if c.wind.gust_mph and c.wind.gust_mph >= 15:
+        gust_str = f", wind gusts {c.wind.gust_mph:.0f} mph"
+
+    hint_str = f" {hint}" if hint else ""
+
+    line = (
+        f"Current weather: {c.short_forecast}, {c.temperature_f:.0f}°F "
+        f"(feels like {c.feels_like_f:.0f}°F), precipitation: {precip_str}{gust_str}{hint_str}"
+    )
+
+    if weather.alerts:
+        line += f"\nWeather alerts: {'; '.join(weather.alerts[:2])}"
+
+    return line
+
+
+def _departure_window_hint(weather: "WeatherContext | None") -> str:
+    """Return a short departure-timing hint based on the hourly forecast.
+
+    Scans the next 3 forecast periods for a precipitation transition:
+      - Improving (rain/snow clears): "(forecast: clears in ~Nh)"
+      - Worsening (precipitation starts): "(forecast: {type} starts in ~Nh)"
+    Only emits when the qualifying period is index >= 1 (index 0 is imminent,
+    not actionable). Returns "" when no relevant transition is found.
+    """
+    if weather is None or len(weather.hourly_forecast) < 2:
+        return ""
+    current_type = weather.current.precipitation.type
+    for i, fp in enumerate(weather.hourly_forecast[:3]):
+        if i < 1:
+            continue
+        if (
+            current_type != PrecipitationType.NONE
+            and fp.precipitation.type == PrecipitationType.NONE
+        ):
+            return f"(forecast: clears in ~{i + 1}h)"
+        if (
+            current_type == PrecipitationType.NONE
+            and fp.precipitation.type != PrecipitationType.NONE
+        ):
+            return f"(forecast: {fp.precipitation.type.value} starts in ~{i + 1}h)"
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# Feature Crowdedness — helpers
+# ---------------------------------------------------------------------------
+
+_CROWDEDNESS_LABELS: dict[CrowdednessLevel, str] = {
+    CrowdednessLevel.LOW:       "light",
+    CrowdednessLevel.MODERATE:  "moderate",
+    CrowdednessLevel.HIGH:      "busy",
+    CrowdednessLevel.VERY_HIGH: "very crowded",
+}
+
+
+def _crowdedness_for_routes(ranked: list[tuple]) -> dict[int, str]:
+    """
+    Compute a crowdedness label for each ranked route (keyed by 1-based index).
+
+    Uses current Chicago time to classify the time period.  For each route,
+    takes the worst crowdedness level across all TransitLegs and converts it
+    to a human-readable label for the Claude prompt.
+    """
+    now = datetime.now(_CHICAGO_TZ)
+    time_period, day_type = classify_time_period(now)
+    now_hour = now.hour
+
+    labels: dict[int, str] = {}
+    for i, (_total, _wait, route) in enumerate(ranked, 1):
+        leg_levels: list[CrowdednessLevel] = []
+        for leg in route.legs:
+            if not isinstance(leg, TransitLeg):
+                continue
+            is_bus = leg.line in ("Northbound", "Southbound", "Eastbound", "Westbound")
+            direction = (
+                rtdir_to_inbound_outbound(leg.line_code, leg.line)
+                if is_bus else "inbound"
+            )
+            est = estimate_crowdedness(
+                route_id=leg.line_code or "",
+                direction=direction,
+                stop_id=leg.from_mapid or "",
+                stop_sequence_position=1,
+                total_stops=2,
+                time_period=time_period,
+                day_type=day_type,
+                current_hour=now_hour,
+            )
+            leg_levels.append(est.level)
+        if leg_levels:
+            worst = max(leg_levels, key=lambda lvl: CROWDEDNESS_LEVEL_ORDER[lvl])
+            labels[i] = _CROWDEDNESS_LABELS[worst]
+    return labels
 
 
 # ---------------------------------------------------------------------------
@@ -860,6 +1222,7 @@ LANGUAGE_NAMES: dict[str, str] = {
 def _format_routes(ranked: list[tuple]) -> str:
     """Format ranked (total, wait, route) list into a text block for Claude.
     Handles both train and bus TransitLegs."""
+    crowd_labels = _crowdedness_for_routes(ranked)
     lines = []
     for i, (total, wait, route) in enumerate(ranked, 1):
         first_transit = next((l for l in route.legs if isinstance(l, TransitLeg)), None)
@@ -897,9 +1260,10 @@ def _format_routes(ranked: list[tuple]) -> str:
                         f"({leg.minutes:.0f} min in-vehicle)"
                     )
         xfers = f", {route.transfers} transfer{'s' if route.transfers != 1 else ''}" if route.transfers else ""
+        crowd_tag = f" [est. crowdedness: {crowd_labels[i]}]" if i in crowd_labels else ""
         lines.append(
             f"Option {i}: {' | '.join(leg_parts)}{wait_note} "
-            f"[~{total:.0f} min total{xfers}]"
+            f"[~{total:.0f} min total{xfers}]{crowd_tag}"
         )
     return "\n".join(lines)
 
@@ -927,13 +1291,16 @@ def build_prompt(
     ranked_routes: list[tuple] | None = None,
     bus_fullness: str = "All",
     alerts: list[dict] | None = None,
+    route_statuses: list[dict] | None = None,
     transfer_arrivals: list[dict] | None = None,
     language: str | None = None,
+    weather: "WeatherContext | None" = None,
 ) -> str:
     mode_constraints = {
         "Train": "The rider wants TRAIN options only. Do not mention buses.",
         "Bus":   "The rider wants BUS options only. Do not mention trains.",
         "All":   "The rider is open to trains and buses.",
+        "Walk":  "The rider wants to WALK. Provide a brief summary of the walking route and estimated time. Do not mention transit.",
     }
     mode_note = mode_constraints.get(transit_mode, mode_constraints["All"])
 
@@ -1003,6 +1370,12 @@ def build_prompt(
             alert_lines.append(f"  * {prefix}{a['headline']}{impact}")
         alert_section = "\n\nActive service alerts on your route:\n" + "\n".join(alert_lines)
 
+    route_status_section = ""
+    disrupted = [r for r in (route_statuses or []) if r.get("status", "").lower() != "normal service"]
+    if disrupted:
+        status_lines = [f"  * {r['route']}: {r['status']}" for r in disrupted]
+        route_status_section = "\n\nCurrent system-wide route disruptions:\n" + "\n".join(status_lines)
+
     lang_instruction = ""
     if language and language != "en":
         if language == "ja":
@@ -1014,16 +1387,80 @@ def build_prompt(
         elif language in LANGUAGE_NAMES:
             lang_instruction = f"\n\nRespond in {LANGUAGE_NAMES[language]}."
 
+    departure_hint = _departure_window_hint(weather)
+
+    weather_section = ""
+    if weather is not None:
+        weather_section = "\n\n" + _format_weather_for_prompt(weather, departure_hint)
+        scoring_hint = weight_hint_for_weather(weather)
+        if scoring_hint:
+            weather_section += "\n" + scoring_hint
+
+    weather_hint = (
+        " incorporate weather context naturally within those sentences, not as a separate paragraph."
+        if weather is not None
+        else " the rider is probably standing outside."
+    )
+
+    departure_instruction = (
+        " If conditions improve soon, mention the optimal departure window."
+        if departure_hint
+        else ""
+    )
+
     return (
-        f"You are a helpful Chicago transit assistant. "
         f"A rider is at {origin} and wants to get to {destination}.\n\n"
         f"Rider preference: {mode_note}\n\n"
-        f"{body}{alert_section}\n\n"
+        f"{body}{alert_section}{route_status_section}{weather_section}\n\n"
         "Lead with the single best option and explain why in plain English. "
         "Factor in total trip time including walking and waiting. "
-        "Note any delays or active service alerts. Keep it to 3-4 sentences — the rider is probably standing outside."
+        f"Note any delays or active service alerts. Keep it to 3-4 sentences —{weather_hint}"
+        f"{departure_instruction}"
         f"{lang_instruction}"
     )
+
+
+# ---------------------------------------------------------------------------
+# /stop-arrivals helpers (Feature Pinned Stops + Feature Last Train)
+# ---------------------------------------------------------------------------
+
+def _parse_gtfs_time_mins(t: str) -> float:
+    """GTFS HH:MM:SS → minutes since midnight. Handles 24:xx/25:xx post-midnight times."""
+    parts = t.strip().split(":")
+    h, m, s = int(parts[0]), int(parts[1]), int(parts[2])
+    return h * 60.0 + m + s / 60.0
+
+
+def _last_dep_minutes(mapid: str, now_chicago: datetime) -> int | None:
+    """
+    Return minutes until the last scheduled train departure from a station
+    (across both directions), or None if outside the 0–120 minute window.
+
+    Post-midnight CTA service is encoded as "24:xx"/"25:xx" in GTFS.
+    Current times between 00:00–02:59 are treated as continuation of the
+    previous service day by offsetting now_mins by +1440 (24 h) so they
+    compare correctly against post-midnight departure times.
+    """
+    now_mins = now_chicago.hour * 60.0 + now_chicago.minute + now_chicago.second / 60.0
+    # 00:00–02:59 → still "last night's" service day
+    if now_chicago.hour < 3:
+        now_mins += 24 * 60.0
+
+    best: int | None = None
+    for did in ("0", "1"):
+        dep_str = get_last_departure(mapid, did)
+        if dep_str is None:
+            continue
+        try:
+            dep_mins = _parse_gtfs_time_mins(dep_str)
+        except Exception:
+            continue
+        minutes_until = dep_mins - now_mins
+        if 0 <= minutes_until <= 120:
+            rounded = round(minutes_until)
+            if best is None or rounded > best:
+                best = rounded
+    return best
 
 
 # ---------------------------------------------------------------------------
@@ -1042,6 +1479,102 @@ async def ping(http_request: Request):
     return {"ok": True}
 
 
+@app.get("/stop-arrivals")
+async def stop_arrivals(stops: list[str] = Query(default=[])):
+    """
+    Return live arrivals for a list of pinned stops (Feature Pinned Stops).
+    Each stop is specified as "<type>:<stop_id>" — e.g. "train:40500" or "bus:1234".
+    Maximum 10 stops per request.
+
+    Response: { "arrivals": { "<stop_id>": { "arrivals": [...], "last_departure_minutes"?: int } } }
+    "last_departure_minutes" is included for train stops when within 0–120 min of last run.
+    """
+    if len(stops) > 10:
+        raise HTTPException(status_code=400, detail="Maximum 10 stops per request")
+
+    cache_key = ",".join(sorted(stops))
+    now_mono = time.monotonic()
+    cached = _stop_arrivals_cache.get(cache_key)
+    if cached and now_mono < cached[0]:
+        return cached[1]
+
+    train_stop_ids: list[str] = []
+    bus_stop_ids:   list[str] = []
+    for item in stops:
+        if ":" not in item:
+            continue
+        typ, sid = item.split(":", 1)
+        if typ == "train":
+            train_stop_ids.append(sid)
+        elif typ == "bus":
+            bus_stop_ids.append(sid)
+
+    train_key = os.getenv("CTA_TRAIN_API_KEY", "")
+    bus_key   = os.getenv("CTA_BUS_API_KEY", "")
+
+    train_station_dicts = [{"mapid": sid, "name": sid} for sid in train_stop_ids]
+    train_task = (
+        get_train_arrivals(train_station_dicts, train_key)
+        if train_station_dicts and train_key else _empty()
+    )
+    bus_task = (
+        get_bus_arrivals(bus_stop_ids, bus_key)
+        if bus_stop_ids and bus_key else _empty()
+    )
+
+    train_result, bus_result = await asyncio.gather(train_task, bus_task)
+    train_arrs: list[dict] = train_result[0] if isinstance(train_result, tuple) else train_result
+    bus_arrs:   list[dict] = bus_result[0]   if isinstance(bus_result,   tuple) else bus_result
+
+    arrivals: dict[str, dict] = {}
+
+    for a in train_arrs:
+        sid = a.get("station_mapid", "")
+        if not sid:
+            continue
+        entry = arrivals.setdefault(sid, {"arrivals": []})
+        if len(entry["arrivals"]) < 3:
+            entry["arrivals"].append({
+                "route":       a.get("line_code", ""),
+                "destination": a.get("destination", ""),
+                "minutes":     a.get("arrives_in_minutes", 0),
+            })
+
+    for a in bus_arrs:
+        sid = a.get("stop_id", "")
+        if not sid:
+            continue
+        entry = arrivals.setdefault(sid, {"arrivals": []})
+        if len(entry["arrivals"]) < 3:
+            entry["arrivals"].append({
+                "route":       a.get("route", ""),
+                "destination": a.get("destination", ""),
+                "minutes":     a.get("arrives_in_minutes", 0),
+            })
+
+    # Ensure every requested stop appears in the response even if no arrivals came back
+    for item in stops:
+        if ":" not in item:
+            continue
+        _, sid = item.split(":", 1)
+        arrivals.setdefault(sid, {"arrivals": []})
+
+    # Feature Last Train: add last_departure_minutes for train stops within window
+    now_chicago = datetime.now(_CHICAGO_TZ)
+    for sid in train_stop_ids:
+        mins = _last_dep_minutes(sid, now_chicago)
+        if mins is not None:
+            arrivals.setdefault(sid, {"arrivals": []})["last_departure_minutes"] = mins
+
+    result = {"arrivals": arrivals}
+
+    _stop_arrivals_cache[cache_key] = (now_mono + _STOP_ARRIVALS_TTL, result)
+    if len(_stop_arrivals_cache) > 200:
+        _stop_arrivals_cache.popitem(last=False)
+
+    return result
+
+
 @app.get("/admin/dau")
 async def admin_dau(authorization: str | None = Header(default=None)):
     token = os.getenv("DAU_ADMIN_TOKEN", "")
@@ -1049,6 +1582,119 @@ async def admin_dau(authorization: str | None = Header(default=None)):
     if not expected or authorization != expected:
         raise HTTPException(status_code=403, detail="Forbidden")
     return await dau.get_counts()
+
+
+@app.get("/autocomplete")
+async def autocomplete(q: str = Query("", min_length=0)):
+    """
+    Return up to 8 location suggestions matching query q (min 2 chars).
+    Priority order: train stations → neighborhoods/landmarks → bus stop names.
+    Within each tier: prefix > word-start match.
+    """
+    query = q.strip().lower()
+    if len(query) < 2:
+        return {"suggestions": []}
+
+    # O(1) prefix lookup: use 3-char key for queries ≥ 3 chars, else 2-char key.
+    key = query[:3] if len(query) >= 3 else query
+    candidates = _ac_prefix_index.get(key, [])
+
+    ranked: list[tuple[int, int, dict]] = []
+    seen: set[str] = set()
+    for tier, _base_score, suggestion in candidates:
+        nl = suggestion["label"].lower()
+        if nl.startswith(query):
+            score = 0
+        elif any(w.startswith(query) for w in nl.split()):
+            score = 1
+        else:
+            continue
+        label = suggestion["label"]
+        if label not in seen:
+            seen.add(label)
+            ranked.append((tier, score, suggestion))
+
+    ranked.sort(key=lambda x: (x[0], x[1]))
+    return {"suggestions": [r[2] for r in ranked[:8]]}
+
+
+# ---------------------------------------------------------------------------
+# /alerts cache — 5-minute TTL, single static key "alerts"
+# ---------------------------------------------------------------------------
+_ALERTS_CACHE_TTL = 300  # 5 minutes
+_alerts_cache: collections.OrderedDict[str, tuple[float, dict]] = collections.OrderedDict()
+_CTA_CUSTOMER_ALERTS_URL = "http://www.transitchicago.com/api/1.0/alerts.aspx"
+_ALERTS_SEVERITY_ORDER = {"Major": 0, "Minor": 1, "Planned": 2}
+
+
+@app.get("/alerts")
+async def alerts_endpoint():
+    """
+    Fetch all active CTA service alerts from the Customer Alerts API.
+    Returns { "alerts": [...] } with a 5-minute TTL cache.
+    Each alert: { alert_id, headline, short_description, routes, severity }.
+    severity is "Major" (score>=70), "Minor" (40-69), or "Planned" (<40).
+    routes is a list of short route names, e.g. ["Red", "22"].
+    Returns empty list on CTA API failure; never raises.
+    """
+    cache_key = "alerts"
+    now_mono = time.monotonic()
+    cached = _alerts_cache.get(cache_key)
+    if cached and now_mono < cached[0]:
+        return cached[1]
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                _CTA_CUSTOMER_ALERTS_URL,
+                params={"outputType": "XML", "accessibility": "N"},
+                timeout=aiohttp.ClientTimeout(total=8),
+            ) as resp:
+                text = await resp.text()
+
+        root = ET.fromstring(text)
+        parsed: list[dict] = []
+        for alert_el in root.findall("Alert"):
+            try:
+                severity_score = int(alert_el.findtext("SeverityScore", "0") or 0)
+                if severity_score >= 70:
+                    severity = "Major"
+                elif severity_score >= 40:
+                    severity = "Minor"
+                else:
+                    severity = "Planned"
+
+                routes: list[str] = []
+                impacted = alert_el.find("ImpactedService")
+                if impacted is not None:
+                    for svc in impacted.findall("Service"):
+                        name = (svc.findtext("ServiceName") or "").strip()
+                        # Normalize "Red Line" → "Red" so names match route pill labels
+                        name = name.removesuffix(" Line")
+                        if name:
+                            routes.append(name)
+
+                parsed.append({
+                    "alert_id":          alert_el.findtext("AlertId", ""),
+                    "headline":          alert_el.findtext("Headline", ""),
+                    "short_description": alert_el.findtext("ShortDescription", ""),
+                    "routes":            routes,
+                    "severity":          severity,
+                })
+            except Exception:
+                continue
+
+        parsed.sort(key=lambda a: _ALERTS_SEVERITY_ORDER.get(a["severity"], 3))
+        result: dict = {"alerts": parsed}
+    except Exception:
+        traceback.print_exc()
+        result = {"alerts": []}
+
+    _alerts_cache[cache_key] = (now_mono + _ALERTS_CACHE_TTL, result)
+    if len(_alerts_cache) > 10:
+        _alerts_cache.popitem(last=False)
+
+    return result
 
 
 @app.post("/recommend")
@@ -1068,7 +1714,7 @@ async def recommend(request: RouteRequest, http_request: Request):
     key = _cache_key(
         request.origin, request.destination, request.transit_mode,
         request.bus_fullness, byok=bool(byok_key), ai_enabled=request.ai_enabled,
-        language=request.language or "en",
+        language=request.language or "en", walk_speed=request.walk_speed,
     )
 
     # Hold _store_lock for the rate-limit check and cache read atomically.
@@ -1089,6 +1735,78 @@ async def recommend(request: RouteRequest, http_request: Request):
             _response_cache.pop(key, None)  # evict stale entry
 
     loop = asyncio.get_running_loop()
+
+    # Walk mode — skip all CTA API calls; resolve coordinates and route via walking graph only.
+    if request.transit_mode == "Walk":
+        origin_coords, dest_coords = await asyncio.gather(
+            loop.run_in_executor(None, _coords_for_location, request.origin, None),
+            loop.run_in_executor(None, _coords_for_location, request.destination, None),
+        )
+        if not origin_coords:
+            raise HTTPException(status_code=400, detail=f"Could not geocode '{request.origin}'.")
+        if not dest_coords:
+            raise HTTPException(status_code=400, detail=f"Could not geocode '{request.destination}'.")
+        dlat = origin_coords[0] - dest_coords[0]
+        dlon = origin_coords[1] - dest_coords[1]
+        if (dlat * dlat + dlon * dlon) < _SAME_LOCATION_THRESHOLD_DEG2:
+            raise HTTPException(status_code=400, detail="Your origin and destination appear to be the same location.")
+
+        walk_min, directions, path, walk_weather = await asyncio.gather(
+            loop.run_in_executor(None, _walk_minutes, origin_coords[0], origin_coords[1], dest_coords[0], dest_coords[1]),
+            loop.run_in_executor(None, _walk_directions, origin_coords[0], origin_coords[1], dest_coords[0], dest_coords[1]),
+            loop.run_in_executor(None, _walk_path, origin_coords[0], origin_coords[1], dest_coords[0], dest_coords[1]),
+            _safe_weather(origin_coords),
+        )
+        walk_effective_speed = request.walk_speed * _precip_walk_factor(walk_weather)
+        if walk_effective_speed != 1.0:
+            walk_min = round(walk_min / walk_effective_speed, 1)
+
+        leg = WalkLeg(
+            from_name="Your location",
+            to_name="Your destination",
+            minutes=walk_min,
+            path_points=path,
+            directions=directions,
+        )
+        route = Route(legs=[leg], walk_minutes_total=walk_min)
+        ranked_routes = [(walk_min, None, route)]
+
+        prompt = build_prompt(
+            origin=request.origin,
+            destination=request.destination,
+            train_arrivals=[],
+            bus_arrivals=[],
+            transit_mode="Walk",
+            ranked_routes=ranked_routes,
+            language=request.language,
+            weather=walk_weather,
+        )
+        recommendation = None
+        model_used = None
+        if request.ai_enabled:
+            recommendation, model_used = await _call_claude(claude_client, prompt, ranked_routes)
+
+        response = _format_response(
+            recommendation=recommendation,
+            model_used=model_used,
+            origin_coords=origin_coords,
+            dest_coords=dest_coords,
+            train_arrivals=[],
+            bus_arrivals=[],
+            n_train_errors=0,
+            n_bus_errors=0,
+            origin_stations=[],
+            alerts=[],
+            ranked_routes=ranked_routes,
+            weather=walk_weather,
+        )
+        async with _store_lock:
+            _response_cache[key] = (time.monotonic() + _CACHE_TTL_SECONDS, response)
+            _response_cache.move_to_end(key)
+            if len(_response_cache) > _CACHE_MAX_SIZE:
+                _response_cache.popitem(last=False)
+        return response
+
     (
         origin_stations, origin_bus_stops,
         dest_stations, dest_bus_stops, dest_match,
@@ -1100,15 +1818,21 @@ async def recommend(request: RouteRequest, http_request: Request):
         request, origin_stations, origin_bus_stops
     )
 
+    weather = await _safe_weather(origin_coords)
+
     ranked_routes = await _run_routing(
         request, origin_coords, dest_coords,
         origin_stations, origin_bus_stops, train_arrivals, bus_arrivals,
+        weather=weather,
     )
 
     transfer_arrivals_combined = await _fetch_transfer_arrivals(ranked_routes)
 
     alert_ids = _alert_ids_from_routes(ranked_routes)
-    alerts: list[dict] = await get_alerts(alert_ids) if alert_ids else []
+    alerts, route_statuses = await asyncio.gather(
+        get_alerts(alert_ids),
+        get_route_statuses(),
+    )
 
     prompt = build_prompt(
         origin=request.origin,
@@ -1119,8 +1843,10 @@ async def recommend(request: RouteRequest, http_request: Request):
         ranked_routes=ranked_routes or None,
         bus_fullness=request.bus_fullness,
         alerts=alerts,
+        route_statuses=route_statuses,
         transfer_arrivals=transfer_arrivals_combined or None,
         language=request.language,
+        weather=weather,
     )
 
     recommendation = None
@@ -1140,6 +1866,7 @@ async def recommend(request: RouteRequest, http_request: Request):
         origin_stations=origin_stations,
         alerts=alerts,
         ranked_routes=ranked_routes,
+        weather=weather,
     )
 
     # Assign then move_to_end so existing keys shift to the "newest" position

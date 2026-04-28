@@ -1,12 +1,15 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { isValidByokKey } from "../constants.js";
 
 const BYOK_ENABLED = import.meta.env.VITE_BYOK_ENABLED === "true";
 
-export default function SettingsPanel({ apiKey, onSave, onClose, aiEnabled, onAiChange }) {
+const WALK_SPEEDS = ["slow", "standard", "brisk"];
+
+export default function SettingsPanel({ apiKey, onSave, onClose, aiEnabled, onAiChange, walkSpeed, onWalkSpeedChange }) {
   const { t } = useTranslation();
   const [draft, setDraft] = useState(apiKey);
-  const isValid = !draft.trim() || draft.trim().startsWith("sk-ant-");
+  const isValid = isValidByokKey(draft);
 
   return (
     <div className="settings-panel" role="dialog" aria-label={t("settings_title")}>
@@ -18,7 +21,7 @@ export default function SettingsPanel({ apiKey, onSave, onClose, aiEnabled, onAi
       </div>
 
       <label className="setting-row">
-        <span>AI Explanation</span>
+        <span>{t("settings_ai_explanation_label")}</span>
         <input
           type="checkbox"
           checked={aiEnabled}
@@ -26,13 +29,32 @@ export default function SettingsPanel({ apiKey, onSave, onClose, aiEnabled, onAi
         />
       </label>
       <span className="settings-hint">
-        When on, Claude adds a plain-English summary of your route options.
+        {t("settings_ai_explanation_hint")}
+      </span>
+
+      <div className="setting-row">
+        <span>{t("settings_walk_speed_label")}</span>
+        <div className="walk-speed-toggle">
+          {WALK_SPEEDS.map((speed) => (
+            <button
+              key={speed}
+              className={`walk-speed-btn${walkSpeed === speed ? " walk-speed-btn--active" : ""}`}
+              onClick={() => onWalkSpeedChange(speed)}
+              type="button"
+            >
+              {t(`settings_walk_speed_${speed}`)}
+            </button>
+          ))}
+        </div>
+      </div>
+      <span className="settings-hint">
+        {t("settings_walk_speed_hint")}
       </span>
 
       {BYOK_ENABLED && (
         <>
           <div className="settings-warning" role="alert">
-            <strong>⚠ Security notice:</strong> Your key is stored in this browser. Only use this feature on trusted personal devices.
+            {t("settings_byok_security_notice")}
           </div>
           <label className="settings-label">
             <span className="settings-label-text">{t("settings_label_api_key")}</span>

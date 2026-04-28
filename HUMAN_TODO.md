@@ -57,10 +57,11 @@ Claude cannot do these. Check them off as you go.
 
 ## Phase 7 — Monetization (future)
 
-- [ ] Research and select an ad network (Google AdSense is the standard starting point for a utility app)
-- [ ] Apply for AdSense account at adsense.google.com — requires a live public URL, so do this after Phase 6
-- [ ] Share AdSense publisher ID with Claude to wire up ad placements in the frontend
-- [ ] Look into Amazon Associates or other affiliate link "Home-Ad" opportunities
+**Strategy:** House ads first (Phase 1) — no third-party ad scripts. Defer EthicalAds/Carbon Ads until the user base is established. Google AdSense deliberately avoided for now (auto-placed display ads are likely to clash with the Heritage Organic design).
+
+- [ ] Sign up for Amazon Associates (or a comparable affiliate program) to generate affiliate links for the house ad product list — see `FEATURE_IMPLEMENTATION_PLANS.md` → Feature Monetization → Affiliate Products Reference
+- [ ] Set `VITE_HOUSE_AD_ENABLED=true`, `VITE_HOUSE_AD_URL`, and `VITE_HOUSE_AD_TEXT` in the Vercel dashboard after Claude wires up the AdSlot component
+- [ ] After reaching meaningful traffic, evaluate EthicalAds (ethicalads.io) or Carbon Ads (carbonads.com) — both require applying with a live site and have traffic/content requirements
 ---
 
 ## Post-Deployment Cleanup

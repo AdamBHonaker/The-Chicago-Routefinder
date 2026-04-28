@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, memo } from "react";
 import { useTranslation } from "react-i18next";
 import { LINE_COLORS, BUS_DIRECTION_COLORS } from "../constants.js";
 
@@ -11,7 +11,9 @@ function formatBlocks(b, blockType, t) {
 function WalkLegItem({ leg, index, completedSteps, extraClass = "" }) {
   const { t } = useTranslation();
   const [stepsOpen, setStepsOpen] = useState(false);
-  const hasSteps = leg.directions && leg.directions.length > 1;
+  const dirCount = leg.directions?.length ?? 0;
+  const hasSteps = dirCount > 0;
+  const isMultiStep = dirCount > 1;
 
   const label =
     leg.from === "Your location"
@@ -22,6 +24,23 @@ function WalkLegItem({ leg, index, completedSteps, extraClass = "" }) {
 
   const showExit = leg.exit_label && leg.to === "Your destination";
 
+  const renderStep = (step, si) => {
+    const stepDone = completedSteps?.has(`${index}-${si}`);
+    return (
+      <li key={si} className={`leg-step${stepDone ? " leg-step--complete" : ""}`}>
+        <span className="leg-step-text">
+          {stepDone && <span className="leg-step-complete-check">✓</span>}
+          {si === 0 ? t("step_walk") : t("step_head")}
+          {step.direction_full ? ` ${step.direction_full}` : ""}
+          {` ${t("step_along")} `}
+          <span className="leg-step-street">{step.street}</span>
+          {` ${t("step_for")} `}
+          {formatBlocks(step.blocks ?? 1, step.block_type, t)}
+        </span>
+      </li>
+    );
+  };
+
   return (
     <li key={index} className={`leg leg-walk${extraClass}`}>
       {extraClass.includes("leg-complete") && <span className="leg-complete-check">✓</span>}
@@ -31,7 +50,12 @@ function WalkLegItem({ leg, index, completedSteps, extraClass = "" }) {
         {showExit && (
           <span className="leg-exit-label">{t("exit_label_prefix")} {leg.exit_label}</span>
         )}
-        {hasSteps && (
+        {hasSteps && !isMultiStep && (
+          <ol className="leg-steps leg-steps--inline">
+            {renderStep(leg.directions[0], 0)}
+          </ol>
+        )}
+        {isMultiStep && (
           <button
             className="leg-steps-toggle"
             onClick={() => setStepsOpen((v) => !v)}
@@ -40,24 +64,9 @@ function WalkLegItem({ leg, index, completedSteps, extraClass = "" }) {
             {stepsOpen ? t("steps_hide") : t("steps_show")}
           </button>
         )}
-        {stepsOpen && (
+        {isMultiStep && stepsOpen && (
           <ol className="leg-steps">
-            {leg.directions.map((step, si) => {
-              const stepDone = completedSteps?.has(`${index}-${si}`);
-              return (
-                <li key={si} className={`leg-step${stepDone ? " leg-step--complete" : ""}`}>
-                  <span className="leg-step-text">
-                    {stepDone && <span className="leg-step-complete-check">✓</span>}
-                    {si === 0 ? t("step_walk") : t("step_head")}
-                    {step.direction_full ? ` ${step.direction_full}` : ""}
-                    {` ${t("step_along")} `}
-                    <span className="leg-step-street">{step.street}</span>
-                    {` ${t("step_for")} `}
-                    {formatBlocks(step.blocks ?? 1, step.block_type, t)}
-                  </span>
-                </li>
-              );
-            })}
+            {leg.directions.map(renderStep)}
           </ol>
         )}
       </span>
@@ -65,7 +74,8 @@ function WalkLegItem({ leg, index, completedSteps, extraClass = "" }) {
   );
 }
 
-function RouteLegs({ legs, activeLegIndex, completedSteps }) {
+function RouteLegs({ legs, activeLegIndex, completedSteps, pinnedStops, onPinToggle, activeAlertRoutes }) {
+  const { t } = useTranslation();
   let seenTransit = false;
   return (
     <ol className="route-legs">
@@ -99,6 +109,12 @@ function RouteLegs({ legs, activeLegIndex, completedSteps }) {
           isTransferLeg && xferWait !== undefined && xferWait !== null
             ? (xferWait === 0 ? "⏱ Due" : `⏱ ${xferWait} min wait`)
             : null;
+
+        const stopId    = leg.from_mapid;
+        const isPinned  = stopId && pinnedStops?.some((s) => s.stop_id === stopId);
+        const stopType  = isBus ? "bus" : "train";
+        const hasAlert  = activeAlertRoutes?.has(pillLabel);
+
         return (
           <li key={i} className={`leg leg-transit${legClass}`}>
             {isDone && <span className="leg-complete-check">✓</span>}
@@ -106,10 +122,24 @@ function RouteLegs({ legs, activeLegIndex, completedSteps }) {
             <span className="leg-pill" style={{ background: color }}>
               {pillLabel}
             </span>
+            {hasAlert && <span className="leg-alert-badge" title="Service alert active">⚠</span>}
             <span className="leg-text">
               {leg.from} → {leg.to}
               <span className="leg-duration"> · {leg.minutes} min</span>
             </span>
+            {stopId && onPinToggle && (
+              <button
+                className={`pin-btn${isPinned ? " pin-btn--pinned" : ""}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onPinToggle(stopType, stopId, leg.from, leg.line_code || "", isPinned);
+                }}
+                title={isPinned ? t("unpin_stop", { stop: leg.from }) : t("pin_stop", { stop: leg.from })}
+                aria-label={isPinned ? t("unpin_stop", { stop: leg.from }) : t("pin_stop", { stop: leg.from })}
+              >
+                {isPinned ? "📌" : "📍"}
+              </button>
+            )}
           </li>
         );
       })}
@@ -117,22 +147,31 @@ function RouteLegs({ legs, activeLegIndex, completedSteps }) {
   );
 }
 
-export default function RouteCard({
+export default memo(function RouteCard({
   route, index, isFirst, isSelected, onSelect,
   tripActive, activeLegIndex, completedSteps, onStartTrip, onStopTrip,
+  tripGeoError, onDismissTripGeoError,
+  onVehicle, onToggleVehicle,
+  pinnedStops, onPinToggle, activeAlertRoutes,
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(isFirst);
+  const activeLeg = (tripActive && activeLegIndex !== null) ? route.legs[activeLegIndex] : null;
+  const isTransitLeg = activeLeg?.type === 'transit';
+  const transitLabel = isTransitLeg
+    ? (activeLeg.line_code ? `Bus ${activeLeg.line_code}` : (activeLeg.line || ''))
+    : '';
   const waitNote =
-    route.wait_minutes === null ? ""
+    route.wait_minutes == null ? ""
     : route.wait_minutes === 0  ? ` · ${t("wait_due")}`
     : ` · ${t("wait_minutes", { minutes: route.wait_minutes })}`;
+  const transfers = route.transfers ?? 0;
   const xferNote =
-    route.transfers === 0
+    transfers === 0
       ? t("label_no_transfers")
-      : route.transfers === 1
+      : transfers === 1
       ? t("label_1_transfer")
-      : t("label_n_transfers", { count: route.transfers });
+      : t("label_n_transfers", { count: transfers });
 
   return (
     <div className={`route-card${isFirst ? " route-card--best" : ""}${isSelected ? " route-card--selected" : ""}`}>
@@ -153,10 +192,24 @@ export default function RouteCard({
           legs={route.legs}
           activeLegIndex={isSelected ? activeLegIndex : null}
           completedSteps={isSelected ? completedSteps : null}
+          pinnedStops={pinnedStops}
+          onPinToggle={onPinToggle}
+          activeAlertRoutes={activeAlertRoutes}
         />
       )}
       {isSelected && (
         <div className="route-card-trip-footer">
+          {tripActive && isTransitLeg && (
+            <button
+              className={`on-vehicle-btn${onVehicle ? ' on-vehicle-btn--active' : ''}`}
+              onClick={onToggleVehicle}
+              aria-pressed={onVehicle}
+            >
+              {onVehicle
+                ? t('on_vehicle_active', { line: transitLabel })
+                : t('on_vehicle_prompt', { line: transitLabel })}
+            </button>
+          )}
           {tripActive ? (
             <button className="stop-trip-btn" onClick={onStopTrip}>
               ■ Stop Trip
@@ -166,8 +219,19 @@ export default function RouteCard({
               ▶ Start Trip
             </button>
           )}
+          {tripGeoError && (
+            <div className="trip-geo-error" role="alert">
+              <span>{t("geo_trip_denied")}</span>
+              <button
+                type="button"
+                className="geo-denied-dismiss"
+                onClick={onDismissTripGeoError}
+                aria-label="Dismiss"
+              >×</button>
+            </div>
+          )}
         </div>
       )}
     </div>
   );
-}
+});
