@@ -28,6 +28,7 @@ import LabelSavePanel from "./components/LabelSavePanel.jsx";
 import LocationInput from "./components/LocationInput.jsx";
 import SavedRoutesPanel from "./components/SavedRoutesPanel.jsx";
 import SideRail from "./components/SideRail.jsx";
+import SignalLamp from "./components/SignalLamp.jsx";
 import { useApiQuery } from "./hooks/useApiQuery.js";
 import { useLocalStorage } from "./hooks/useLocalStorage.js";
 import { fetchWithRetry as _fetchWithRetry } from "./utils/fetchWithRetry.js";
@@ -584,6 +585,9 @@ export default function App() {
             <div className="masthead-folio">
               <span className="masthead-folio-date">{MASTHEAD_DATE}</span>
               <span className="masthead-folio-vol">{MASTHEAD_VOL}</span>
+              {result && result.routes.length > 0 && (
+                <SignalLamp ariaLabel={t("psb_live_data")} className="masthead-signal" />
+              )}
             </div>
             <div className="masthead-rule" aria-hidden="true" />
             <div className="masthead-title-row">

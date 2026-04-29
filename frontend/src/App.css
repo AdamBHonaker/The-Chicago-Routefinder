@@ -179,7 +179,7 @@
   flex-direction: column;
   gap: 2rem;
   padding: 2rem 1.25rem env(safe-area-inset-bottom, 1.5rem);
-  background: var(--paper);
+  background-color: var(--paper);
 }
 
 /* Right panel — map (always in DOM) */
@@ -448,7 +448,7 @@
 .masthead-folio {
   display: flex;
   justify-content: space-between;
-  align-items: baseline;
+  align-items: center;
   margin-bottom: var(--sp-3);
 }
 
@@ -568,7 +568,7 @@
 /* ── Form ────────────────────────────────────────────────────────────────── */
 
 .form {
-  background: var(--paper-bright);
+  background-color: var(--paper-bright);
   border: var(--rule);
   padding: 14px 16px;
   display: flex;
@@ -1055,7 +1055,7 @@
 }
 
 .route-card--best {
-  background: var(--paper-bright);
+  background-color: var(--paper-bright);
 }
 
 .route-card--selected {
@@ -1668,7 +1668,7 @@
   max-width: 480px;
   max-height: 90dvh;
   overflow-y: auto;
-  background: var(--paper-bright);
+  background-color: var(--paper-bright);
   border: var(--rule-thick);
   padding: var(--sp-7);
   display: flex;

@@ -15,6 +15,7 @@ Chunked plans for upcoming major features, followed by ideas deferred until post
 1. Feature NorthExpansion — North Side 0.25-Mile Walking Radius Expansion — **Structural** (depends on Feature K ✅)
 2. Feature SouthExpansion — South Side 0.25-Mile Walking Radius Expansion — **Structural** (depends on Feature K ✅)
 3. Feature Monetization — House Ads (Phase 1; third-party networks deferred) — **Bolt-On**
+4. Feature TabTransition — Tab-change page transition animation — **Bolt-On**
 
 ---
 
@@ -278,3 +279,173 @@ Content strategy: contextual, local, and utility-focused affiliate items matchin
 **Copy tips:** mention how items solve specific Chicago pain points (e.g., surviving transfers at Clark/Lake, windy Blue Line platforms).
 
 ---
+
+# Feature TabTransition — Tab-change page transition animation
+
+## Overview
+
+The editorial design system specifies a page transition when the user switches tabs: `translateX(8px)` + `opacity` fade, 220ms, `ease-out`. This is the only motion in the design system that is triggered by navigation rather than data state. It has not been implemented because the current tab-switching mechanism (toggling `display: none` / `display: flex` via `[data-active-tab]` CSS selectors) is **incompatible with CSS transitions** — you cannot transition from or to `display: none`.
+
+**Type: Bolt-On** — CSS/JSX only; no backend changes, no hook changes.
+
+**Status: Not started**
+
+**Prerequisites:**
+- The desktop SideRail and mobile tab bar are both implemented and stable (done as of the `claude/align-frontend-design-system-EQdPg` branch, commit `4964172`).
+
+---
+
+## The core constraint — why this is non-trivial
+
+`display: none` causes an element to be removed from the layout and compositing entirely. CSS transitions ignore the `display` property; they cannot interpolate between `none` and `block`/`flex`. The moment `display: none` is applied, the element disappears instantly — no fade, no slide.
+
+The current visibility mechanism in `App.css` is:
+
+```css
+[data-active-tab="map"] .panel-cards { display: none; }
+[data-active-tab="home"] .panel-map,
+[data-active-tab="alerts"] .panel-map,
+[data-active-tab="saved"] .panel-map { display: none; }
+```
+
+These rules are also responsible for collapsing the desktop grid from 3 columns to 2 when `panel-map` is hidden:
+
+```css
+[data-active-tab="map"] .layout--split,
+[data-active-tab="alerts"] .layout--split,
+[data-active-tab="saved"] .layout--split {
+  grid-template-columns: 60px 1fr;
+}
+```
+
+Any approach that replaces `display: none` with opacity/visibility tricks must also preserve this grid collapse — otherwise the hidden panel still occupies layout space and breaks the 2/3-column switching.
+
+---
+
+## Recommended approach
+
+Replace the `display: none` mechanism with a two-phase opacity + pointer-events strategy combined with a `visibility: hidden` delayed via `transition-delay`. This allows CSS transitions to run before the element is removed from the accessibility tree.
+
+### Step 1 — Replace display: none rules in App.css
+
+Remove the existing `[data-active-tab]` `display: none` rules. Replace with:
+
+```css
+/* Hidden panel state — still participates in grid layout but invisible */
+.panel-cards,
+.panel-map {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition:
+    opacity var(--dur-base) var(--ease-out),
+    visibility 0s linear 0s;           /* visibility changes instantly at start */
+}
+
+[data-active-tab="map"] .panel-cards,
+[data-active-tab="home"] .panel-map,
+[data-active-tab="alerts"] .panel-map,
+[data-active-tab="saved"] .panel-map {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity var(--dur-base) var(--ease-out),
+    visibility 0s linear var(--dur-base); /* delay visibility until fade is done */
+}
+```
+
+The `visibility: hidden` approach removes the panel from keyboard tab order and screen-reader traversal (like `display: none`) but does NOT remove it from layout — the grid column still exists and holds its width.
+
+### Step 2 — Preserve the desktop grid collapse
+
+Because `visibility: hidden` keeps the panel in layout, the grid will NOT auto-collapse when `panel-cards` or `panel-map` is hidden. You must keep the `grid-template-columns` collapse rules:
+
+```css
+[data-active-tab="map"] .layout--split,
+[data-active-tab="alerts"] .layout--split,
+[data-active-tab="saved"] .layout--split {
+  grid-template-columns: 60px 1fr;
+}
+```
+
+**This is the key danger:** if the grid column containing the hidden panel still occupies space (because `visibility: hidden` keeps it in layout), the `panel-map` `1fr` column will be narrower than intended on the "home" tab. The grid-template-columns rule must still explicitly remove the `panel-cards` column when only the map is shown.
+
+Verify on desktop that:
+- Home tab: 3 columns (`60px 420px 1fr`) — both panels visible
+- Map tab: 2 columns (`60px 1fr`) — panel-cards opacity:0/visibility:hidden AND grid collapses
+- Alerts/Saved tabs: 2 columns (`60px 1fr`) — panel-map hidden AND grid collapses
+
+### Step 3 — Add translateX slide to the entering panel
+
+The design spec calls for a subtle `translateX(8px)` on entry — the panel slides in 8px as it fades in. Apply this to both panels so whichever becomes visible slides in from the right:
+
+```css
+.panel-cards,
+.panel-map {
+  transform: translateX(0);
+  transition:
+    opacity var(--dur-base) var(--ease-out),
+    transform var(--dur-base) var(--ease-out),
+    visibility 0s linear 0s;
+}
+
+[data-active-tab="map"] .panel-cards,
+[data-active-tab="home"] .panel-map,
+[data-active-tab="alerts"] .panel-map,
+[data-active-tab="saved"] .panel-map {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateX(8px);
+  transition:
+    opacity var(--dur-base) var(--ease-out),
+    transform var(--dur-base) var(--ease-out),
+    visibility 0s linear var(--dur-base);
+}
+```
+
+When the active tab changes and a panel transitions from hidden → visible, it begins at `translateX(8px) opacity:0` (set by the outgoing CSS rule) and immediately transitions to `translateX(0) opacity:1`. The 8px slide gives the directional sense of pages turning.
+
+### Step 4 — Suppress on mobile
+
+On mobile the panels are stacked vertically (single-column flex layout). The translateX slide is meaningless and may look glitchy when panels stack. Wrap the transition declarations in a desktop-only block:
+
+```css
+@media (min-width: 801px) {
+  .panel-cards,
+  .panel-map {
+    /* transition rules here */
+  }
+}
+```
+
+The mobile `@media (max-width: 800px)` block already overrides layout to `display: flex; flex-direction: column`, which means panels are always in the same layout plane — visibility toggling is handled there separately and should remain `display: none` / `display: flex` on mobile (no transition needed).
+
+### Step 5 — Respect prefers-reduced-motion
+
+```css
+@media (prefers-reduced-motion: reduce) {
+  .panel-cards,
+  .panel-map {
+    transition: none;
+  }
+}
+```
+
+---
+
+## Things to test after implementation
+
+1. **Desktop — all 4 tab switches** confirm slide-in visible on each panel change.
+2. **Desktop — grid layout** confirm the hidden column does not eat into the visible panel's width on each active tab (measure with browser DevTools grid inspector).
+3. **Mobile — no transition glitch** switch tabs quickly on a real device; panels should snap (no partial opacity states from the desktop transition bleed-through).
+4. **MapLibre map** — the map canvas must not flicker when `panel-map` transitions in. MapLibre re-renders when its container changes size; use `map.resize()` after the transition ends if a flicker is observed. The existing `setTimeout(0)` init workaround may interact with the transition timing.
+5. **Keyboard / screen reader** — tab order must not land on hidden panel's focusable children. Confirm `visibility: hidden` is suppressing them (it should; `display: none` alternatives like `aria-hidden` may be needed if not).
+6. **Live trip active** — during an active trip, the route card is in `panel-cards`. Switching to the Map tab should hide the card gracefully and not interrupt the GPS watchPosition loop.
+
+---
+
+## Why this was deferred
+
+The transition cannot be added as a simple CSS one-liner because the current `display: none` architecture is load-bearing for the grid collapse. Changing it requires careful verification of the desktop layout at every tab combination. The risk of a subtle layout regression (e.g. the map being 60px narrower than intended on home tab) outweighs the purely cosmetic benefit of a 220ms slide. Implement this during a focused layout QA session where all 4 tabs × desktop + mobile + RTL can be verified before merging.
