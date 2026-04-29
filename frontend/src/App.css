@@ -67,6 +67,26 @@
   --dur-slow:   320ms;
 }
 
+/* ── Paper grain ────────────────────────────────────────────────────────── */
+
+.paper-grain {
+  background-color: var(--paper);
+  background-image:
+    radial-gradient(rgba(23,19,16,0.035) 1px, transparent 1px),
+    radial-gradient(rgba(23,19,16,0.025) 1px, transparent 1px);
+  background-size: 3px 3px, 7px 7px;
+  background-position: 0 0, 1px 2px;
+}
+
+.paper-grain-bright {
+  background-color: var(--paper-bright);
+  background-image:
+    radial-gradient(rgba(23,19,16,0.045) 1px, transparent 1px),
+    radial-gradient(rgba(23,19,16,0.030) 1px, transparent 1px);
+  background-size: 3px 3px, 7px 7px;
+  background-position: 0 0, 1px 2px;
+}
+
 /* ── Error boundary ─────────────────────────────────────────────────────── */
 
 .error-boundary {
@@ -132,12 +152,27 @@
 }
 
 .layout--split {
-  flex-direction: row;
+  display: grid;
+  grid-template-columns: 60px minmax(0, 420px) 1fr;
+  min-height: 0;
 }
+
+/* Desktop screen-swap: collapse to 2 columns whenever one of the panels
+   is hidden, so the visible panel fills the remaining viewport. */
+[data-active-tab="map"] .layout--split,
+[data-active-tab="alerts"] .layout--split,
+[data-active-tab="saved"] .layout--split {
+  grid-template-columns: 60px 1fr;
+}
+
+/* Tab-based panel visibility (applies on both desktop and mobile) */
+[data-active-tab="map"] .panel-cards { display: none; }
+[data-active-tab="home"] .panel-map,
+[data-active-tab="alerts"] .panel-map,
+[data-active-tab="saved"] .panel-map { display: none; }
 
 /* Left panel — route cards, form, results */
 .panel-cards {
-  width: 40%;
   flex-shrink: 0;
   overflow-y: auto;
   display: flex;
@@ -149,10 +184,78 @@
 
 /* Right panel — map (always in DOM) */
 .panel-map {
-  flex: 1;
   position: relative;
   background: var(--paper-folio);
   overflow: hidden;
+}
+
+/* ── Side rail (desktop only) ───────────────────────────────────────────── */
+
+.side-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  border-inline-end: var(--rule-thick);
+  background: var(--paper);
+}
+
+.side-rail__nav {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 0;
+  height: 100%;
+}
+
+.side-rail__title {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  font-family: var(--serif);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--ink);
+  margin-block-start: 8px;
+  user-select: none;
+}
+
+.side-rail__spacer {
+  flex: 1;
+}
+
+.side-rail__tab {
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--ink);
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--serif);
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: var(--r-0);
+  transition: background var(--dur-quick) var(--ease-out), color var(--dur-quick) var(--ease-out);
+}
+
+.side-rail__tab:hover {
+  background: var(--paper-folio);
+}
+
+.side-rail__tab--active,
+.side-rail__tab--active:hover {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.side-rail__tab:focus-visible {
+  outline: 2px solid var(--rust);
+  outline-offset: 2px;
 }
 
 /* ── Tab bar (mobile only — hidden on desktop) ───────────────────────────── */
@@ -169,8 +272,14 @@
     overflow: hidden;
   }
 
-  .layout--split {
+  /* Mobile: stack into a single scroll column; hide the desktop rail. */
+  .side-rail { display: none; }
+
+  .layout--split,
+  [data-active-tab="map"] .layout--split {
+    display: flex;
     flex-direction: column;
+    grid-template-columns: none;
     overflow: hidden;
   }
 
@@ -188,17 +297,6 @@
     width: 100%;
     flex: 1;
     min-height: 0;
-  }
-
-  /* Tab-based panel visibility */
-  [data-active-tab="map"] .panel-cards { display: none; }
-  [data-active-tab="home"] .panel-map,
-  [data-active-tab="alerts"] .panel-map,
-  [data-active-tab="saved"] .panel-map { display: none; }
-
-  /* When map tab is active, layout fills full height minus tab bar */
-  [data-active-tab="map"] .layout--split {
-    flex: 1;
   }
 
   /* Tab bar */
@@ -777,6 +875,21 @@
   .signal-lamp { animation: none; }
 }
 
+.signal-lamp-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.signal-lamp__label {
+  font-family: var(--sans);
+  font-size: var(--fs-caps);
+  font-weight: 700;
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--mute);
+}
+
 @keyframes radar-pulse {
   0%   { box-shadow: 0 0 0 0   rgba(156,42,26,0.65); }
   60%  { box-shadow: 0 0 0 8px rgba(156,42,26,0);    }
@@ -912,6 +1025,12 @@
   color: var(--mute);
   margin-bottom: 0;
   line-height: var(--lh-caps);
+}
+
+.routes-heading--alternates {
+  margin-top: var(--sp-6);
+  padding-top: var(--sp-4);
+  border-top: var(--hairline);
 }
 
 .routes-section {
@@ -2102,24 +2221,6 @@
 .route-label-cancel-btn:hover { border-color: var(--ink); color: var(--ink); }
 
 /* ── Saved Routes Panel ──────────────────────────────────────────────────── */
-
-.saved-routes-panel {
-  border-bottom: var(--hairline);
-}
-
-.saved-routes-panel-header {
-  padding: var(--sp-4) var(--sp-6);
-  border-bottom: var(--rule-thick);
-}
-
-.saved-routes-panel-heading {
-  font-family: var(--sans);
-  font-size: var(--fs-caps);
-  font-weight: 700;
-  letter-spacing: var(--ls-caps);
-  text-transform: uppercase;
-  color: var(--mute);
-}
 
 .saved-route-row {
   display: flex;

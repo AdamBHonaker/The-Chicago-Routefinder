@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { LINE_COLORS } from "../constants.js";
 import LinePill from "./LinePill.jsx";
+import SignalLamp from "./SignalLamp.jsx";
 
 function ArrivalRow({ route, destination, minutes }) {
   const isBus = !(route in LINE_COLORS);
@@ -23,7 +24,7 @@ export default function PinnedStopsBoard({ stops, arrivals, onUnpin, onRefresh }
       <div className="psb-header">
         <span className="psb-title">{t("pinned_stops_heading")}</span>
         <div className="psb-header-right">
-          <span className="signal-lamp" aria-label={t("psb_live_data")} />
+          <SignalLamp ariaLabel={t("psb_live_data")} />
           <button
             className="psb-refresh-btn"
             onClick={onRefresh}

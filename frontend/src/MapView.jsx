@@ -460,9 +460,9 @@ export default function MapView({
           {t("map_unlock_btn")}
         </button>
       )}
-      {tripActive && primaryTransitLeg && (
+      {primaryTransitLeg && (
         <div className="map-train-card">
-          <div className="map-train-card__kicker">{t("map_underway")}</div>
+          <div className="map-train-card__kicker">{t("map_your_train")}</div>
           <div className="map-train-card__line">
             <LinePill
               line={primaryTransitLeg.line}

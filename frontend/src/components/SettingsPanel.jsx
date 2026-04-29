@@ -21,7 +21,7 @@ export default function SettingsPanel({
   return (
     <div className="settings-modal" role="dialog" aria-label={t("settings_title")} aria-modal="true">
       <div className="settings-backdrop" onClick={onClose} aria-hidden="true" />
-      <div className="settings-sheet">
+      <div className="settings-sheet paper-grain-bright">
 
         {/* Sheet header */}
         <div className="settings-sheet-header">

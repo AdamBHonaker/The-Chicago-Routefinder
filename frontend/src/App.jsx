@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback, Fragment } from "react";
 import { useTranslation } from "react-i18next";
 import "./App.css";
 import MapView from "./MapView.jsx";
@@ -27,6 +27,7 @@ import {
 import LabelSavePanel from "./components/LabelSavePanel.jsx";
 import LocationInput from "./components/LocationInput.jsx";
 import SavedRoutesPanel from "./components/SavedRoutesPanel.jsx";
+import SideRail from "./components/SideRail.jsx";
 import { useApiQuery } from "./hooks/useApiQuery.js";
 import { useLocalStorage } from "./hooks/useLocalStorage.js";
 import { fetchWithRetry as _fetchWithRetry } from "./utils/fetchWithRetry.js";
@@ -569,10 +570,16 @@ export default function App() {
 
   const effectiveShowSavedRoutes = showSavedRoutes || activeTab === "saved";
 
+  const handleTabChange = (id) => {
+    setActiveTab(id);
+    if (id !== "saved") setShowSavedRoutes(false);
+  };
+
   return (
     <div className="app" data-active-tab={activeTab}>
       <div className="layout layout--split">
-        <div className="panel-cards">
+        <SideRail activeTab={activeTab} onTabChange={handleTabChange} />
+        <div className="panel-cards paper-grain">
           <header className="header">
             <div className="masthead-folio">
               <span className="masthead-folio-date">{MASTHEAD_DATE}</span>
@@ -650,6 +657,10 @@ export default function App() {
                 setShowSavedRoutes(false);
                 setActiveTab("home");
               }}
+              onClose={() => {
+                setShowSavedRoutes(false);
+                if (activeTab === "saved") setActiveTab("home");
+              }}
             />
           )}
 
@@ -688,7 +699,7 @@ export default function App() {
               onDismiss={handleAlertDismiss}
             />
 
-            <form className="form" onSubmit={handleSubmit}>
+            <form className="form paper-grain-bright" onSubmit={handleSubmit}>
               <label>
                 <span>{t("label_from")}</span>
                 <LocationInput
@@ -802,7 +813,7 @@ export default function App() {
                 {result.routes.length > 0 && (
                   <section className="routes-section">
                     <div className="routes-section-header">
-                      <h2 className="routes-heading">{t("route_options_heading")}</h2>
+                      <h2 className="routes-heading">{t("route_recommended_heading")}</h2>
                       <button
                         type="button"
                         className={`save-route-btn${currentRouteSaved ? " save-route-btn--saved" : ""}`}
@@ -825,26 +836,32 @@ export default function App() {
                     {result.routes.map((route, i) => {
                       if (tripActive && i !== selectedRouteIndex) return null;
                       return (
-                        <RouteCard
-                          key={`${searchIdRef.current}-${i}`}
-                          route={route}
-                          index={i}
-                          isFirst={i === 0}
-                          isSelected={i === selectedRouteIndex}
-                          onSelect={() => { setSelectedRouteIndex(i); stopTrip(); }}
-                          tripActive={tripActive && i === selectedRouteIndex}
-                          activeLegIndex={activeLegIndex}
-                          completedSteps={completedSteps}
-                          onStartTrip={startTrip}
-                          onStopTrip={stopTrip}
-                          tripGeoError={tripGeoError && i === selectedRouteIndex}
-                          onDismissTripGeoError={() => setTripGeoError(false)}
-                          onVehicle={onVehicle && i === selectedRouteIndex}
-                          onToggleVehicle={toggleOnVehicle}
-                          pinnedStops={pinnedStops}
-                          onPinToggle={handlePinToggle}
-                          activeAlertRoutes={activeAlertRoutes}
-                        />
+                        <Fragment key={`${searchIdRef.current}-${i}`}>
+                          {i === 1 && (
+                            <h2 className="routes-heading routes-heading--alternates">
+                              {t("route_alternates_heading")}
+                            </h2>
+                          )}
+                          <RouteCard
+                            route={route}
+                            index={i}
+                            isFirst={i === 0}
+                            isSelected={i === selectedRouteIndex}
+                            onSelect={() => { setSelectedRouteIndex(i); stopTrip(); }}
+                            tripActive={tripActive && i === selectedRouteIndex}
+                            activeLegIndex={activeLegIndex}
+                            completedSteps={completedSteps}
+                            onStartTrip={startTrip}
+                            onStopTrip={stopTrip}
+                            tripGeoError={tripGeoError && i === selectedRouteIndex}
+                            onDismissTripGeoError={() => setTripGeoError(false)}
+                            onVehicle={onVehicle && i === selectedRouteIndex}
+                            onToggleVehicle={toggleOnVehicle}
+                            pinnedStops={pinnedStops}
+                            onPinToggle={handlePinToggle}
+                            activeAlertRoutes={activeAlertRoutes}
+                          />
+                        </Fragment>
                       );
                     })}
                   </section>
@@ -880,10 +897,7 @@ export default function App() {
             key={id}
             type="button"
             className={`tab-bar__tab${activeTab === id ? " tab-bar__tab--active" : ""}`}
-            onClick={() => {
-              setActiveTab(id);
-              if (id !== "saved") setShowSavedRoutes(false);
-            }}
+            onClick={() => handleTabChange(id)}
             aria-current={activeTab === id ? "page" : undefined}
           >
             <span className="tab-bar__icon" aria-hidden="true">{icon}</span>

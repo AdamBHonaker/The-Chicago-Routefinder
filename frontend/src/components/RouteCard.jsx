@@ -184,7 +184,7 @@ export default memo(function RouteCard({
   }, [route.legs]);
 
   return (
-    <div className={`route-card${isFirst ? " route-card--best" : ""}${isSelected ? " route-card--selected" : ""}`}>
+    <div className={`route-card${isFirst ? " route-card--best paper-grain-bright" : ""}${isSelected ? " route-card--selected" : ""}`}>
       <button
         className="route-card-header"
         onClick={() => { onSelect(); setExpanded((v) => !v); }}
