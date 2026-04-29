@@ -24,7 +24,10 @@ _MILES_PER_DEG_LON: float = 51.35
 
 def haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Return the great-circle distance in miles between two lat/lon points."""
-    lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
+    lat1 = math.radians(lat1)
+    lon1 = math.radians(lon1)
+    lat2 = math.radians(lat2)
+    lon2 = math.radians(lon2)
     dlat = lat2 - lat1
     dlon = lon2 - lon1
     a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
@@ -59,7 +62,7 @@ class SpatialGrid:
         self._grid: dict[tuple[int, int], list[tuple[float, float, Any]]] = {}
 
     def _cell(self, lat: float, lon: float) -> tuple[int, int]:
-        return (int(math.floor(lat / self._clat)), int(math.floor(lon / self._clon)))
+        return (math.floor(lat / self._clat), math.floor(lon / self._clon))
 
     def add(self, lat: float, lon: float, value: Any) -> None:
         """Insert value at (lat, lon) into the grid."""
@@ -81,22 +84,32 @@ class SpatialGrid:
         dlat = radius_miles / _MILES_PER_DEG_LAT
         dlon = radius_miles / _MILES_PER_DEG_LON
 
-        min_cl = int(math.floor((lat - dlat) / self._clat))
-        max_cl = int(math.floor((lat + dlat) / self._clat))
-        min_cn = int(math.floor((lon - dlon) / self._clon))
-        max_cn = int(math.floor((lon + dlon) / self._clon))
+        min_cl = math.floor((lat - dlat) / self._clat)
+        max_cl = math.floor((lat + dlat) / self._clat)
+        min_cn = math.floor((lon - dlon) / self._clon)
+        max_cn = math.floor((lon + dlon) / self._clon)
 
         lat_lo, lat_hi = lat - dlat, lat + dlat
         lon_lo, lon_hi = lon - dlon, lon + dlon
 
+        radius_sq = radius_miles ** 2
+
         results: list[tuple[float, Any]] = []
         for cl in range(min_cl, max_cl + 1):
+            interior_lat = min_cl < cl < max_cl
             for cn in range(min_cn, max_cn + 1):
                 bucket = self._grid.get((cl, cn))
                 if not bucket:
                     continue
+                interior = interior_lat and min_cn < cn < max_cn
                 for e_lat, e_lon, value in bucket:
-                    if e_lat < lat_lo or e_lat > lat_hi or e_lon < lon_lo or e_lon > lon_hi:
+                    if not interior and (e_lat < lat_lo or e_lat > lat_hi or e_lon < lon_lo or e_lon > lon_hi):
+                        continue
+                    # _MILES_PER_DEG constants slightly underestimate true arc distance at
+                    # Chicago's latitude, so d_planar <= d_haversine — safe to discard when > radius.
+                    dlat_e = abs(e_lat - lat)
+                    dlon_e = abs(e_lon - lon)
+                    if (dlat_e * _MILES_PER_DEG_LAT) ** 2 + (dlon_e * _MILES_PER_DEG_LON) ** 2 > radius_sq:
                         continue
                     d = haversine_miles(lat, lon, e_lat, e_lon)
                     if d <= radius_miles:

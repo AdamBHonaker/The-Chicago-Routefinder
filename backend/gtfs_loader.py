@@ -9,7 +9,11 @@ Stop ID ranges (per CTA GTFS / Train Tracker docs):
   30000 – 39999  →  Train platform stops (direction-specific)
   40000 – 49999  →  Train parent stations (used by Train Tracker API as mapid)
 
-Stops are loaded once at startup and cached in memory (~1.2 MB).
+Stops are parsed from stops.txt once per process and also persisted to a
+binary pickle cache (stops_cache.pkl) in the same directory. On subsequent
+starts the pickle is loaded instead of re-parsing CSV, provided the mtime of
+stops.txt has not changed. The pickle is written atomically so a crash during
+the write never leaves a corrupt cache file.
 
 Geocoding strategy:
   1. Exact match against NEIGHBORHOOD_COORDS (instant, no network)
@@ -23,13 +27,16 @@ estimates and no CTA stops will be found beyond the boundary.
 
 import atexit
 import csv
+import datetime
 import heapq
 import json
 import math
 import os
+import pickle
 import re
 import threading
 import time
+from collections import Counter
 from difflib import SequenceMatcher
 from functools import lru_cache
 from pathlib import Path
@@ -44,6 +51,7 @@ from utils import haversine_miles as _haversine_miles, CHICAGO_BBOX_GOOGLE, Spat
 import config as _cfg
 
 GTFS_DIR = Path(__file__).parent / "gtfs_data"
+_STOPS_CACHE_PATH = GTFS_DIR / "stops_cache.pkl"
 
 # Google Maps Geocoding API
 _GOOGLE_MAPS_GEOCODE_URL = "https://maps.googleapis.com/maps/api/geocode/json"
@@ -70,7 +78,6 @@ _GEOCODE_COUNTER_PATH = Path(__file__).parent / "geocode_counter.json"
 
 def _load_geocode_counter() -> dict:
     """Load the monthly geocode call counter from disk, keeping only the current month."""
-    import datetime
     month_key = datetime.date.today().strftime("%Y-%m")
     if _GEOCODE_COUNTER_PATH.exists():
         try:
@@ -98,24 +105,31 @@ def _save_geocode_counter(counter: dict) -> None:
 
 def _geocode_call_count() -> int:
     """Return the number of Google geocoding API calls made this calendar month."""
-    import datetime
     month_key = datetime.date.today().strftime("%Y-%m")
     return _geocode_call_counter.get(month_key, 0)
 
 
-def _increment_geocode_call_count() -> None:
-    """Record one Google geocoding API call for the current calendar month."""
-    import datetime
+def _increment_geocode_call_count() -> int:
+    """Record one Google geocoding API call for the current calendar month. Returns the new count.
+
+    Must be called under _geocode_lock. Marks the counter dirty for the next
+    background flush rather than writing to disk immediately.
+    """
+    global _geocode_counter_dirty
     month_key = datetime.date.today().strftime("%Y-%m")
     _geocode_call_counter[month_key] = _geocode_call_counter.get(month_key, 0) + 1
-    _save_geocode_counter(_geocode_call_counter)
+    _geocode_counter_dirty = True
+    return _geocode_call_counter[month_key]
 
 
-# Loaded once at import time; new entries are written through immediately
+# Loaded once at import time; dirty flag is flushed by the background thread.
 _geocode_call_counter: dict = _load_geocode_counter()
+_geocode_counter_dirty: bool = False
 
-# Lock that serialises Google API calls so concurrent requests for the same
-# uncached query don't each fire a network call and double-count the quota.
+# Protects _geocode_cache writes, _geocode_pending, _geocode_ages, and the
+# monthly call counter.  Held only for the pre-flight quota check and the
+# post-flight result store — released during the actual HTTP call so that
+# concurrent requests for *different* queries can proceed in parallel.
 _geocode_lock = threading.Lock()
 
 
@@ -229,8 +243,8 @@ _geocode_cache: dict[str, tuple[float, float] | None] = _load_geocode_cache()
 _geocode_ages: dict[str, float] = _load_geocode_ages()
 
 # Apply age-based eviction at startup so stale entries never survive a restart.
-_geocode_max_age_seconds: float = _cfg.GEOCODE_CACHE_MAX_AGE_DAYS * 24 * 3600
-_startup_evict_cutoff = time.time() - _geocode_max_age_seconds
+_GEOCODE_MAX_AGE_SECONDS: float = _cfg.GEOCODE_CACHE_MAX_AGE_DAYS * 24 * 3600
+_startup_evict_cutoff = time.time() - _GEOCODE_MAX_AGE_SECONDS
 _startup_evicted = [k for k, ts in _geocode_ages.items() if ts < _startup_evict_cutoff]
 for _k in _startup_evicted:
     _geocode_cache.pop(_k, None)
@@ -252,8 +266,7 @@ _geocode_last_compact: float = time.monotonic()
 _geocode_journal_entries: int = 0   # lines appended since last full snapshot
 
 # Age-based eviction schedule.
-_GEOCODE_MAX_AGE_SECONDS: float = _geocode_max_age_seconds
-_GEOCODE_EVICT_INTERVAL: int    = _cfg.GEOCODE_EVICT_INTERVAL_SECONDS
+_GEOCODE_EVICT_INTERVAL: int = _cfg.GEOCODE_EVICT_INTERVAL_SECONDS
 _geocode_last_eviction: float   = time.monotonic()
 
 
@@ -276,17 +289,23 @@ def _append_geocode_journal(entries: dict[str, tuple[float, float] | None]) -> N
 def _flush_geocode_cache_if_dirty() -> None:
     """Append pending entries to the journal; compact to a full snapshot periodically.
 
-    Also runs age-based eviction once per _GEOCODE_EVICT_INTERVAL (weekly by default)
-    so the cache does not grow unbounded even when compaction thresholds are never hit.
+    Also flushes the monthly API call counter and runs age-based eviction once per
+    _GEOCODE_EVICT_INTERVAL (weekly by default) so the cache does not grow unbounded
+    even when compaction thresholds are never hit.
     """
     global _geocode_pending, _geocode_last_compact, _geocode_journal_entries
-    global _geocode_last_eviction
+    global _geocode_last_eviction, _geocode_counter_dirty
     with _geocode_lock:
         # Weekly age-based sweep — independent of compaction thresholds.
         now_mono = time.monotonic()
         if now_mono - _geocode_last_eviction >= _GEOCODE_EVICT_INTERVAL:
             _evict_old_geocode_entries()
             _geocode_last_eviction = now_mono
+
+        # Persist the monthly call counter if it has been incremented since the last flush.
+        if _geocode_counter_dirty:
+            _save_geocode_counter(_geocode_call_counter)
+            _geocode_counter_dirty = False
 
         if not _geocode_pending:
             # Even with no new entries, honor a time-based compaction so any prior
@@ -616,10 +635,11 @@ def geocode_google(query: str) -> tuple[float, float] | None:
     if query in _geocode_cache:
         return _geocode_cache[query]
 
-    # Slow path: acquire lock so two concurrent requests for the same uncached
-    # query don't each fire a Google API call and double-count the quota.
+    # Pre-flight check: validate API key and quota under the lock, then release
+    # before the network call so concurrent requests for *different* queries can
+    # proceed in parallel.  Two concurrent requests for the *same* uncached query
+    # may both pass this gate; the inner lock below handles that race at store time.
     with _geocode_lock:
-        # Re-check inside the lock — another thread may have just populated it
         if query in _geocode_cache:
             return _geocode_cache[query]
 
@@ -636,44 +656,54 @@ def geocode_google(query: str) -> tuple[float, float] | None:
             )
             return None
 
-        try:
-            resp = _http_session.get(
-                _GOOGLE_MAPS_GEOCODE_URL,
-                params={
-                    "address": query if "chicago" in query.lower() else query + ", Chicago, IL",
-                    "key": _GOOGLE_MAPS_API_KEY,
-                    "components": "country:US",
-                    "bounds": _CHICAGO_BOUNDS,
-                },
-                timeout=5,
-            )
-            data = resp.json()
-            if data.get("status") == "OK" and data.get("results"):
-                loc = data["results"][0]["geometry"]["location"]
-                coords: tuple[float, float] = (float(loc["lat"]), float(loc["lng"]))
-                _geocode_cache[query] = coords
-                _geocode_pending[query] = coords
-                _geocode_ages[query] = time.time()  # record insertion time for age-based eviction
-                _increment_geocode_call_count()
-                print(
-                    f"[gtfs_loader] Geocoded and cached '{query}' -> {coords} "
-                    f"(monthly calls: {_geocode_call_count()}/{_GEOCODE_CALL_LIMIT})"
-                )
-                return coords
-            status = data.get("status")
-            print(f"[gtfs_loader] Google geocoding returned status '{status}' for '{query}'")
-            # Only cache permanent misses (ZERO_RESULTS = address genuinely doesn't exist).
-            # Transient errors (OVER_QUERY_LIMIT, REQUEST_DENIED, UNKNOWN_ERROR, etc.)
-            # must not be cached so future requests can retry.
-            if status == "ZERO_RESULTS":
-                _geocode_cache[query] = None
-                _geocode_pending[query] = None
-                _geocode_ages[query] = time.time()
-        except Exception as exc:
-            print(f"[gtfs_loader] Google geocoding failed for '{query}': {exc}")
-            # Don't cache transient network/timeout errors — allow retries.
-
+    # Network I/O outside the lock.
+    try:
+        resp = _http_session.get(
+            _GOOGLE_MAPS_GEOCODE_URL,
+            params={
+                "address": query if "chicago" in query.lower() else query + ", Chicago, IL",
+                "key": _GOOGLE_MAPS_API_KEY,
+                "components": "country:US",
+                "bounds": _CHICAGO_BOUNDS,
+            },
+            timeout=5,
+        )
+        data = resp.json()
+    except Exception as exc:
+        print(f"[gtfs_loader] Google geocoding failed for '{query}': {exc}")
+        # Don't cache transient network/timeout errors — allow retries.
         return None
+
+    # Re-acquire lock to store the result atomically and increment the quota counter.
+    with _geocode_lock:
+        # Re-check: another thread may have stored the result while we were in flight.
+        if query in _geocode_cache:
+            return _geocode_cache[query]
+
+        if data.get("status") == "OK" and data.get("results"):
+            loc = data["results"][0]["geometry"]["location"]
+            coords: tuple[float, float] = (float(loc["lat"]), float(loc["lng"]))
+            _geocode_cache[query] = coords
+            _geocode_pending[query] = coords
+            _geocode_ages[query] = time.time()  # record insertion time for age-based eviction
+            new_count = _increment_geocode_call_count()
+            print(
+                f"[gtfs_loader] Geocoded and cached '{query}' -> {coords} "
+                f"(monthly calls: {new_count}/{_GEOCODE_CALL_LIMIT})"
+            )
+            return coords
+
+        status = data.get("status")
+        print(f"[gtfs_loader] Google geocoding returned status '{status}' for '{query}'")
+        # Only cache permanent misses (ZERO_RESULTS = address genuinely doesn't exist).
+        # Transient errors (OVER_QUERY_LIMIT, REQUEST_DENIED, UNKNOWN_ERROR, etc.)
+        # must not be cached so future requests can retry.
+        if status == "ZERO_RESULTS":
+            _geocode_cache[query] = None
+            _geocode_pending[query] = None
+            _geocode_ages[query] = time.time()
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -684,17 +714,37 @@ def geocode_google(query: str) -> tuple[float, float] | None:
 def _load_stops() -> tuple[list[dict], list[dict]]:
     """
     Parse stops.txt and return (train_stations, bus_stops).
-    Called once at startup; result is cached for the lifetime of the process.
-    """
-    train_stations: list[dict] = []
-    bus_stops: list[dict] = []
 
+    On first call after a GTFS update the CSV is parsed and the result is
+    persisted to stops_cache.pkl alongside the source file's mtime.  On
+    subsequent starts the pickle is loaded instead, skipping CSV parsing
+    entirely.  The pickle is written atomically (tmp → rename) so a crash
+    during the write never leaves a corrupt cache.
+
+    Called once per process; result is also kept in the lru_cache.
+    """
     stops_file = GTFS_DIR / "stops.txt"
     if not stops_file.exists():
         raise FileNotFoundError(
             f"GTFS stops file not found at {stops_file}. "
             "Run `python fetch_gtfs.py` to download the data."
         )
+
+    current_mtime: float = stops_file.stat().st_mtime
+
+    # Try the binary cache first.
+    if _STOPS_CACHE_PATH.exists():
+        try:
+            with _STOPS_CACHE_PATH.open("rb") as f:
+                cached_mtime, train_stations, bus_stops = pickle.load(f)
+            if cached_mtime == current_mtime:
+                return train_stations, bus_stops
+            # mtime mismatch — fall through to re-parse.
+        except Exception as exc:
+            print(f"[gtfs_loader] Could not load stops cache (will re-parse): {exc}")
+
+    train_stations: list[dict] = []
+    bus_stops: list[dict] = []
 
     with open(stops_file, newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
@@ -727,6 +777,19 @@ def _load_stops() -> tuple[list[dict], list[dict]]:
                     "lon": lon,
                     "type": "bus_stop",
                 })
+
+    # Persist the parsed result atomically so the next startup can skip CSV parsing.
+    tmp = _STOPS_CACHE_PATH.with_suffix(".tmp")
+    try:
+        with tmp.open("wb") as f:
+            pickle.dump((current_mtime, train_stations, bus_stops), f)
+        tmp.replace(_STOPS_CACHE_PATH)
+    except Exception as exc:
+        print(f"[gtfs_loader] Could not save stops cache: {exc}")
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
 
     return train_stations, bus_stops
 
@@ -934,10 +997,9 @@ _ABBR_PAIRS: tuple[tuple[str, str], ...] = (
     ("sq",   "square"),
 )
 _ABBR_MAP: dict[str, str] = dict(_ABBR_PAIRS)
-assert len(_ABBR_MAP) == len(_ABBR_PAIRS), (
-    f"_ABBR_PAIRS contains duplicate keys: "
-    f"{[k for k in (p[0] for p in _ABBR_PAIRS) if list(p[0] for p in _ABBR_PAIRS).count(k) > 1]}"
-)
+_dup_abbr_keys = [k for k, n in Counter(p[0] for p in _ABBR_PAIRS).items() if n > 1]
+assert not _dup_abbr_keys, f"_ABBR_PAIRS contains duplicate keys: {_dup_abbr_keys}"
+del _dup_abbr_keys
 # Sort longest-first so longer patterns are tried before shorter ones
 _sorted_abbrs = sorted(_ABBR_MAP, key=len, reverse=True)
 _COORD_RE = re.compile(r"^(-?\d{1,3}\.?\d*),\s*(-?\d{1,3}\.?\d*)$")
@@ -952,6 +1014,11 @@ _STREET_ABBR_RE = re.compile(
 )
 
 
+def _street_abbr_replace(m: re.Match) -> str:
+    token = m.group(0).lower().rstrip(".")
+    return _ABBR_MAP.get(token, m.group(0))
+
+
 def _normalize_street_abbr(query: str) -> str:
     """
     Expand USPS street suffix abbreviations (e.g. "Ave" → "avenue",
@@ -959,11 +1026,7 @@ def _normalize_street_abbr(query: str) -> str:
 
     Directional prefixes (N/S/E/W) are intentionally not expanded.
     """
-    def _replace(m: re.Match) -> str:
-        token = m.group(0).lower().rstrip(".")
-        return _ABBR_MAP.get(token, m.group(0))
-
-    return _STREET_ABBR_RE.sub(_replace, query)
+    return _STREET_ABBR_RE.sub(_street_abbr_replace, query)
 
 
 def resolve_location(query: str) -> tuple[list[dict], list[dict], str | None]:

@@ -18,6 +18,11 @@ import {
   RETRY_DELAYS_MS,
   BYOK_IDLE_TIMEOUT_MS,
   REROUTE_SUPPRESSION_MS,
+  LEG_ADVANCE_RADIUS_M,
+  LEG_ADVANCE_RADIUS_VEHICLE_M,
+  WALK_STEP_PROXIMITY_M,
+  PHOTO_FADE_MS,
+  MASTHEAD_EPOCH_YEAR,
 } from "./constants.js";
 import LabelSavePanel from "./components/LabelSavePanel.jsx";
 import LocationInput from "./components/LocationInput.jsx";
@@ -87,6 +92,25 @@ const WALK_SPEED_FACTORS = { slow: 0.75, standard: 1.0, brisk: 1.25 };
 
 // LabelSavePanel, LocationInput, and SavedRoutesPanel are in frontend/src/components/.
 
+// ── Masthead helpers ─────────────────────────────────────────────────────────
+function _toRoman(n) {
+  const vals = [10, 9, 5, 4, 1];
+  const syms = ["X", "IX", "V", "IV", "I"];
+  let r = "";
+  for (let i = 0; i < vals.length; i++) {
+    while (n >= vals[i]) { r += syms[i]; n -= vals[i]; }
+  }
+  return r;
+}
+function _dayOfYear(d) {
+  return Math.floor((d - new Date(d.getFullYear(), 0, 0)) / 864e5);
+}
+const _now = new Date();
+const MASTHEAD_DATE = _now.toLocaleDateString("en-US", {
+  weekday: "long", month: "long", day: "numeric",
+}).toUpperCase();
+const MASTHEAD_VOL = `VOL. ${_toRoman(_now.getFullYear() - MASTHEAD_EPOCH_YEAR)} · NO. ${_dayOfYear(_now)}`;
+
 
 export default function App() {
   const { t, i18n } = useTranslation();
@@ -109,6 +133,7 @@ export default function App() {
     BYOK_ENABLED ? (sessionStorage.getItem("byok_api_key") || "") : ""
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState("home"); // mobile tab bar; ignored on desktop
 
   // AI toggle — persisted to localStorage via useLocalStorage (TD-039).
   // Defaults to false (off) so new users get faster route cards without AI latency.
@@ -162,7 +187,7 @@ export default function App() {
     () => new Set(
       serviceAlerts
         .filter((a) => !dismissedAlertIds.has(a.alert_id))
-        .flatMap((a) => a.routes)
+        .flatMap((a) => a.routes ?? [])
         .map((r) => r.replace(" Line", ""))
     ),
     [serviceAlerts, dismissedAlertIds]
@@ -173,7 +198,7 @@ export default function App() {
   );
 
   // Fire-and-forget ping on mount for DAU counting — silent on failure.
-  useEffect(() => { fetch(`${BACKEND_URL}/ping`); }, []);
+  useEffect(() => { fetch(`${BACKEND_URL}/ping`).catch(() => {}); }, []);
 
   // Fetch service alerts on mount (Feature Service Alerts)
   useEffect(() => {
@@ -231,13 +256,15 @@ export default function App() {
         setByokKey("");
       }, BYOK_IDLE_TIMEOUT_MS);
     };
-    window.addEventListener("mousemove", resetTimer);
-    window.addEventListener("keydown", resetTimer);
+    // pointerdown covers mouse, pen, and touch on modern browsers; mousemove
+    // and keydown are kept for desktop users who don't generate pointer events
+    // unless they click. (BUG-020: previously missed all touch-only input.)
+    const events = ["mousemove", "keydown", "pointerdown", "touchstart"];
+    events.forEach((ev) => window.addEventListener(ev, resetTimer, { passive: true }));
     resetTimer();
     return () => {
       clearTimeout(idleTimer);
-      window.removeEventListener("mousemove", resetTimer);
-      window.removeEventListener("keydown", resetTimer);
+      events.forEach((ev) => window.removeEventListener(ev, resetTimer));
     };
   }, [byokKey]);
 
@@ -358,7 +385,7 @@ export default function App() {
     if (leg) {
       const end = legEndCoord(leg);
       // Wider radius when user confirmed on vehicle — GPS lags behind movement.
-      const advanceRadius = (onVehicleRef.current && leg.type === "transit") ? 150 : 60;
+      const advanceRadius = (onVehicleRef.current && leg.type === "transit") ? LEG_ADVANCE_RADIUS_VEHICLE_M : LEG_ADVANCE_RADIUS_M;
       if (end && haversineMeters(pos, end) < advanceRadius) {
         const next = Math.min(idx + 1, legs.length - 1);
         if (next !== idx) {
@@ -376,8 +403,12 @@ export default function App() {
         let changed = false;
         const next = new Set(prev);
         activeLeg.directions.forEach((step, si) => {
-          if (step.start_lat !== undefined && !next.has(`${idx}-${si}`)) {
-            if (haversineMeters(pos, { lat: step.start_lat, lng: step.start_lon }) < 30) {
+          if (
+            step.start_lat !== undefined &&
+            step.start_lon !== undefined &&
+            !next.has(`${idx}-${si}`)
+          ) {
+            if (haversineMeters(pos, { lat: step.start_lat, lng: step.start_lon }) < WALK_STEP_PROXIMITY_M) {
               next.add(`${idx}-${si}`);
               changed = true;
             }
@@ -448,7 +479,7 @@ export default function App() {
     photoFadeTimer.current = setTimeout(() => {
       setPhotoMounted(false);
       setPhotoFading(false);
-    }, 1000);
+    }, PHOTO_FADE_MS);
   }
 
   async function handleReroute() {
@@ -536,16 +567,26 @@ export default function App() {
     }
   }
 
+  const effectiveShowSavedRoutes = showSavedRoutes || activeTab === "saved";
+
   return (
-    <div className="app">
+    <div className="app" data-active-tab={activeTab}>
       <div className="layout layout--split">
         <div className="panel-cards">
           <header className="header">
-            <div className="header-top">
-              <h1>{t("app_title")}</h1>
-              <div className="filters">
+            <div className="masthead-folio">
+              <span className="masthead-folio-date">{MASTHEAD_DATE}</span>
+              <span className="masthead-folio-vol">{MASTHEAD_VOL}</span>
+            </div>
+            <div className="masthead-rule" aria-hidden="true" />
+            <div className="masthead-title-row">
+              <h1 className="masthead-title" aria-label={t("app_title")}>
+                <span className="masthead-title-italic">The Chicago</span>
+                <span className="masthead-title-roman"> Routefinder<span className="masthead-period">.</span></span>
+              </h1>
+              <div className="masthead-controls">
                 <button
-                  className={`settings-trigger${byokKey ? " settings-trigger--active" : ""}`}
+                  className={`btn-ghost-icon${byokKey ? " btn-ghost-icon--active" : ""}`}
                   onClick={() => setSettingsOpen((v) => !v)}
                   aria-label={byokKey ? t("aria_settings_active") : t("aria_settings")}
                   title={byokKey ? t("aria_settings_active") : t("aria_settings")}
@@ -554,7 +595,7 @@ export default function App() {
                 </button>
                 <button
                   type="button"
-                  className={`saved-routes-toggle${showSavedRoutes ? " saved-routes-toggle--open" : ""}`}
+                  className={`btn-ghost-icon${showSavedRoutes ? " btn-ghost-icon--active" : ""}`}
                   onClick={() => setShowSavedRoutes((v) => !v)}
                   aria-label={t("fav_saved_routes_heading")}
                   title={t("fav_saved_routes_heading")}
@@ -562,6 +603,7 @@ export default function App() {
                   ⭐
                 </button>
                 <select
+                  className="masthead-select"
                   value={transitMode}
                   onChange={(e) => setTransitMode(e.target.value)}
                   aria-label={t("aria_transit_mode")}
@@ -572,6 +614,7 @@ export default function App() {
                   <option value="Walk">{t("mode_walk")}</option>
                 </select>
                 <select
+                  className="masthead-select"
                   value={i18n.language}
                   onChange={(e) => i18n.changeLanguage(e.target.value)}
                   aria-label={t("aria_language")}
@@ -582,7 +625,7 @@ export default function App() {
                 </select>
               </div>
             </div>
-            <p className="tagline">{t("tagline")}</p>
+            <p className="masthead-tagline">{t("tagline")}</p>
           </header>
 
           {settingsOpen && (
@@ -597,7 +640,7 @@ export default function App() {
             />
           )}
 
-          {showSavedRoutes && (
+          {effectiveShowSavedRoutes && (
             <SavedRoutesPanel
               savedRoutes={savedRoutes}
               onDeleteRoute={handleDeleteRoute}
@@ -605,10 +648,33 @@ export default function App() {
                 setOrigin(orig);
                 setDestination(dest);
                 setShowSavedRoutes(false);
+                setActiveTab("home");
               }}
             />
           )}
 
+          {activeTab === "alerts" && (
+            <main className="main tab-alerts-view">
+              {visibleAlerts.length === 0 ? (
+                <p className="tab-empty">{t("alerts_empty")}</p>
+              ) : (
+                <ul className="tab-alerts-list">
+                  {visibleAlerts.map((a) => (
+                    <li key={a.alert_id} className={`tab-alert tab-alert--${(a.severity ?? "minor").toLowerCase()}`}>
+                      <div className="tab-alert-header">
+                        <span className="tab-alert-kicker">{a.severity ?? t("alerts_advisory")}</span>
+                        <button className="tab-alert-dismiss" onClick={() => handleAlertDismiss(a.alert_id)} aria-label={t("aria_dismiss")}>×</button>
+                      </div>
+                      <p className="tab-alert-headline">{a.headline}</p>
+                      {a.short_description && <p className="tab-alert-desc">{a.short_description}</p>}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </main>
+          )}
+
+          {activeTab !== "alerts" && activeTab !== "saved" && (
           <main className="main">
             <PinnedStopsBoard
               stops={pinnedStops}
@@ -713,19 +779,15 @@ export default function App() {
                 )}
 
                 {isOffRoute && (
-                  <div className="off-route-banner" role="alert">
-                    <span className="off-route-message">
-                      {t("trip_off_route_message")}
-                    </span>
-                    <div className="off-route-actions">
-                      <button
-                        className="off-route-reroute-btn"
-                        onClick={handleReroute}
-                      >
+                  <div className="special-dispatch special-dispatch--delay" role="alert">
+                    <span className="special-dispatch__kicker">Advisory</span>
+                    <p className="special-dispatch__body">{t("trip_off_route_message")}</p>
+                    <div className="special-dispatch__actions">
+                      <button className="start-trip-btn" onClick={handleReroute}>
                         {t("trip_reroute_btn")}
                       </button>
                       <button
-                        className="off-route-dismiss-btn"
+                        className="btn-ghost-text"
                         onClick={() => {
                           setIsOffRoute(false);
                           suppressRerouteUntil.current = Date.now() + REROUTE_SUPPRESSION_MS;
@@ -790,6 +852,7 @@ export default function App() {
               </div>
             )}
           </main>
+          )}
         </div>
 
         <div className="panel-map">
@@ -805,6 +868,29 @@ export default function App() {
           />
         </div>
       </div>
+
+      <nav className="tab-bar" aria-label={t("aria_main_nav")}>
+        {[
+          { id: "home",   icon: "📍", label: t("tab_home") },
+          { id: "map",    icon: "🗺",  label: t("tab_map") },
+          { id: "alerts", icon: "⚠",  label: t("tab_alerts") },
+          { id: "saved",  icon: "⭐", label: t("tab_saved") },
+        ].map(({ id, icon, label }) => (
+          <button
+            key={id}
+            type="button"
+            className={`tab-bar__tab${activeTab === id ? " tab-bar__tab--active" : ""}`}
+            onClick={() => {
+              setActiveTab(id);
+              if (id !== "saved") setShowSavedRoutes(false);
+            }}
+            aria-current={activeTab === id ? "page" : undefined}
+          >
+            <span className="tab-bar__icon" aria-hidden="true">{icon}</span>
+            <span className="tab-bar__label">{label}</span>
+          </button>
+        ))}
+      </nav>
     </div>
   );
 }

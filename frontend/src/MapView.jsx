@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import maplibregl from "maplibre-gl";
-import { getRouteColor } from "./constants.js";
+import { getRouteColor, BUS_DIRECTION_COLORS } from "./constants.js";
+import LinePill from "./components/LinePill.jsx";
 
 // ---------------------------------------------------------------------------
 // Map defaults — overridable via props for future view modes
@@ -438,6 +439,14 @@ export default function MapView({
     setUnlocked(true);
   }
 
+  // Derive distinct transit legs for overlays — display computation only, no hooks.
+  const distinctTransitLegs = route
+    ? route.legs
+        .filter((l) => l.type === "transit")
+        .filter((l, i, arr) => arr.findIndex((x) => x.line === l.line) === i)
+    : [];
+  const primaryTransitLeg = distinctTransitLegs[0] ?? null;
+
   return (
     <div className="map-view map-view--visible">
       <div ref={containerRef} className="map-container" />
@@ -450,6 +459,44 @@ export default function MapView({
         <button className="map-unlock-btn" onClick={handleUnlock}>
           {t("map_unlock_btn")}
         </button>
+      )}
+      {tripActive && primaryTransitLeg && (
+        <div className="map-train-card">
+          <div className="map-train-card__kicker">{t("map_underway")}</div>
+          <div className="map-train-card__line">
+            <LinePill
+              line={primaryTransitLeg.line}
+              isBus={primaryTransitLeg.line in BUS_DIRECTION_COLORS}
+              lineCode={primaryTransitLeg.line_code}
+              size="sm"
+            />
+            <span className="map-train-card__line-text">
+              {primaryTransitLeg.line_code
+                ? t("map_bus_label", { code: primaryTransitLeg.line_code })
+                : primaryTransitLeg.line?.replace(" Line", "") + " Line"}
+            </span>
+          </div>
+          <div className="map-train-card__desc">
+            {primaryTransitLeg.from} → {primaryTransitLeg.to}
+          </div>
+        </div>
+      )}
+      {distinctTransitLegs.length > 0 && (
+        <div className="map-legend">
+          {distinctTransitLegs.map((leg, i) => (
+            <div key={i} className="map-legend-chip">
+              <LinePill
+                line={leg.line}
+                isBus={leg.line in BUS_DIRECTION_COLORS}
+                lineCode={leg.line_code}
+                size="sm"
+              />
+              <span className="map-legend-name">
+                {leg.line_code ? t("map_bus_label", { code: leg.line_code }) : leg.line}
+              </span>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );

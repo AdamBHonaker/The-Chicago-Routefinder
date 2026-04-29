@@ -8,6 +8,7 @@ import {
   pinStop,
   unpinStop,
 } from "../favorites.js";
+import { LIMIT_ERROR_DISMISS_MS } from "../constants.js";
 
 // ---------------------------------------------------------------------------
 // useFavorites — encapsulates all localStorage-backed favourites state:
@@ -47,7 +48,7 @@ export function useFavorites({ origin, destination }) {
 
   function handlePinToggle(stopType, stopId, label, routeHint, currentlyPinned) {
     if (currentlyPinned) {
-      const existing = pinnedStops.find((s) => s.stop_id === stopId);
+      const existing = pinnedStops.find((s) => s.type === stopType && s.stop_id === stopId);
       if (existing) setPinnedStops(unpinStop(existing.id, pinnedStops));
     } else {
       const next = pinStop(stopType, stopId, label, routeHint, pinnedStops);
@@ -80,7 +81,7 @@ export function useFavorites({ origin, destination }) {
       routeLimitTimerRef.current = setTimeout(() => {
         setRouteLimitError(false);
         setSavingRoute(false);
-      }, 3000);
+      }, LIMIT_ERROR_DISMISS_MS);
     } else {
       setSavedRoutes(next);
       setSavingRoute(false);

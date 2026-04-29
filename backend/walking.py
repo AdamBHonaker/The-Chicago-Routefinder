@@ -8,6 +8,7 @@ to parsing street_graph.graphml via igraph directly.
 Walking speed assumption: 3 mph (1.34 m/s) — a comfortable pedestrian pace.
 """
 
+import math
 import pickle
 import threading
 from functools import lru_cache
@@ -40,9 +41,67 @@ _graph_cache: "ig.Graph | None" = None
 _coord_kdtree: "cKDTree | None" = None
 _vertex_lats: "np.ndarray | None" = None
 _vertex_lons: "np.ndarray | None" = None
+_edge_lengths: "np.ndarray | None" = None
 _graph_load_failed: bool = False
 _lcc_vertex_ids: "np.ndarray | None" = None
 
+
+# ---------------------------------------------------------------------------
+# Module-level helpers (moved out of cached inner functions)
+# ---------------------------------------------------------------------------
+
+def _cardinal(lat1: float, lon1: float, lat2: float, lon2: float) -> str:
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    deg = math.degrees(math.atan2(dlon, dlat)) % 360
+    dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+    return dirs[round(deg / 45) % 8]
+
+
+def _street_name(raw_name) -> str:
+    """Accept the raw edge "name" attribute value (not a full attributes dict)."""
+    name = raw_name
+    if isinstance(name, list):
+        name = name[0] if name else ""
+    if not isinstance(name, str):
+        return "unnamed path"
+    name = name.strip()
+    return name if name else "unnamed path"
+
+
+def _make_step(
+    name: str,
+    total_length: float,
+    edge_count: int,
+    start_vertex: int,
+    end_vertex: int,
+) -> dict:
+    lat1 = _vertex_lats[start_vertex]
+    lon1 = _vertex_lons[start_vertex]
+    lat2 = _vertex_lats[end_vertex]
+    lon2 = _vertex_lons[end_vertex]
+    minutes = round(total_length / WALKING_SPEED_MPS / 60, 1)
+    direction_abbrev = _cardinal(lat1, lon1, lat2, lon2)
+    avg_edge_m = total_length / edge_count
+    is_long    = avg_edge_m >= _BLOCK_TYPE_THRESHOLD
+    block_m    = _LONG_BLOCK_METERS if is_long else _SHORT_BLOCK_METERS
+    blocks     = max(0.5, round(total_length / block_m * 2) / 2)
+    block_type = "long" if is_long else "short"
+    return {
+        "street":         name,
+        "direction":      direction_abbrev,
+        "direction_full": _DIRECTION_FULL.get(direction_abbrev, direction_abbrev),
+        "blocks":         blocks,
+        "block_type":     block_type,
+        "minutes":        minutes,
+        "start_lat":      lat1,
+        "start_lon":      lon1,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Graph loading
+# ---------------------------------------------------------------------------
 
 def _parse_geometry_inplace(G: ig.Graph) -> None:
     """Convert geometry WKT strings to coordinate lists [(lon, lat), ...] in-place."""
@@ -65,7 +124,7 @@ def _parse_geometry_inplace(G: ig.Graph) -> None:
 
 def _load_graph() -> "ig.Graph | None":
     """Load street graph once; returns None (and never retries) if unavailable."""
-    global _graph_cache, _coord_kdtree, _vertex_lats, _vertex_lons, _graph_load_failed, _lcc_vertex_ids
+    global _graph_cache, _coord_kdtree, _vertex_lats, _vertex_lons, _edge_lengths, _graph_load_failed, _lcc_vertex_ids
 
     if _graph_cache is not None:
         return _graph_cache
@@ -114,10 +173,19 @@ def _load_graph() -> "ig.Graph | None":
         # attributes) sets _graph_load_failed and stops retrying instead of raising
         # KeyError on every routing request (BUG-009).
         try:
-            lons = np.array([v["x"] for v in G.vs], dtype=np.float64)
-            lats = np.array([v["y"] for v in G.vs], dtype=np.float64)
+            # Single pass over vertices for both coordinate arrays
+            coords = np.array([(v["x"], v["y"]) for v in G.vs], dtype=np.float64)
+            lons = coords[:, 0]
+            lats = coords[:, 1]
             _vertex_lats = lats
             _vertex_lons = lons
+
+            # Precompute edge lengths once; None lengths become 0.0
+            _edge_lengths = np.array(
+                [e["length"] if e["length"] is not None else 0.0 for e in G.es],
+                dtype=np.float64,
+            )
+
             # Restrict spatial index to the largest weakly-connected component so that
             # _get_nearest_node never returns a vertex unreachable from the rest of the
             # graph — the root cause of "path unavailable" errors when a geocoded point
@@ -148,8 +216,11 @@ def _get_nearest_node(lat: float, lon: float) -> "int | None":
     try:
         _, kdtree_idx = _coord_kdtree.query([lon, lat])
         graph_idx = int(_lcc_vertex_ids[kdtree_idx])
-        # Reject geocoded points that fall outside the street-network coverage area.
-        if _haversine_miles(lat, lon, _vertex_lats[graph_idx], _vertex_lons[graph_idx]) * 1609.34 > 1000:
+        # Flat-earth proximity check — avoids haversine trig for the 1 km threshold.
+        # Accurate to ~0.1 % at Chicago's latitude; sub-meter error at the boundary.
+        dlat = lat - _vertex_lats[graph_idx]
+        dlon = (lon - _vertex_lons[graph_idx]) * math.cos(math.radians(lat))
+        if 111320.0 * math.sqrt(dlat * dlat + dlon * dlon) > 1000.0:
             return None
         return graph_idx
     except Exception:
@@ -212,16 +283,12 @@ def walk_minutes(
     (e.g., a point falls outside the graph's bounding box).
     """
     try:
-        G = _load_graph()
-        if G is None:
-            raise RuntimeError("street graph unavailable")
-
         path = _get_shortest_path(origin_lat, origin_lon, dest_lat, dest_lon)
         if path is None:
             raise RuntimeError("path unavailable")
 
         _, epath = path
-        length_m = sum(G.es[e]["length"] or 0.0 for e in epath)
+        length_m = float(_edge_lengths[list(epath)].sum())
         return max(0.1, round(length_m / WALKING_SPEED_MPS / 60, 1))
 
     except Exception:
@@ -236,29 +303,7 @@ def _walk_directions_impl(
     dest_lon: float,
 ) -> tuple:
     """Cached implementation for walk_directions — returns a tuple so the cache holds immutable data."""
-    import math
-
-    def _cardinal(lat1: float, lon1: float, lat2: float, lon2: float) -> str:
-        dlat = lat2 - lat1
-        dlon = lon2 - lon1
-        deg = math.degrees(math.atan2(dlon, dlat)) % 360
-        dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
-        return dirs[round(deg / 45) % 8]
-
-    def _street_name(attrs: dict) -> str:
-        name = attrs.get("name", "")
-        if isinstance(name, list):
-            name = name[0] if name else ""
-        if not isinstance(name, str):
-            return "unnamed path"
-        name = name.strip()
-        return name if name else "unnamed path"
-
     try:
-        G = _load_graph()
-        if G is None:
-            raise RuntimeError("street graph unavailable")
-
         path = _get_shortest_path(origin_lat, origin_lon, dest_lat, dest_lon)
         if path is None:
             raise RuntimeError("path unavailable")
@@ -266,52 +311,39 @@ def _walk_directions_impl(
         if _vertex_lats is None or _vertex_lons is None:
             raise RuntimeError("vertex coordinate arrays unavailable")
 
+        G = _graph_cache  # safe: path is not None implies graph is loaded
         vpath, epath = path
 
         if len(vpath) < 2:
             return ()
 
-        # Build flat list of (name, length_m, from_vertex, to_vertex) per edge
-        raw: list[tuple[str, float, int, int]] = []
-        for eid, u, v in zip(epath, vpath, vpath[1:]):
-            edge = G.es[eid]
-            raw.append((_street_name(edge.attributes()), edge["length"] or 0.0, u, v))
-
-        # Group consecutive edges by street name
+        # Single-pass grouping of consecutive edges by street name
         steps: list[dict] = []
-        i = 0
-        while i < len(raw):
-            name = raw[i][0]
-            total_length = 0.0
-            edge_count   = 0
-            start_vertex = raw[i][2]
-            end_vertex   = raw[i][3]
-            while i < len(raw) and raw[i][0] == name:
-                total_length += raw[i][1]
+        current_name: "str | None" = None
+        total_length = 0.0
+        edge_count   = 0
+        start_vertex = 0
+        end_vertex   = 0
+
+        for eid, u, v in zip(epath, vpath, vpath[1:]):
+            name   = _street_name(G.es[eid]["name"])
+            length = _edge_lengths[eid]
+            if name == current_name:
+                total_length += length
                 edge_count   += 1
-                end_vertex = raw[i][3]
-                i += 1
-            lat1 = _vertex_lats[start_vertex]
-            lon1 = _vertex_lons[start_vertex]
-            lat2 = _vertex_lats[end_vertex]
-            lon2 = _vertex_lons[end_vertex]
-            minutes = round(total_length / WALKING_SPEED_MPS / 60, 1)
-            direction_abbrev = _cardinal(lat1, lon1, lat2, lon2)
-            avg_edge_m = total_length / edge_count
-            is_long    = avg_edge_m >= _BLOCK_TYPE_THRESHOLD
-            block_m    = _LONG_BLOCK_METERS if is_long else _SHORT_BLOCK_METERS
-            blocks     = max(0.5, round(total_length / block_m * 2) / 2)
-            block_type = "long" if is_long else "short"
-            steps.append({
-                "street":         name,
-                "direction":      direction_abbrev,
-                "direction_full": _DIRECTION_FULL.get(direction_abbrev, direction_abbrev),
-                "blocks":         blocks,
-                "block_type":     block_type,
-                "minutes":        minutes,
-                "start_lat":      lat1,
-                "start_lon":      lon1,
-            })
+                end_vertex    = v
+            else:
+                if current_name is not None:
+                    steps.append(_make_step(current_name, total_length, edge_count, start_vertex, end_vertex))
+                current_name  = name
+                total_length  = length
+                edge_count    = 1
+                start_vertex  = u
+                end_vertex    = v
+
+        if current_name is not None:
+            steps.append(_make_step(current_name, total_length, edge_count, start_vertex, end_vertex))
+
         return tuple(steps)
 
     except Exception:
@@ -389,10 +421,16 @@ def _walk_path_impl(
                 du_start = (geom_coords[0][0] - u_lon)**2 + (geom_coords[0][1] - u_lat)**2
                 du_end   = (geom_coords[-1][0] - u_lon)**2 + (geom_coords[-1][1] - u_lat)**2
                 if du_start > du_end:
-                    geom_coords = geom_coords[::-1]
+                    # Reversed — derive effective first coord without copying the list
+                    first_coord = geom_coords[-1]
+                    ordered = reversed(geom_coords)
+                else:
+                    first_coord = geom_coords[0]
+                    ordered = iter(geom_coords)
                 # Skip first coord if it duplicates the last accumulated point
-                start = 1 if result_coords and (geom_coords[0][1], geom_coords[0][0]) == result_coords[-1] else 0
-                for lon, lat in geom_coords[start:]:
+                if result_coords and (first_coord[1], first_coord[0]) == result_coords[-1]:
+                    next(ordered)
+                for lon, lat in ordered:
                     result_coords.append((lat, lon))
             else:
                 # Straight segment — use node endpoints
@@ -427,6 +465,25 @@ def walk_path(
     Returns a fresh list on every call (safe to mutate).
     """
     return [list(pt) for pt in _walk_path_impl(origin_lat, origin_lon, dest_lat, dest_lon)]
+
+
+def walk_all(
+    origin_lat: float,
+    origin_lon: float,
+    dest_lat: float,
+    dest_lon: float,
+) -> tuple[float, list[dict], list[list[float]]]:
+    """Return (minutes, directions, path_points) in one call.
+
+    Calling the three public functions sequentially in a single thread ensures
+    _get_shortest_path() is computed at most once (its lru_cache is populated on
+    the first call) rather than racing across three concurrent executor threads
+    before any of them can cache the result.
+    """
+    minutes    = walk_minutes(origin_lat, origin_lon, dest_lat, dest_lon)
+    directions = walk_directions(origin_lat, origin_lon, dest_lat, dest_lon)
+    path       = walk_path(origin_lat, origin_lon, dest_lat, dest_lon)
+    return minutes, directions, path
 
 
 def _haversine_walk_minutes(

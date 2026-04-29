@@ -25,6 +25,43 @@ DEFAULT_WEIGHTS: dict[str, float] = {
 }
 
 
+def _active_conditions(c) -> list[tuple[dict[str, float], str]]:
+    """Evaluate weather thresholds once; return (weight_deltas, hint_text) pairs.
+
+    Temperature checks are coldest-first (< 0 before < 15); only one fires.
+    """
+    conditions: list[tuple[dict[str, float], str]] = []
+
+    if c.feels_like_f < 0:
+        conditions.append((
+            {"outdoor_exposure": +0.20, "travel_time": -0.10},
+            "outdoor exposure heavily prioritized due to dangerous wind chill",
+        ))
+    elif c.feels_like_f < 15:
+        conditions.append((
+            {"outdoor_exposure": +0.10, "travel_time": -0.05},
+            "outdoor exposure prioritized due to extreme cold",
+        ))
+
+    if (
+        c.precipitation.type != PrecipitationType.NONE
+        and c.precipitation.intensity == "heavy"
+    ):
+        ptype = c.precipitation.type.value
+        conditions.append((
+            {"outdoor_exposure": +0.15, "travel_time": -0.10},
+            f"outdoor exposure prioritized due to heavy {ptype}",
+        ))
+
+    if c.wind.gust_mph is not None and c.wind.gust_mph > 35:
+        conditions.append((
+            {"reliability": +0.05},
+            f"reliability weighted for high wind gusts ({c.wind.gust_mph:.0f} mph)",
+        ))
+
+    return conditions
+
+
 def adjust_weights_for_weather(
     base_weights: dict[str, float],
     weather: "WeatherContext | None",
@@ -37,43 +74,24 @@ def adjust_weights_for_weather(
     - Heavy precipitation → outdoor_exposure +0.15, travel_time -0.10
     - Wind gusts > 35 mph → reliability +0.05
 
-    Temperature checks are coldest-first (< 0 before < 15); only one fires.
     All weights are clamped to ≥ 0.0 and then normalized to sum to 1.0.
-    Returns a plain copy of base_weights when weather is None.
+    Returns a plain copy of base_weights when weather is None or no thresholds fire.
     """
     if weather is None:
         return dict(base_weights)
 
+    conditions = _active_conditions(weather.current)
+    if not conditions:
+        return dict(base_weights)
+
     weights = dict(base_weights)
-    c = weather.current
+    for deltas, _ in conditions:
+        for k, delta in deltas.items():
+            weights[k] += delta
 
-    # Temperature thresholds — coldest first; only one fires
-    if c.feels_like_f < 0:
-        weights["outdoor_exposure"] += 0.20
-        weights["travel_time"]      -= 0.10
-    elif c.feels_like_f < 15:
-        weights["outdoor_exposure"] += 0.10
-        weights["travel_time"]      -= 0.05
-
-    # Heavy precipitation
-    if (
-        c.precipitation.type != PrecipitationType.NONE
-        and c.precipitation.intensity == "heavy"
-    ):
-        weights["outdoor_exposure"] += 0.15
-        weights["travel_time"]      -= 0.10
-
-    # High gusts
-    if c.wind.gust_mph is not None and c.wind.gust_mph > 35:
-        weights["reliability"] += 0.05
-
-    # Clamp negatives, then normalize to 1.0
-    weights = {k: max(0.0, v) for k, v in weights.items()}
-    total = sum(weights.values())
-    if total > 0:
-        weights = {k: round(v / total, 4) for k, v in weights.items()}
-
-    return weights
+    clamped = [max(0.0, v) for v in weights.values()]
+    total = sum(clamped)
+    return {k: round(v / total, 4) for k, v in zip(weights.keys(), clamped)}
 
 
 def weight_hint_for_weather(weather: "WeatherContext | None") -> str:
@@ -85,28 +103,9 @@ def weight_hint_for_weather(weather: "WeatherContext | None") -> str:
     if weather is None:
         return ""
 
-    c = weather.current
-    parts: list[str] = []
-
-    # Temperature hints — coldest first; only one fires (mirrors adjust_weights_for_weather)
-    if c.feels_like_f < 0:
-        parts.append("outdoor exposure heavily prioritized due to dangerous wind chill")
-    elif c.feels_like_f < 15:
-        parts.append("outdoor exposure prioritized due to extreme cold")
-
-    # Heavy precipitation hint
-    if (
-        c.precipitation.type != PrecipitationType.NONE
-        and c.precipitation.intensity == "heavy"
-    ):
-        ptype = c.precipitation.type.value
-        parts.append(f"outdoor exposure prioritized due to heavy {ptype}")
-
-    # High-gust hint
-    if c.wind.gust_mph is not None and c.wind.gust_mph > 35:
-        parts.append(f"reliability weighted for high wind gusts ({c.wind.gust_mph:.0f} mph)")
-
-    if not parts:
+    conditions = _active_conditions(weather.current)
+    if not conditions:
         return ""
 
+    parts = [hint for _, hint in conditions]
     return "Weight guidance: " + "; ".join(parts) + "."

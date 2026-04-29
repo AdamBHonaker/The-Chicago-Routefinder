@@ -102,9 +102,9 @@ No database required. User accounts are not planned; saved locations, routes, an
 
 - Ad-supported model — free to all users, revenue generated through ads
 - No subscription tier planned at this stage
-- **Phase 1 (now):** House ads only — contextual affiliate banners styled to match the Heritage Organic UI. No external ad scripts, no third-party cookies, no layout disruption.
+- **Phase 1 (now):** House ads only — contextual affiliate banners styled to match The Chicago Routefinder editorial design. No external ad scripts, no third-party cookies, no layout disruption.
 - **Phase 2 (after meaningful user base):** Evaluate EthicalAds or Carbon Ads — developer/tech-adjacent networks with clean, text-only units that are less visually intrusive than display ads.
-- **Google AdSense:** Deliberately avoided for now. Auto-placed display ads are very likely to clash with the Heritage Organic design and hurt retention. Revisit only if revenue is critically needed and aesthetic controls can be guaranteed.
+- **Google AdSense:** Deliberately avoided for now. Auto-placed display ads are very likely to clash with The Chicago Routefinder editorial design and hurt retention. Revisit only if revenue is critically needed and aesthetic controls can be guaranteed.
 - Stripe not needed for V1
 
 ---
@@ -132,11 +132,11 @@ No database required. User accounts are not planned; saved locations, routes, an
 This is the single canonical reference for all ad/monetization decisions. The implementation plan in `FEATURE_IMPLEMENTATION_PLANS.md` → Feature Monetization follows from these decisions.
 
 ### Philosophy
-Preserving the Heritage Organic UI is the top priority. An ad that looks out of place is worse than no ad — it signals low quality and hurts retention. Every monetization decision is filtered through this constraint first.
+Preserving The Chicago Routefinder editorial design system is the top priority. An ad that looks out of place is worse than no ad — it signals low quality and hurts retention. Every monetization decision is filtered through this constraint first.
 
 ### Phase 1 — House Ads (current focus)
 - **What:** A static `<a>` banner at the bottom of the results panel. Inline React component (`AdSlot`), no external scripts, no cookies, no third-party dependencies.
-- **Styling:** Cream background (`--color-bg`), `--color-border` top-divider, charcoal text (`--color-text`). Must look like a contextual tip, not a foreign element. Heritage Organic must be completely preserved.
+- **Styling:** Paper background (`--paper`), `--mute-fog` hairline top-divider, ink text (`--ink`). Must look like a contextual tip, not a foreign element. The Chicago Routefinder editorial aesthetic must be completely preserved.
 - **Placement:** Below the last RouteCard, inside the left panel. Never shown on empty/loading state.
 - **Content:** Contextual affiliate links for Chicago commuter gear — battery packs, noise-canceling headphones, rain gear, commuter bags. See affiliate product table below.
 - **Env vars (Vercel):** `VITE_HOUSE_AD_ENABLED` (default `false` locally), `VITE_HOUSE_AD_URL`, `VITE_HOUSE_AD_TEXT` — all swappable without a redeploy.
@@ -148,7 +148,7 @@ Revisit after reaching meaningful traffic. Both require applying with a live sit
 - **Carbon Ads** (carbonads.com) — similar positioning, slightly more design-heavy. Second choice.
 
 ### Google AdSense — Explicitly Deferred
-Auto-placed display ads cannot be reliably constrained to the Heritage Organic visual language. The risk of visual regression outweighs the revenue upside at current traffic levels. Only revisit if:
+Auto-placed display ads cannot be reliably constrained to The Chicago Routefinder visual language. The risk of visual regression outweighs the revenue upside at current traffic levels. Only revisit if:
 - Revenue is critically needed AND
 - AdSense offers layout/style controls sufficient to guarantee the ad looks native
 
@@ -271,9 +271,9 @@ All five features shipped. NWS weather context, crowdedness estimates, and weath
 ## Known Pending Items
 
 - **CTA API limit:** 100,000 req/day (confirmed from Train Tracker docs). Plan caching strategy around 100k.
-- **Known bugs:** See [`BUGS_TO_BE_FIXED.md`](BUGS_TO_BE_FIXED.md) for open bugs (0 🔴 high; 0 🟡 medium; 1 🟢 low — BUG-007 transit photos asset gap). Resolved bugs are logged in [`RESOLVED_HISTORY.md`](RESOLVED_HISTORY.md). When a bug is fixed, delete it from `BUGS_TO_BE_FIXED.md` and add an entry to `RESOLVED_HISTORY.md`.
-- **Technical debt:** See [`Technical_Debt.md`](Technical_Debt.md) for open items (TD-009 transit photo manifest incomplete, TD-010 bus fullness filter disabled). Resolved debt is logged in `RESOLVED_HISTORY.md`. When debt is paid off, delete it from `Technical_Debt.md` and add an entry to `RESOLVED_HISTORY.md`.
-- **Future enhancements:** See [`FEATURE_IMPLEMENTATION_PLANS.md`](FEATURE_IMPLEMENTATION_PLANS.md) for chunked build plans. Pending features: Feature NorthExpansion, Feature SouthExpansion, Feature Heritage, Feature Monetization.
+- **Known bugs:** See [`BUGS_TO_BE_FIXED.md`](BUGS_TO_BE_FIXED.md) for open bugs (0 🔴 high; 1 🟡 medium; 3 🟢 low — BUG-007 transit photos, BUG-008 stale DAU counts, BUG-009 crowdedness bell-curve disabled, BUG-011 last-departure mismatch). Resolved bugs are logged in [`RESOLVED_HISTORY.md`](RESOLVED_HISTORY.md). When a bug is fixed, delete it from `BUGS_TO_BE_FIXED.md` and add an entry to `RESOLVED_HISTORY.md`.
+- **Technical debt:** See [`Technical_Debt.md`](Technical_Debt.md) — 0 items open as of 2026-04-28. Resolved debt is logged in `RESOLVED_HISTORY.md`. When debt is paid off, delete it from `Technical_Debt.md` and add an entry to `RESOLVED_HISTORY.md`.
+- **Future enhancements:** See [`FEATURE_IMPLEMENTATION_PLANS.md`](FEATURE_IMPLEMENTATION_PLANS.md) for chunked build plans. Pending/in-progress features: Feature Heritage (The Chicago Routefinder redesign — Step 1 complete), Feature NorthExpansion, Feature SouthExpansion, Feature Monetization.
 - **API keys:** All four keys obtained and configured: CTA Train Tracker, CTA Bus Tracker, Anthropic, and Google Maps.
 
 ---
@@ -410,12 +410,13 @@ CTA-Transit-PWA/
 │   │                                      counts written to dau.json (Railway persistent volume at /app/data);
 │   │                                      async record_visit(); non-blocking saves via run_in_executor;
 │   │                                      batched writes: flush every 20 new visitors OR 30 seconds (whichever first);
-│   │                                      get_counts() returns full {YYYY-MM-DD: count} history
+│   │                                      get_counts() returns full {YYYY-MM-DD: count} history from in-memory cache (not disk)
 │   ├── fetch_gtfs.py                   ← Script to download/update CTA GTFS data
 │   ├── fetch_street_graph.py           ← Script to download/cache OSMnx street graph; applies ox.consolidate_intersections;
 │   │                                      also emits street_graph_igraph.pkl (igraph pickle)
 │   ├── fetch_station_exits.py          ← One-time script: queries Overpass API for railway=subway_entrance nodes,
-│   │                                      matches each to nearest CTA parent station by haversine (max 0.20 mi),
+│   │                                      matches each to nearest CTA parent station via vectorized NumPy haversine
+│   │                                      distance matrix (M entrances × N stations broadcast, max 0.20 mi),
 │   │                                      writes station_exits.json
 │   ├── active_routes.py                ← Standalone diagnostic: prints all active CTA bus routes and train lines right now
 │   ├── railway.toml                    ← Railway deployment config (builder = "dockerfile")
@@ -533,15 +534,16 @@ Run from `frontend/` with: `npm test`
 
 **Next steps (in order):**
 1. **In Railway → Service → Settings → Build → Build Arguments**, add `GITHUB_TOKEN=<PAT with Contents:Read>` then trigger a redeploy — this activates Feature K (street-network walking graph in production).
-2. Source ≥10 transit photos for the map loading panel (see `HUMAN_TODO.md`)
-3. Run remaining UI checks: confirm 40/60 panel ratio on desktop, 300px/350px min-heights on mobile
-4. (Optional) Add a custom domain in Vercel dashboard → Settings → Domains
-5. **Next feature work:** Feature NorthExpansion or Feature SouthExpansion (both depend on Feature K street graph). See `FEATURE_IMPLEMENTATION_PLANS.md`.
-6. Phase 7: Monetization (House Ads first) — implement `AdSlot` component after confirming live app is stable; defer third-party ad networks until user base is established. See "Monetization Strategy — Full Decision Record" section above.
+2. **Feature Heritage (The Chicago Routefinder redesign) — In Progress.** Step 1 (tokens + fonts) complete 2026-04-28. Continue steps 2–10 per `FEATURE_IMPLEMENTATION_PLANS.md` → Feature Heritage.
+3. Source ≥10 transit photos for the map loading panel (see `HUMAN_TODO.md`)
+4. Run remaining UI checks: confirm 40/60 panel ratio on desktop, 300px/350px min-heights on mobile
+5. (Optional) Add a custom domain in Vercel dashboard → Settings → Domains
+6. **Next feature work after Heritage:** Feature NorthExpansion or Feature SouthExpansion (both depend on Feature K street graph). See `FEATURE_IMPLEMENTATION_PLANS.md`.
+7. Phase 7: Monetization (House Ads first) — implement `AdSlot` component after Heritage redesign is complete and app is stable; defer third-party ad networks until user base is established. See "Monetization Strategy — Full Decision Record" section above.
 
-**Bug status:** 0 🔴 high + 0 🟡 medium + 1 🟢 low bugs open (BUG-007 transit photos asset gap) — see `BUGS_TO_BE_FIXED.md`.
+**Bug status:** 0 🔴 high + 1 🟡 medium + 3 🟢 low bugs open (BUG-007 transit photos, BUG-008 stale DAU counts, BUG-009 crowdedness bell-curve disabled, BUG-011 last-departure mismatch) — see `BUGS_TO_BE_FIXED.md`.
 
-**Technical debt status:** 2 items open — TD-009 (transit photo manifest incomplete), TD-010 (bus fullness filter disabled) — see `Technical_Debt.md`.
+**Technical debt status:** 0 items open (all resolved as of 2026-04-28) — see `Technical_Debt.md` and `RESOLVED_HISTORY.md`.
 
 **Most recently completed (2026-04-27):** All Phase 6.5 features (Weather, Crowdedness, Departure Window, Weather Scoring, Precip Walk). Frontend TD-028 through TD-037 (hook extraction, MapView sub-function split, GPS consolidation). Frontend efficiency improvements OPT-FE-001 through OPT-FE-005. Feature Pinned Stops, Feature Last Train, Feature Walk Speed, Feature WalkMode, Feature Service Alerts. BUG-015 fix (geolocation denied state now persistent). Feature K (street-network graph in production via Dockerfile build).
 

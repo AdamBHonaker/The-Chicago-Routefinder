@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>The Chicago Routefinder — Mobile</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Fraunces:ital,opsz,wght@0,9..144,400..900;1,9..144,400..900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" />
+<style>
+  html, body { margin: 0; padding: 0; background: #f0eee9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  #root { min-height: 100vh; }
+</style>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<!-- shared -->
+<script type="text/babel" src="data.jsx"></script>
+<script type="text/babel" src="schematic-map.jsx"></script>
+<script type="text/babel" src="design-canvas.jsx"></script>
+
+<!-- direction 2 -->
+<script type="text/babel" src="d2-editorial.jsx"></script>
+<script type="text/babel" src="d2-system.jsx"></script>
+
+<script type="text/babel">
+
+const PHONE_W = 390;
+const PHONE_H = 780;
+
+function Phone({ children, label }) {
+  return (
+    <div data-screen-label={label} style={{
+      width: PHONE_W, height: PHONE_H,
+      background: "#111", borderRadius: 44, padding: 10,
+      boxShadow: "0 2px 0 rgba(0,0,0,.15) inset, 0 20px 40px rgba(0,0,0,.08)"
+    }}>
+      <div style={{
+        width: "100%", height: "100%", borderRadius: 34, overflow: "hidden",
+        background: "#fff", position: "relative"
+      }}>
+        <div style={{
+          position: "absolute", top: 8, left: "50%", transform: "translateX(-50%)",
+          width: 110, height: 30, borderRadius: 20, background: "#000", zIndex: 50
+        }} />
+        <div style={{ height: "100%", width: "100%", paddingTop: 40, boxSizing: "border-box" }}>
+          {children}
+        </div>
+      </div>
+    </div>);
+}
+
+function App() {
+  return (
+    <DesignCanvas>
+      <DCSection id="mobile"
+      title="The Chicago Routefinder — Mobile"
+      subtitle="Eight screens of the PWA. Paper grain, drop-cap minutes, flickering signal lamp, radar-pulsed current stop.">
+        
+        <DCArtboard id="home" label="01 · Home" width={PHONE_W + 20} height={PHONE_H + 20}>
+          <Phone label="01 Home"><D2Home /></Phone>
+        </DCArtboard>
+        <DCArtboard id="search" label="02 · Search" width={PHONE_W + 20} height={PHONE_H + 20}>
+          <Phone label="02 Search"><D2Search /></Phone>
+        </DCArtboard>
+        <DCArtboard id="results" label="03 · Results" width={PHONE_W + 20} height={PHONE_H + 20}>
+          <Phone label="03 Results"><D2Results /></Phone>
+        </DCArtboard>
+        <DCArtboard id="live" label="04 · Live Trip" width={PHONE_W + 20} height={PHONE_H + 20}>
+          <Phone label="04 Live Trip"><D2LiveTrip /></Phone>
+        </DCArtboard>
+        <DCArtboard id="station" label="05 · Station" width={PHONE_W + 20} height={PHONE_H + 20}>
+          <Phone label="05 Station"><D2Station /></Phone>
+        </DCArtboard>
+        <DCArtboard id="alerts" label="06 · Alerts" width={PHONE_W + 20} height={PHONE_H + 20}>
+          <Phone label="06 Alerts"><D2Alerts /></Phone>
+        </DCArtboard>
+        <DCArtboard id="saved" label="07 · Saved" width={PHONE_W + 20} height={PHONE_H + 20}>
+          <Phone label="07 Saved"><D2Saved /></Phone>
+        </DCArtboard>
+        <DCArtboard id="widget" label="08 · Lock-screen glance" width={PHONE_W + 20} height={PHONE_H + 20}>
+          <Phone label="08 Widget"><D2Widget /></Phone>
+        </DCArtboard>
+      </DCSection>
+    </DesignCanvas>);
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

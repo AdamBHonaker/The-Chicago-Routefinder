@@ -146,10 +146,25 @@ class TestFeelsLike:
         result = svc._feels_like(40.0, 2.0)
         assert result == pytest.approx(40.0)
 
-    def test_heat_index_at_high_temp(self, svc):
-        # 90°F — heat index with 45% RH should be at or above 90
-        result = svc._feels_like(90.0, 0.0)
-        assert result >= 90.0
+    def test_heat_index_uses_actual_rh(self, svc):
+        # 90°F — heat index should increase with higher humidity
+        result_low_rh  = svc._feels_like(90.0, 0.0, humidity_pct=40.0)
+        result_high_rh = svc._feels_like(90.0, 0.0, humidity_pct=80.0)
+        assert result_low_rh  >= 90.0
+        assert result_high_rh >= 90.0
+        assert result_high_rh > result_low_rh  # higher RH → hotter apparent temp
+
+    def test_heat_index_default_humidity_param(self, svc):
+        # default humidity_pct=50 must match explicit kwarg
+        assert svc._feels_like(90.0, 0.0) == pytest.approx(
+            svc._feels_like(90.0, 0.0, humidity_pct=50.0)
+        )
+
+    def test_heat_index_high_rh_mild_heat_adjustment(self, svc):
+        # RH > 85% + 80-87°F triggers NWS upward adjustment
+        result_no_adj   = svc._feels_like(85.0, 0.0, humidity_pct=85.0)
+        result_with_adj = svc._feels_like(85.0, 0.0, humidity_pct=90.0)
+        assert result_with_adj >= result_no_adj
 
     def test_feels_like_exact_50_with_wind(self, svc):
         # Exactly 50°F with 5 mph → wind chill applies (≤50 AND ≥3)

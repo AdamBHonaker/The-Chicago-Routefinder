@@ -11,33 +11,28 @@ Usage (from backend/ directory):
 
 After generating, review and correct any misassigned exits for the 10-15
 most-used stations.  The JSON format is simple — edit by hand as needed.
+
+Development note: the raw Overpass response is cached to .overpass_cache.json
+after the first fetch.  Delete that file to force a fresh OSM query.
 """
 
 import csv
+import heapq
 import json
 import math
 import time
 from pathlib import Path
 
+import numpy as np
 import requests
 
 from utils import CHICAGO_BBOX_OVERPASS
 
 _EARTH_RADIUS_MILES = 3958.8
 
-
-def _haversine_precomputed(
-    rlat1: float, cos_lat1: float, rlon1: float,
-    rlat2: float, cos_lat2: float, rlon2: float,
-) -> float:
-    """Haversine distance (miles) with radians and cos(lat) pre-computed by caller."""
-    dlat = rlat2 - rlat1
-    dlon = rlon2 - rlon1
-    a = math.sin(dlat / 2) ** 2 + cos_lat1 * cos_lat2 * math.sin(dlon / 2) ** 2
-    return _EARTH_RADIUS_MILES * 2 * math.asin(math.sqrt(a))
-
-GTFS_DIR = Path(__file__).parent / "gtfs_data"
-OUT_FILE = Path(__file__).parent / "station_exits.json"
+GTFS_DIR   = Path(__file__).parent / "gtfs_data"
+OUT_FILE   = Path(__file__).parent / "station_exits.json"
+CACHE_FILE = Path(__file__).parent / ".overpass_cache.json"
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 # Chicago bounding box: (south, west, north, east)
@@ -83,7 +78,18 @@ def load_parent_stations() -> dict[str, dict]:
 
 
 def fetch_subway_entrances() -> list[dict]:
-    """Query Overpass API for all railway=subway_entrance nodes in Chicago."""
+    """Query Overpass API for all railway=subway_entrance nodes in Chicago.
+
+    Caches the raw response to .overpass_cache.json on first run so
+    subsequent runs skip the network call.  Delete that file to refresh.
+    """
+    if CACHE_FILE.exists():
+        print("Loading cached Overpass response …")
+        with open(CACHE_FILE, encoding="utf-8") as f:
+            elements = json.load(f)
+        print(f"  {len(elements)} subway entrance nodes (from cache)")
+        return elements
+
     query = (
         f"[out:json][timeout:30];\n"
         f'node["railway"="subway_entrance"]({CHICAGO_BBOX});\n'
@@ -94,6 +100,12 @@ def fetch_subway_entrances() -> list[dict]:
     resp.raise_for_status()
     elements = resp.json().get("elements", [])
     print(f"  {len(elements)} subway entrance nodes returned by OSM")
+
+    with open(CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump(elements, f)
+    print(f"  Response cached to {CACHE_FILE}")
+
+    time.sleep(1)  # polite pause after Overpass query
     return elements
 
 
@@ -114,46 +126,70 @@ def build_exits(
     """
     Match each Overpass node to its nearest parent station and build the
     {mapid: [{label, lat, lon}, ...]} structure for station_exits.json.
+
+    Uses a vectorized NumPy haversine over the full (M entrances × N stations)
+    distance matrix instead of a Python nested loop. Filtering and array
+    extraction are combined into a single pass over entrances to avoid
+    redundant iteration.
     """
     result: dict[str, list[dict]] = {}
     unassigned = 0
 
-    for node in entrances:
-        if node.get("type") != "node":
-            continue
-        lat = node.get("lat")
-        lon = node.get("lon")
-        if lat is None or lon is None:
-            continue
+    # Filter entrances and extract lat/lon in one pass.
+    valid: list[dict] = []
+    e_lats: list[float] = []
+    e_lons: list[float] = []
+    for n in entrances:
+        if n.get("type") == "node" and n.get("lat") is not None and n.get("lon") is not None:
+            valid.append(n)
+            e_lats.append(n["lat"])
+            e_lons.append(n["lon"])
+    if not valid or not stations:
+        return result
 
-        tags  = node.get("tags", {})
-        label = _exit_label(tags)
-        if not label:
-            # Use coordinates as a placeholder so the entry is still useful
-            label = f"Entrance ({lat:.4f}, {lon:.4f})"
+    # Station arrays (N,) — all three extracted in a single pass.
+    station_ids = list(stations.keys())
+    s_vals      = [(stations[m]["rlat"], stations[m]["rlon"], stations[m]["cos_lat"]) for m in station_ids]
+    s_rlat, s_rlon, s_cos_lat = (np.array(col) for col in zip(*s_vals))
 
-        # Pre-compute entrance trig once for the ~150-station inner loop
-        rlat1    = math.radians(lat)
-        rlon1    = math.radians(lon)
-        cos_lat1 = math.cos(rlat1)
+    # Entrance arrays (M,)
+    e_rlat    = np.radians(e_lats)
+    e_rlon    = np.radians(e_lons)
+    e_cos_lat = np.cos(e_rlat)
 
-        # Find the nearest parent station
-        best_mapid = None
-        best_dist  = float("inf")
-        for mapid, info in stations.items():
-            d = _haversine_precomputed(
-                rlat1, cos_lat1, rlon1,
-                info["rlat"], info["cos_lat"], info["rlon"],
-            )
-            if d < best_dist:
-                best_dist  = d
-                best_mapid = mapid
+    # Vectorized haversine intermediate — broadcast to (M, N)
+    dlat = s_rlat - e_rlat[:, np.newaxis]
+    dlon = s_rlon - e_rlon[:, np.newaxis]
+    a = (
+        np.sin(dlat / 2) ** 2
+        + e_cos_lat[:, np.newaxis] * s_cos_lat * np.sin(dlon / 2) ** 2
+    )
+    del dlat, dlon  # free M×N intermediates
 
-        if best_mapid is None or best_dist > MAX_ASSIGN_MILES:
+    # arcsin is monotonic: argmin/min on a gives the same ranking as on dist,
+    # so the full M×N arcsin is skipped — only the M winning values are converted.
+    best_idx  = a.argmin(axis=1)              # (M,)
+    best_a    = a.min(axis=1)                 # (M,)
+    del a                                     # free M×N intermediate
+
+    best_dist     = _EARTH_RADIUS_MILES * 2 * np.arcsin(np.sqrt(np.clip(best_a, 0.0, 1.0)))
+    del best_a
+    best_idx_list = best_idx.tolist()         # convert once; avoids per-iter numpy scalar cast
+
+    for i, node in enumerate(valid):
+        if best_dist[i] > MAX_ASSIGN_MILES:
             unassigned += 1
             continue
 
-        result.setdefault(best_mapid, []).append({
+        lat   = node["lat"]
+        lon   = node["lon"]
+        tags  = node.get("tags", {})
+        label = _exit_label(tags)
+        if not label:
+            label = f"Entrance ({lat:.4f}, {lon:.4f})"
+
+        mapid = station_ids[best_idx_list[i]]
+        result.setdefault(mapid, []).append({
             "label": label,
             "lat":   round(lat, 6),
             "lon":   round(lon, 6),
@@ -175,7 +211,6 @@ def main() -> None:
     print(f"  {len(stations)} parent stations")
 
     entrances = fetch_subway_entrances()
-    time.sleep(1)  # polite pause after Overpass query
 
     exits = build_exits(stations, entrances)
     print(f"  {len(exits)} stations with at least 1 mapped exit")
@@ -194,7 +229,7 @@ def main() -> None:
     print(f"\nWritten: {OUT_FILE}")
 
     # Summary of top stations for manual review
-    top = sorted(exits.items(), key=lambda kv: len(kv[1]), reverse=True)[:15]
+    top = heapq.nlargest(15, exits.items(), key=lambda kv: len(kv[1]))
     print("\nTop stations by exit count (review these first):")
     for mapid, ex_list in top:
         sname = stations.get(mapid, {}).get("name", mapid)

@@ -9,6 +9,7 @@ NWS requires a real contact email in the User-Agent header.
 """
 
 import asyncio
+import itertools
 import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -86,7 +87,25 @@ class WeatherService:
 
     Public interface: ``await get_weather_context(lat, lon) → WeatherContext``.
     Callers should wrap in try/except — weather is always non-fatal.
+    Call ``await close()`` on shutdown to release the shared HTTP session.
     """
+
+    def __init__(self) -> None:
+        self._session: Optional[aiohttp.ClientSession] = None
+
+    def _get_session(self) -> aiohttp.ClientSession:
+        """Return the shared ClientSession, creating it on first use."""
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(
+                headers={"User-Agent": _NWS_USER_AGENT}
+            )
+        return self._session
+
+    async def close(self) -> None:
+        """Close the shared HTTP session. Call on application shutdown."""
+        if self._session and not self._session.closed:
+            await self._session.close()
+            self._session = None
 
     async def get_weather_context(self, lat: float, lon: float) -> WeatherContext:
         """Return a WeatherContext for the given coordinates.
@@ -100,18 +119,16 @@ class WeatherService:
         if cached is not None:
             return cached
 
-        async with aiohttp.ClientSession(
-            headers={"User-Agent": _NWS_USER_AGENT}
-        ) as session:
-            _, hourly_url = await self._get_grid_urls(session, key, lat, lon)
-            forecast_data, alerts_data = await asyncio.gather(
-                self._fetch_json(session, hourly_url),
-                self._fetch_json(
-                    session,
-                    f"{_NWS_BASE}/alerts/active"
-                    f"?point={round(lat, 4)},{round(lon, 4)}",
-                ),
-            )
+        session = self._get_session()
+        _, hourly_url = await self._get_grid_urls(session, key, lat, lon)
+        forecast_data, alerts_data = await asyncio.gather(
+            self._fetch_json(session, hourly_url),
+            self._fetch_json(
+                session,
+                f"{_NWS_BASE}/alerts/active"
+                f"?point={round(lat, 4)},{round(lon, 4)}",
+            ),
+        )
 
         context = self._parse_nws_response(forecast_data, alerts_data)
         _weather_cache[key] = context
@@ -155,21 +172,19 @@ class WeatherService:
     def _parse_precip(self, short_forecast: str) -> PrecipitationInfo:
         """Infer precipitation type and intensity from NWS short-forecast text."""
         fc = short_forecast.lower()
-        precip_words = (
-            "rain", "snow", "sleet", "drizzle", "shower",
-            "freezing", "flurr", "blizzard", "ice pellet",
-        )
-        if not any(w in fc for w in precip_words):
-            return PrecipitationInfo(type=PrecipitationType.NONE)
 
-        if "freezing" in fc or ("ice" in fc and "sleet" not in fc and "ice pellet" not in fc):
-            ptype = PrecipitationType.FREEZING_RAIN
-        elif "sleet" in fc or "ice pellet" in fc:
+        # Single pass: determine type by priority (sleet > freezing > snow > rain).
+        # The else branch handles all non-precipitation forecasts.
+        if "sleet" in fc or "ice pellet" in fc:
             ptype = PrecipitationType.SLEET
+        elif "freezing" in fc or "ice" in fc:
+            ptype = PrecipitationType.FREEZING_RAIN
         elif "snow" in fc or "flurr" in fc or "blizzard" in fc:
             ptype = PrecipitationType.SNOW
-        else:
+        elif "rain" in fc or "drizzle" in fc or "shower" in fc:
             ptype = PrecipitationType.RAIN
+        else:
+            return PrecipitationInfo(type=PrecipitationType.NONE)
 
         if "heavy" in fc or "blizzard" in fc:
             intensity = "heavy"
@@ -201,19 +216,25 @@ class WeatherService:
         gust  = _to_mph(wind_gust_str) if wind_gust_str.strip() else None
         return WindInfo(speed_mph=speed, gust_mph=gust if gust else None)
 
-    def _feels_like(self, temp_f: float, wind_speed_mph: float) -> float:
-        """Wind chill (≤50°F + wind ≥3 mph) or heat index (≥80°F), else temp_f."""
+    def _feels_like(
+        self, temp_f: float, wind_speed_mph: float, humidity_pct: float = 50.0
+    ) -> float:
+        """Wind chill (≤50°F + wind ≥3 mph) or heat index (≥80°F), else temp_f.
+
+        Uses NWS wind-chill formula and NWS Rothfusz heat-index regression with
+        actual relative humidity (not a hardcoded assumption).
+        """
         if temp_f <= 50 and wind_speed_mph >= 3:
             # NWS wind-chill formula
+            w = wind_speed_mph ** 0.16
             return (
                 35.74
                 + 0.6215 * temp_f
-                - 35.75 * (wind_speed_mph ** 0.16)
-                + 0.4275 * temp_f * (wind_speed_mph ** 0.16)
+                - 35.75 * w
+                + 0.4275 * temp_f * w
             )
         if temp_f >= 80:
-            # Steadman heat-index approximation at 45% RH (Chicago default)
-            rh = 45.0
+            rh = humidity_pct
             hi = (
                 -42.379
                 + 2.04901523 * temp_f
@@ -225,6 +246,12 @@ class WeatherService:
                 + 8.5282e-4   * temp_f * rh ** 2
                 - 1.99e-6     * temp_f ** 2 * rh ** 2
             )
+            # NWS adjustment: very low humidity reduces apparent heat
+            if rh < 13 and 80 <= temp_f <= 112:
+                hi -= (13 - rh) / 4 * ((17 - abs(temp_f - 95)) / 17) ** 0.5
+            # NWS adjustment: high humidity + mild heat increases apparent heat
+            elif rh > 85 and 80 <= temp_f <= 87:
+                hi += (rh - 85) / 10 * (87 - temp_f) / 5
             return max(temp_f, hi)
         return temp_f
 
@@ -237,7 +264,7 @@ class WeatherService:
         current: CurrentWeather | None = None
         hourly: list[ForecastPoint]   = []
 
-        for period in periods[:13]:  # current period + next 12 hours
+        for period in itertools.islice(periods, 13):  # current period + next 12 hours
             temp_f = float(period.get("temperature", 55))
             if period.get("temperatureUnit", "F") == "C":
                 temp_f = temp_f * 9 / 5 + 32
@@ -247,8 +274,10 @@ class WeatherService:
                 period.get("windSpeed", ""),
                 period.get("windGust", "") or "",
             )
+            rh_raw      = period.get("relativeHumidity") or {}
+            humidity_pct = float(rh_raw.get("value") or 50.0)
             precip = self._parse_precip(short_fc)
-            feels  = round(self._feels_like(temp_f, wind.speed_mph), 1)
+            feels  = round(self._feels_like(temp_f, wind.speed_mph, humidity_pct), 1)
 
             try:
                 hour = datetime.fromisoformat(
@@ -281,11 +310,13 @@ class WeatherService:
                 short_forecast="Unknown",
             )
 
+        seen: set[str] = set()
         alert_headlines: list[str] = []
         for feature in alerts_data.get("features", []):
             props    = feature.get("properties", {})
             headline = props.get("headline") or props.get("event", "")
-            if headline and headline not in alert_headlines:
+            if headline and headline not in seen:
+                seen.add(headline)
                 alert_headlines.append(headline)
 
         return WeatherContext(

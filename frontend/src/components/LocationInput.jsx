@@ -256,7 +256,7 @@ export default function LocationInput({ value, onChange, placeholder, savedLocat
               if (geoTimerRef.current) clearTimeout(geoTimerRef.current);
               setGeoState("idle");
             }}
-            aria-label="Dismiss"
+            aria-label={t("aria_dismiss")}
           >×</button>
         </div>
       )}

@@ -28,6 +28,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import networkx as nx
+import numpy as np
 
 from gtfs_loader import GTFS_DIR, find_nearest_train_stations, find_nearest_bus_stops
 from utils import haversine_miles as _haversine_miles, SpatialGrid, TRANSFER_PENALTY_MINUTES
@@ -121,6 +122,11 @@ _bus_seq_cache: dict[tuple[str, str], list[tuple]] | None = None
 # may be "24:xx"/"25:xx" for post-midnight CTA service runs).
 _last_departure: dict[tuple[str, str], str] = {}
 
+# Train stop position index for crowdedness bell-curve.
+# (parent_mapid, route_id, direction_id) → (position_0based, total_stops)
+# Populated during _build_graph(); read-only after startup.
+_train_stop_pos: dict[tuple[str, str, str], tuple[int, int]] = {}
+
 
 # ---------------------------------------------------------------------------
 # Route / Leg data structures
@@ -179,57 +185,102 @@ class Route:
 # GTFS small-file loaders
 # ---------------------------------------------------------------------------
 
-def _load_station_data() -> tuple[dict[str, dict], dict[str, str]]:
+@lru_cache(maxsize=1)
+def _load_all_stops() -> tuple[dict[str, dict], dict[str, str], dict[str, dict]]:
     """
-    Single-pass read of stops.txt that returns both train-station dicts.
+    Single-pass read of stops.txt returning all three stop dicts.
 
     Returns:
       parent_stations    — {mapid: {name, lat, lon}} for location_type=1 entries (40000–49999)
       platform_to_parent — {platform_stop_id: parent_mapid} for platform stops (30000–39999)
+      bus_stop_lookup    — {stop_id: {name, lat, lon}} for bus stops (0–29999)
     """
-    stations: dict[str, dict] = {}
-    mapping:  dict[str, str]  = {}
+    stations:  dict[str, dict] = {}
+    mapping:   dict[str, str]  = {}
+    bus_stops: dict[str, dict] = {}
     with open(GTFS_DIR / "stops.txt", encoding="utf-8-sig") as f:
         for row in csv.DictReader(f):
             try:
                 sid = int(row["stop_id"].strip())
-            except ValueError:
+            except (ValueError, KeyError):
+                continue
+            if 30000 <= sid <= 39999:
+                parent = row.get("parent_station", "").strip()
+                if parent:
+                    mapping[str(sid)] = parent
+                continue
+            try:
+                lat = float(row["stop_lat"].strip())
+                lon = float(row["stop_lon"].strip())
+            except (ValueError, KeyError):
                 continue
             if 40000 <= sid <= 49999 and row.get("location_type", "").strip() == "1":
                 stations[str(sid)] = {
                     "name": row.get("stop_name", "").strip(),
-                    "lat":  float(row["stop_lat"].strip()),
-                    "lon":  float(row["stop_lon"].strip()),
+                    "lat":  lat,
+                    "lon":  lon,
                 }
-            elif 30000 <= sid <= 39999:
-                parent = row.get("parent_station", "").strip()
-                if parent:
-                    mapping[str(sid)] = parent
+            elif 0 <= sid <= 29999:
+                bus_stops[str(sid)] = {
+                    "name": row.get("stop_name", "").strip(),
+                    "lat":  lat,
+                    "lon":  lon,
+                }
+    return stations, mapping, bus_stops
+
+
+def _load_station_data() -> tuple[dict[str, dict], dict[str, str]]:
+    """Thin wrapper — use _load_all_stops() when all three dicts are needed."""
+    stations, mapping, _ = _load_all_stops()
     return stations, mapping
 
 
 def _load_parent_stations() -> dict[str, dict]:
-    """Thin wrapper kept for isolated callers/tests — use _load_station_data() in bulk."""
-    stations, _ = _load_station_data()
+    """Thin wrapper kept for isolated callers/tests."""
+    stations, _, _ = _load_all_stops()
     return stations
 
 
 def _load_platform_to_parent() -> dict[str, str]:
-    """Thin wrapper kept for isolated callers/tests — use _load_station_data() in bulk."""
-    _, mapping = _load_station_data()
+    """Thin wrapper kept for isolated callers/tests."""
+    _, mapping, _ = _load_all_stops()
     return mapping
 
 
-def _load_train_route_ids() -> set[str]:
-    """Returns the set of route_ids for rail routes (route_type=1)."""
-    ids: set[str] = set()
+@lru_cache(maxsize=1)
+def _load_all_routes() -> tuple[set[str], dict[str, str], dict[str, str]]:
+    """
+    Single-pass read of routes.txt returning:
+      train_route_ids   — set of route_ids for rail routes (route_type=1)
+      bus_route_map     — {route_id: route_short_name} for bus routes
+      route_short_names — {route_id: route_short_name} for all routes
+    """
+    train_ids: set[str]      = set()
+    bus_map:   dict[str, str] = {}
+    all_short: dict[str, str] = {}
     with open(GTFS_DIR / "routes.txt", encoding="utf-8-sig") as f:
         for row in csv.DictReader(f):
-            if row.get("route_type", "").strip() == "1":
-                ids.add(row["route_id"].strip())
-    return ids
+            rid   = row.get("route_id",         "").strip()
+            short = row.get("route_short_name", "").strip()
+            rtype = row.get("route_type",       "").strip()
+            if not rid:
+                continue
+            if rtype == "1":
+                train_ids.add(rid)
+            else:
+                bus_map[rid] = short or rid
+            if short:
+                all_short[rid] = short
+    return train_ids, bus_map, all_short
 
 
+def _load_train_route_ids() -> set[str]:
+    """Thin wrapper — returns train route IDs from the shared _load_all_routes() cache."""
+    train_ids, _, _ = _load_all_routes()
+    return train_ids
+
+
+@lru_cache(maxsize=1)
 def _load_weekday_service_ids() -> set[str]:
     """Returns service_ids active on weekdays (Mon–Fri) from calendar.txt,
     augmented with services defined purely via calendar_dates.txt add-exceptions."""
@@ -350,12 +401,26 @@ def _stream_all_stop_sequences(
     last_dep: dict[tuple[str, str], tuple[float, str]] = {}  # key -> (minutes, time_str)
 
     all_candidate_tids = set(train_candidates) | set(bus_candidates)
+    # CTA stop_times.txt is sorted by trip_id (standard GTFS), so all rows for
+    # a given trip are contiguous.  Track which candidate trips have not yet
+    # been fully seen; once the set empties, every remaining row is irrelevant.
+    remaining_tids: set[str] = set(all_candidate_tids)
+    prev_tid: str | None = None
     rows_read = 0
 
     with open(GTFS_DIR / "stop_times.txt", encoding="utf-8-sig") as f:
         for row in csv.DictReader(f):
             rows_read += 1
             tid = row.get("trip_id", "").strip()
+
+            if tid != prev_tid:
+                # Trip transition: the previous trip's rows are fully consumed.
+                if prev_tid in remaining_tids:
+                    remaining_tids.discard(prev_tid)
+                    if not remaining_tids:
+                        break  # All candidate trips complete — skip remaining rows.
+                prev_tid = tid
+
             if tid not in all_candidate_tids:
                 continue
 
@@ -375,11 +440,12 @@ def _stream_all_stop_sequences(
                 train_raw[tid].append((seq, parent, arr_min))
                 # Feature Last Train: track latest departure per station/direction
                 dep_str = (row.get("departure_time") or arr_str).strip()
+                dep_min = _parse_gtfs_time(dep_str)
                 did = train_dirs.get(tid, "0")
                 key = (parent, did)
                 prev = last_dep.get(key)
-                if prev is None or arr_min > prev[0]:
-                    last_dep[key] = (arr_min, dep_str)
+                if prev is None or dep_min > prev[0]:
+                    last_dep[key] = (dep_min, dep_str)
 
             if tid in bus_raw:
                 sid = row.get("stop_id", "").strip()
@@ -557,6 +623,17 @@ def _build_graph() -> tuple[nx.DiGraph, dict[str, dict]]:
     global _last_departure
     _last_departure = last_dep_times
 
+    # Build train stop position index for crowdedness bell-curve (BUG-009 fix).
+    global _train_stop_pos
+    _train_pos: dict[tuple[str, str, str], tuple[int, int]] = {}
+    for trip_id, seq in stop_seqs.items():
+        route_id = selected_trips[trip_id]
+        dir_id   = trip_dirs.get(trip_id, "0")
+        total    = len(seq)
+        for pos, (mapid, _) in enumerate(seq):
+            _train_pos[(mapid, route_id, dir_id)] = (pos, total)
+    _train_stop_pos = _train_pos
+
     G = nx.DiGraph()
 
     # Add all parent station nodes with metadata
@@ -680,14 +757,14 @@ def _build_graph() -> tuple[nx.DiGraph, dict[str, dict]]:
     # turn-by-turn paths lazily via street_walk_* only when needed.
     intermodal_edge_count = 0
 
+    # Use the pre-built SpatialGrid (populated at module import) instead of the
+    # O(stations × stops) cross-product.  query() returns (dist_miles, stop_id)
+    # pairs already haversine-filtered to the radius — no inner loop needed.
     for mapid, station in parent_stations.items():
         s_lat, s_lon = station["lat"], station["lon"]
-        for stop_id, stop in bus_stop_lookup.items():
-            dist = _haversine_miles(s_lat, s_lon, stop["lat"], stop["lon"])
-            if dist > _TRANSFER_RADIUS_MILES:
-                continue
+        for dist, stop_id in _bus_stop_grid.query(s_lat, s_lon, _TRANSFER_RADIUS_MILES):
             walk_min = dist / 3.0 * 60 * _DETOUR_FACTOR  # 3 mph, detour-corrected
-            walk_min = max(walk_min, _TRANSFER_MINUTES)  # apply minimum transfer penalty
+            walk_min = max(walk_min, _TRANSFER_MINUTES)
             if walk_min > _TRANSFER_WALK_CAP_MIN:
                 continue
             G.add_edge(mapid, stop_id,
@@ -718,6 +795,7 @@ def warm_up() -> None:
     get_bus_stop_sequences()
     _build_stop_to_routes()
     _build_shape_lookup()
+    _build_station_name_index()
     # Street graph is loaded lazily on the first routing request that needs it.
     # Loading it here would cause an OOM kill on Railway before startup completes.
 
@@ -806,17 +884,10 @@ def _build_shape_lookup() -> None:
             route_dir_to_shape[key] = best_sid
 
     # --- Step 4: join ---
-    # Also load route_short_name → route_id mapping so bus routes can be found
-    # by short_name (e.g. "22") as well as route_id.  For most CTA bus routes
-    # these are identical, but keying by both ensures correctness if they ever
-    # diverge.  find_bus_transfer_routes() calls get_shape(route_short_name, direction_id).
-    route_short_names: dict[str, str] = {}  # {route_id: route_short_name}
-    with open(GTFS_DIR / "routes.txt", encoding="utf-8-sig") as f:
-        for row in csv.DictReader(f):
-            rid   = row.get("route_id",          "").strip()
-            short = row.get("route_short_name",  "").strip()
-            if rid and short:
-                route_short_names[rid] = short
+    # Use the cached routes lookup so bus routes can be found by short_name (e.g. "22")
+    # as well as route_id.  find_bus_transfer_routes() calls get_shape(route_short_name,
+    # direction_id).  _load_all_routes() is already cached — no extra I/O here.
+    _, _, route_short_names = _load_all_routes()
 
     new_lookup: dict[tuple[str, str], list[list[float]]] = {}
     for (route_id, direction_id), shape_id in route_dir_to_shape.items():
@@ -860,6 +931,27 @@ def get_last_departure(mapid: str, direction_id: str) -> str | None:
     return _last_departure.get((mapid, direction_id))
 
 
+# Station name index — built once during warm_up(); read-only after that.
+# _station_name_exact  : lowercase name → (lat, lon) for O(1) exact matches.
+# _station_name_entries: pre-built list for the linear contains-match fallback.
+_station_name_exact:   dict[str, tuple[float, float]] = {}
+_station_name_entries: list[tuple[str, dict]]         = []
+
+
+def _build_station_name_index() -> None:
+    """Populate _station_name_exact and _station_name_entries from the graph cache."""
+    global _station_name_exact, _station_name_entries
+    _, stations = _build_graph()
+    exact: dict[str, tuple[float, float]] = {}
+    entries: list[tuple[str, dict]] = []
+    for s in stations.values():
+        key = s["name"].lower()
+        exact[key] = (s["lat"], s["lon"])
+        entries.append((key, s))
+    _station_name_exact   = exact
+    _station_name_entries = entries
+
+
 @lru_cache(maxsize=512)
 def get_station_by_name(name: str) -> tuple[float, float] | None:
     """
@@ -868,18 +960,18 @@ def get_station_by_name(name: str) -> tuple[float, float] | None:
     terminal names like 'Howard' or '95th/Dan Ryan' to coordinates.
     Returns None if no match found.
     """
-    _, stations = _build_graph()
+    if not _station_name_exact:
+        _build_station_name_index()
     name_lower = name.lower().strip()
-    # Exact match first
-    for s in stations.values():
-        if s["name"].lower() == name_lower:
-            return (s["lat"], s["lon"])
+    # O(1) exact match via pre-built index
+    coords = _station_name_exact.get(name_lower)
+    if coords:
+        return coords
     # Contains-match fallback — rank by similarity to avoid wrong-line matches
     # (e.g. "Harlem" matches both Harlem-Lake and Harlem-Forest Park)
     best_match = None
     best_ratio = 0.0
-    for s in stations.values():
-        s_lower = s["name"].lower()
+    for s_lower, s in _station_name_entries:
         if name_lower in s_lower or s_lower in name_lower:
             ratio = SequenceMatcher(None, name_lower, s_lower).ratio()
             if ratio > best_ratio:
@@ -920,18 +1012,9 @@ def clip_shape(
     if not shape_points:
         return [[board_lat, board_lon], [exit_lat, exit_lon]]
 
-    def _nearest_idx(lat: float, lon: float) -> int:
-        best_idx  = 0
-        best_dist = float("inf")
-        for i, (pt_lat, pt_lon) in enumerate(shape_points):
-            d = (pt_lat - lat) ** 2 + (pt_lon - lon) ** 2
-            if d < best_dist:
-                best_dist = d
-                best_idx  = i
-        return best_idx
-
-    board_idx = _nearest_idx(board_lat, board_lon)
-    exit_idx  = _nearest_idx(exit_lat,  exit_lon)
+    pts = np.array(shape_points)          # (N, 2) — rows are [lat, lon]
+    board_idx = int(np.argmin((pts[:, 0] - board_lat) ** 2 + (pts[:, 1] - board_lon) ** 2))
+    exit_idx  = int(np.argmin((pts[:, 0] - exit_lat)  ** 2 + (pts[:, 1] - exit_lon)  ** 2))
 
     lo = min(board_idx, exit_idx)
     hi = max(board_idx, exit_idx)
@@ -955,37 +1038,15 @@ def clip_shape(
 # ---------------------------------------------------------------------------
 
 def _load_bus_route_map() -> dict[str, str]:
-    """Returns {route_id: route_short_name} for all bus routes (route_type != 1)."""
-    mapping: dict[str, str] = {}
-    with open(GTFS_DIR / "routes.txt", encoding="utf-8-sig") as f:
-        for row in csv.DictReader(f):
-            if row.get("route_type", "").strip() == "1":
-                continue  # skip rail
-            rid   = row.get("route_id", "").strip()
-            short = row.get("route_short_name", "").strip() or rid
-            if rid:
-                mapping[rid] = short
-    return mapping
+    """Thin wrapper — returns bus route map from the shared _load_all_routes() cache."""
+    _, bus_map, _ = _load_all_routes()
+    return bus_map
 
 
 def _load_bus_stop_lookup() -> dict[str, dict]:
-    """Returns {stop_id: {name, lat, lon}} for all bus stops (IDs 0–29999)."""
-    stops: dict[str, dict] = {}
-    with open(GTFS_DIR / "stops.txt", encoding="utf-8-sig") as f:
-        for row in csv.DictReader(f):
-            try:
-                sid = int(row["stop_id"].strip())
-                lat = float(row["stop_lat"].strip())
-                lon = float(row["stop_lon"].strip())
-            except (ValueError, KeyError):
-                continue
-            if 0 <= sid <= 29999:
-                stops[str(sid)] = {
-                    "name": row.get("stop_name", "").strip(),
-                    "lat":  lat,
-                    "lon":  lon,
-                }
-    return stops
+    """Thin wrapper — returns bus stop lookup from the shared _load_all_stops() cache."""
+    _, _, bus_stops = _load_all_stops()
+    return bus_stops
 
 
 def _load_bus_candidate_trips(
@@ -1654,6 +1715,28 @@ def _build_stop_to_routes() -> None:
           f"across {len(index)} stops")
 
 
+def get_stop_sequence_position(stop_id: str, route_id: str) -> tuple[int, int]:
+    """
+    Return (position_0based, total_stops) for stop_id on route_id.
+
+    For trains (stop_id >= 40000): looks up _train_stop_pos, tries both
+    direction_ids and returns the first match.
+    For buses: looks up _stop_to_routes and resolves total from _bus_seq_cache.
+    Falls back to (1, 2) — the legacy no-op value — when the stop is unknown.
+    """
+    if stop_id.isdigit() and int(stop_id) >= 40000:
+        for did in ("0", "1"):
+            entry = _train_stop_pos.get((stop_id, route_id, did))
+            if entry:
+                return entry
+        return (1, 2)
+    for short_name, did, idx, _ in _stop_to_routes.get(stop_id, []):
+        if short_name == route_id:
+            total = len((_bus_seq_cache or {}).get((short_name, did), []))
+            if total > 0:
+                return (idx, total)
+    return (1, 2)
+
 
 # ---------------------------------------------------------------------------
 # Bus-to-bus transfer routing (Chunk 3 — Feature C)
@@ -1698,6 +1781,11 @@ def _select_transfer_candidates(
                 board_index.setdefault(sid, []).append((short_name, did, idx))
 
     candidate_map: dict[tuple, tuple] = {}
+
+    # Per-call cache for the innermost best-exit scan.
+    # Key: (route_B_key, t_idx) — dest coords are fixed for the whole call.
+    # Value: (best_exit_idx, best_exit_dist).
+    _exit_cache: dict[tuple, tuple[int, float]] = {}
 
     for arrival in bus_arrivals:
         stop_id   = arrival.get("stop_id", "")
@@ -1746,14 +1834,19 @@ def _select_transfer_candidates(
                         if seq_B is None:
                             continue
 
-                        best_exit_idx  = -1
-                        best_exit_dist = float("inf")
-                        for j in range(t_idx + 1, len(seq_B)):
-                            _, _, elat, elon, _ = seq_B[j]
-                            d = _haversine_miles(elat, elon, dest_lat, dest_lon)
-                            if d < best_exit_dist:
-                                best_exit_dist = d
-                                best_exit_idx  = j
+                        exit_cache_key = ((short_B, did_B), t_idx)
+                        if exit_cache_key in _exit_cache:
+                            best_exit_idx, best_exit_dist = _exit_cache[exit_cache_key]
+                        else:
+                            best_exit_idx  = -1
+                            best_exit_dist = float("inf")
+                            for j in range(t_idx + 1, len(seq_B)):
+                                _, _, elat, elon, _ = seq_B[j]
+                                d = _haversine_miles(elat, elon, dest_lat, dest_lon)
+                                if d < best_exit_dist:
+                                    best_exit_dist = d
+                                    best_exit_idx  = j
+                            _exit_cache[exit_cache_key] = (best_exit_idx, best_exit_dist)
 
                         if best_exit_idx < 0 or best_exit_dist > _MAX_EXIT_DIST:
                             continue

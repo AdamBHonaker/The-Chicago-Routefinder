@@ -46,6 +46,59 @@ A log of features that have been designed and fully implemented. Entries are mov
 28. Feature Crowdedness — CTA Vehicle Crowdedness Estimation — **Bolt-On**
 29. Feature Service Alerts — CTA Service Alerts Feed — **Bolt-On**
 30. Feature K — Restore Street-Network Walking Graph in Production — **Bolt-On**
+31. Feature Heritage — Editorial Almanac Redesign — **Bolt-On**
+
+---
+
+# Feature Heritage — Editorial Almanac Redesign
+
+**Completed: 2026-04-28**
+
+**Overview:** Replaced the app's original dark-themed, utility-first UI with "The Chicago Routefinder" editorial almanac design system — an 11-step CSS and JSX redesign covering every surface. The new visual language uses cream paper, charcoal ink, rust accents, Fraunces italic serif headlines, Inter sans body, and hairline rules throughout. No routing logic, hooks, or API contracts were touched — all changes are presentational.
+
+**What was implemented (11 steps):**
+
+- **Step 1 — Tokens + fonts:** Added `:root` design tokens to `App.css` (paper/ink/rust/navy/field/lake/river, type scale, spacing, motion). Added Google Fonts to `index.html`: Fraunces, Inter, JetBrains Mono.
+
+- **Step 2 — Header masthead:** Restyled `.header` to a newspaper masthead with folio date/vol line, thick rule, two-weight serif title, and tagline. Controls restyled as `btn-ghost-icon` (hairline border, no radius). Language + transit mode selects use `.masthead-select`.
+
+- **Step 3 — Tab bar:** Fixed bottom 4-tab bar (Home / Map / Alerts / Saved) on mobile ≤ 800px. `data-active-tab` on `.app` drives CSS panel visibility. Tab labels: serif italic inactive, roman + rust underline active.
+
+- **Step 4 — Form + LocationInput:** `.form` → cream-paper panel with `var(--rule)` border, no rounded corners. Inputs: serif 19/600, transparent background, `var(--dashed)` between-field divider. Submit button → full-width ink primary serif italic. LocationInput suggestions: `var(--paper-bright)`, no radius, `var(--rust)` highlight.
+
+- **Step 5 — RouteCard:** Drop-cap minutes: 72px Fraunces italic (capped 56px at ≤ 359px). `★ Recommended Path` kicker in rust Inter 800 caps. Hairline between cards, no shadow. Selected: 2px `var(--rust)` border-inline-start. Legs: hairline list, 7×7 square markers, `LinePill size="sm"`, serif walk text. Trip footer: `var(--rule-thick)` top, primary "Commence Journey ⟶" / secondary stop. Off-route banner → `.special-dispatch--delay`.
+
+- **Step 6 — Pinned Stops + Service Alerts + Weather:** `PinnedStopsBoard.jsx`: editorial paper bg, caps header + signal lamp + refresh `↺`, mono ETA. `ServiceAlertsBar.jsx`: collapse toggle removed; each alert is a `.special-dispatch` block (Major→delay/rust, Minor→notice/navy, Planned→minor/mute). `WeatherStrip.jsx`: paper bg, hairline borders, mono temp + serif italic condition. Added `@keyframes flicker` signal lamp with `prefers-reduced-motion` fallback.
+
+- **Step 7 — Settings + Saved Routes panels:** `SettingsPanel.jsx`: full-screen modal via `position: fixed; inset: 0; z-index: 500`; cream backdrop click-to-close; "⟡ Preferences ⟡" caps header; native checkbox styled via hidden input + sibling span; walk-speed chips border active fills ink; BYOK underline-only input. `SavedRoutesPanel.jsx`: inline editorial panel; caps "SAVED VOYAGES"; serif label + italic ghost "go →" + ghost delete `×`. Dead CSS removed.
+
+- **Step 8 — Live Trip footer + radar-pulse active leg:** Added `@keyframes radar-pulse` (box-shadow glow, 2s ease-out infinite). `.leg-active::after` pseudo-element: 6×6 rust dot centered on the 2px left border, pulsing outward. `.leg-active .leg-text`: ink color, weight 600. `.leg-complete .leg-text`: line-through italic. `on-vehicle-btn` padding bumped to `8px 14px`. `prefers-reduced-motion: reduce` suppresses radar-pulse.
+
+- **Step 9 — Loading skeleton + map overlays:** `LoadingSkeleton.jsx`: replaced shimmer bars with "Plotting…" (22px Fraunces italic) + `.plot-rule` animated hairline + 3 ghost lines. `.transit-photo-caption`: replaced dark hexes with editorial tokens + `::before` "Fig. —" caps prefix. `.map-unlock-btn`: restyled to cream/ink/hairline/serif-italic. `MapView.jsx`: imported `BUS_DIRECTION_COLORS` + `LinePill`; added bottom-left `.map-legend` (distinct transit line pills) and top-right `.map-train-card` (kicker "Underway" + LinePill + from→to, shown when `tripActive`).
+
+- **Step 10 — RTL pass:** `text-align: left` → `text-align: start` on `.route-card-header`. `margin-left: auto` → `margin-inline-start: auto` on `.pin-btn`. Added `@media (prefers-contrast: more)` block: `--hairline` → `2px solid var(--ink)`, `--dashed` → `1px dashed var(--ink)`, `--mute-fog` → `var(--mute)` — propagates to all hairline borders app-wide automatically.
+
+- **Step 11 — Cleanup:** Replaced all remaining dark-theme hex values with editorial tokens in: `.error-boundary`, `.panel-map`, `.error`, `.data-warning`, `.map-error`, `.map-unlock-btn:hover`. MapLibre GL paint properties (`"circle-color"`, `"line-color"` etc.) correctly exempted — must be hex literals for GL style engine. Locale audit: all 57 `t()` keys present in EN file; 22 locale files confirmed; no regressions.
+
+**Files changed:**
+- `frontend/src/App.css` — Complete redesign; ~2200+ lines; all dark-theme hex removed; design tokens + all step CSS added
+- `frontend/src/App.jsx` — Tab bar wiring (`data-active-tab`), `on-vehicle-btn` markup, `handleReroute` integration
+- `frontend/index.html` — Google Fonts (Fraunces, Inter, JetBrains Mono) added
+- `frontend/src/components/LoadingSkeleton.jsx` — Full rewrite (plot-rule skeleton)
+- `frontend/src/components/PinnedStopsBoard.jsx` — Editorial reskin
+- `frontend/src/components/ServiceAlertsBar.jsx` — Collapse toggle removed; `.special-dispatch` blocks
+- `frontend/src/components/WeatherStrip.jsx` — Editorial reskin
+- `frontend/src/components/SettingsPanel.jsx` — Full modal reskin
+- `frontend/src/components/SavedRoutesPanel.jsx` — Editorial reskin
+- `frontend/src/MapView.jsx` — `BUS_DIRECTION_COLORS` + `LinePill` imports; `.map-legend` + `.map-train-card` overlays
+
+**Key design decisions:**
+- `SettingsPanel` uses `position: fixed; inset: 0; z-index: 500` — works even though it renders inside `panel-cards` (overflow-y: auto does NOT create a containing block for fixed-position children)
+- `ServiceAlertsBar` no longer has a collapse toggle — each alert renders directly as `.special-dispatch` block
+- Signal lamp uses CSS `@keyframes flicker` + `prefers-reduced-motion: reduce` disables it
+- Radar-pulse dot uses `inset-inline-start: -4px` to center a 6px dot on the 2px left border
+- `prefers-contrast: more` overrides CSS custom properties at `:root` so every `var(--hairline)` thickens automatically without touching individual rules
+- MapLibre GL paint hex values (`#4a9eff`, `#ffffff` etc.) are exempt from dark-hex removal — GL style engine cannot use CSS variables
 
 ---
 

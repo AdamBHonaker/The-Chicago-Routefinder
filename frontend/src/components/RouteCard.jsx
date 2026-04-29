@@ -1,6 +1,7 @@
 import { useState, memo, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { LINE_COLORS, BUS_DIRECTION_COLORS, getRouteColor } from "../constants.js";
+import LinePill from "./LinePill.jsx";
 
 function formatBlocks(b, blockType, t) {
   if (!blockType) return b === 1 ? `1 ${t("block_singular")}` : `${b} ${t("block_plural")}`;
@@ -76,8 +77,9 @@ function WalkLegItem({ leg, index, completedSteps, extraClass = "" }) {
 
 function RouteLegs({ legs, activeLegIndex, completedSteps, pinnedStops, onPinToggle, activeAlertRoutes }) {
   const { t } = useTranslation();
+  // Key by `${type}:${stop_id}` so bus stop_ids and train mapids never alias.
   const pinnedIds = useMemo(
-    () => new Set(pinnedStops?.map((s) => s.stop_id) ?? []),
+    () => new Set(pinnedStops?.map((s) => `${s.type}:${s.stop_id}`) ?? []),
     [pinnedStops]
   );
   let seenTransit = false;
@@ -113,17 +115,15 @@ function RouteLegs({ legs, activeLegIndex, completedSteps, pinnedStops, onPinTog
             : null;
 
         const stopId    = leg.from_mapid;
-        const isPinned  = stopId && pinnedIds.has(stopId);
         const stopType  = isBus ? "bus" : "train";
+        const isPinned  = !!stopId && pinnedIds.has(`${stopType}:${stopId}`);
         const hasAlert  = activeAlertRoutes?.has(pillLabel);
 
         return (
           <li key={i} className={`leg leg-transit${legClass}`}>
             {isDone && <span className="leg-complete-check">✓</span>}
             {xferNote && <span className="transfer-wait-note">{xferNote}</span>}
-            <span className="leg-pill" style={{ background: color }}>
-              {pillLabel}
-            </span>
+            <LinePill line={leg.line} isBus={isBus} lineCode={leg.line_code} size="sm" />
             {hasAlert && <span className="leg-alert-badge" title="Service alert active">⚠</span>}
             <span className="leg-text">
               {leg.from} → {leg.to}
@@ -175,19 +175,38 @@ export default memo(function RouteCard({
       ? t("label_1_transfer")
       : t("label_n_transfers", { count: transfers });
 
+  const transitLines = useMemo(() => {
+    const seen = new Set();
+    return route.legs
+      .filter(l => l.type === "transit")
+      .filter(l => { if (seen.has(l.line)) return false; seen.add(l.line); return true; })
+      .map(l => ({ line: l.line, isBus: l.line in BUS_DIRECTION_COLORS, lineCode: l.line_code }));
+  }, [route.legs]);
+
   return (
     <div className={`route-card${isFirst ? " route-card--best" : ""}${isSelected ? " route-card--selected" : ""}`}>
       <button
         className="route-card-header"
         onClick={() => { onSelect(); setExpanded((v) => !v); }}
         aria-expanded={expanded}
+        aria-label={`${route.total_minutes} minutes total, ${xferNote}${waitNote}`}
       >
-        <div className="route-card-summary">
-          {isFirst && <span className="route-badge">{t("badge_best")}</span>}
-          <span className="route-total">{t("label_min_total", { minutes: route.total_minutes })}</span>
-          <span className="route-meta">{xferNote}{waitNote}</span>
+        <div className="route-card-left">
+          <span className="route-minutes" aria-hidden="true">{route.total_minutes}</span>
         </div>
-        <span className="route-chevron">{expanded ? "▲" : "▼"}</span>
+        <div className="route-card-right">
+          {isFirst && <span className="route-badge">★ {t("badge_best")}</span>}
+          <span className="route-minutes-label" aria-hidden="true">MIN TOTAL</span>
+          <span className="route-meta">{xferNote}{waitNote}</span>
+          {transitLines.length > 0 && (
+            <div className="route-pills-row" aria-hidden="true">
+              {transitLines.map((tl, i) => (
+                <LinePill key={i} line={tl.line} isBus={tl.isBus} lineCode={tl.lineCode} size="sm" />
+              ))}
+            </div>
+          )}
+        </div>
+        <span className="route-chevron" aria-hidden="true">{expanded ? "▿" : "▵"}</span>
       </button>
       {expanded && (
         <RouteLegs
@@ -228,7 +247,7 @@ export default memo(function RouteCard({
                 type="button"
                 className="geo-denied-dismiss"
                 onClick={onDismissTripGeoError}
-                aria-label="Dismiss"
+                aria-label={t("aria_dismiss")}
               >×</button>
             </div>
           )}

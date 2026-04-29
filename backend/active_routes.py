@@ -31,6 +31,7 @@ _ENV_PATH = Path(__file__).parent / ".env"
 load_dotenv(_ENV_PATH)
 
 CHICAGO_TZ = ZoneInfo("America/Chicago")
+_IS_TTY = sys.stdout.isatty()
 
 # CTA Train line codes → human-readable names
 TRAIN_LINES: dict[str, str] = {
@@ -175,7 +176,7 @@ def _color_block(hex_color: str) -> str:
     Return a small terminal color swatch using ANSI 24-bit color if the
     terminal supports it, otherwise return an empty string.
     """
-    if not sys.stdout.isatty():
+    if not _IS_TTY:
         return ""
     try:
         # Strip leading '#' and parse RGB
@@ -228,8 +229,12 @@ def _route_sort_key(rt: str) -> tuple:
     if rt.isdigit():
         return (0, int(rt), "")
     # Routes like "J14" or "X9"
-    digits = "".join(c for c in rt if c.isdigit())
-    letters = "".join(c for c in rt if not c.isdigit())
+    digits: list[str] = []
+    letters: list[str] = []
+    for c in rt:
+        (digits if c.isdigit() else letters).append(c)
+    digits = "".join(digits)
+    letters = "".join(letters)
     if digits:
         return (1, int(digits), letters)
     return (2, 0, rt)
@@ -252,14 +257,14 @@ async def main() -> None:
         print(f"Error: missing API key(s) in {_ENV_PATH}: {', '.join(missing)}")
         sys.exit(1)
 
-    gtfs_routes = _load_gtfs_routes()
     now = datetime.now(CHICAGO_TZ)
     print(f"\nCTA Active Routes — {now.strftime('%A, %B %d %Y  %I:%M %p %Z')}\n")
 
     async with aiohttp.ClientSession() as session:
-        bus_routes, train_lines = await asyncio.gather(
+        bus_routes, train_lines, gtfs_routes = await asyncio.gather(
             get_active_bus_routes(session, bus_key),
             get_active_train_lines(session, train_key),
+            asyncio.to_thread(_load_gtfs_routes),
         )
 
     _print_train_section(train_lines)

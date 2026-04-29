@@ -16,11 +16,11 @@ CHICAGO_TZ is defined locally to avoid coupling this module to cta_client.py.
 
 import logging
 import math
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Set
 
-from pydantic import BaseModel
 from utils import CHICAGO_TZ
 
 # ---------------------------------------------------------------------------
@@ -113,7 +113,7 @@ _TIME_PERIOD_CONFIG: dict[DayType, list[tuple[int, int, TimePeriod]]] = {
 def classify_time_period(
     dt: datetime,
     holidays: Set[str] | None = None,
-) -> tuple[TimePeriod, DayType]:
+) -> tuple[TimePeriod, DayType, int]:
     """
     Classify a datetime into (TimePeriod, DayType).
 
@@ -129,7 +129,7 @@ def classify_time_period(
     else:
         local = dt.replace(tzinfo=CHICAGO_TZ)
 
-    date_str = local.strftime("%Y-%m-%d")
+    date_str = f"{local.year}-{local.month:02d}-{local.day:02d}"
 
     if date_str in holidays:
         day_type = DayType.HOLIDAY
@@ -144,20 +144,21 @@ def classify_time_period(
 
     for start, end, period in _TIME_PERIOD_CONFIG[config_key]:
         if start <= mins < end:
-            return period, day_type
+            return period, day_type, local.hour
 
-    return TimePeriod.OFF_PEAK, day_type
+    return TimePeriod.OFF_PEAK, day_type, local.hour
 
 
 # ---------------------------------------------------------------------------
 # Crowdedness model
 # ---------------------------------------------------------------------------
 
-class CrowdednessEstimate(BaseModel):
+@dataclass
+class CrowdednessEstimate:
     score:      float            # 0.0 (empty) – 1.0 (standing room only)
     level:      CrowdednessLevel
     confidence: str              # "high" | "medium" | "low"
-    factors:    dict             # explainability dict
+    factors:    dict | None = None  # explainability dict; None when include_factors=False
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +255,7 @@ def estimate_crowdedness(
     day_type: DayType,
     current_hour: int,
     live_psgld: str = "",
+    include_factors: bool = True,
 ) -> CrowdednessEstimate:
     """
     Estimate crowdedness for a single transit leg.
@@ -282,7 +284,7 @@ def estimate_crowdedness(
             score=score,
             level=level,
             confidence="high",
-            factors={"source": "live_psgld", "psgld": live_psgld},
+            factors={"source": "live_psgld", "psgld": live_psgld} if include_factors else None,
         )
 
     # --- Heuristic path ---
@@ -290,18 +292,19 @@ def estimate_crowdedness(
     dir_mult   = _direction_multiplier(direction, time_period, current_hour)
     pos_factor = _stop_position_factor(stop_sequence_position, total_stops)
 
-    is_train = stop_id.isdigit() and int(stop_id) >= 40000
+    try:
+        is_train = int(stop_id) >= 40000
+    except ValueError:
+        is_train = False
     ht_mult  = HIGH_TRAFFIC_TRAIN_STATIONS.get(stop_id, 1.0) if is_train else 1.0
 
     score = max(0.0, min(1.0, base * dir_mult * pos_factor * ht_mult))
     confidence = "medium" if time_period == TimePeriod.PEAK else "low"
     level = _score_to_level(score)
 
-    return CrowdednessEstimate(
-        score=round(score, 3),
-        level=level,
-        confidence=confidence,
-        factors={
+    factors_dict = None
+    if include_factors:
+        factors_dict = {
             "source":      "heuristic",
             "base_score":  base,
             "direction":   direction,
@@ -310,5 +313,11 @@ def estimate_crowdedness(
             "ht_mult":     ht_mult,
             "time_period": time_period.value,
             "day_type":    day_type.value,
-        },
+        }
+
+    return CrowdednessEstimate(
+        score=round(score, 3),
+        level=level,
+        confidence=confidence,
+        factors=factors_dict,
     )

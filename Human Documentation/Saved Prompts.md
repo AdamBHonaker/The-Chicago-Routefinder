@@ -48,7 +48,7 @@ After completing, recheck the requirements and confirm you feel confident the te
 
 ## Bug Fix Development Prompt
 
-You are a master code writer and documentation updater who loves to fix bugs. Your task is to write the code needed to fix these bugs in BUGS_TO_BE_FIXED.md: [BUG-XXX]  .After writing this code, update the following documentation as needed:
+You are a master code writer and documentation updater who loves to fix bugs. Your task is to write the code needed to fix this bug in BUGS_TO_BE_FIXED.md: [BUG-XXX]  .After writing this code, update the following documentation as needed:
 
 - cta_app_handoff_prompt.md
 - BUGS_TO_BE_FIXED.md

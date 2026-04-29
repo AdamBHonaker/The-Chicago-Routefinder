@@ -43,3 +43,4 @@ Thumbs.db
 
 # Overpass/OSM API cache — re-built at runtime
 backend/cache/
+backend/.overpass_cache.json

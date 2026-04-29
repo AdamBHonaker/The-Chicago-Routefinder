@@ -16,6 +16,154 @@ Severity / Priority / Impact: 🔴 High · 🟡 Medium · 🟢 Low.
 
 ---
 
+# 2026-04-28 BUG-016 · Pinned-stop type collision in favorites — FIXED
+
+## 🟡 Bus stop_ids and train mapids dedupe by id only, silently rejecting the second pin — FIXED
+
+**File:** `frontend/src/favorites.js` (`pinStop`), `frontend/src/hooks/useFavorites.js` (`handlePinToggle`)
+
+**What was happening:** `pinStop` rejected duplicates with `current.some((s) => s.stop_id === stop_id)`, ignoring `type`. CTA bus stop IDs and train mapids share no namespace, so a numeric collision was plausible — pinning a train station whose mapid matched an already-pinned bus stop's stop_id silently no-opped. `handlePinToggle.find((s) => s.stop_id === stopId)` had the symmetric flaw on the unpin path: it could return a wrong-type stop and unpin it.
+
+**Fixed by:** Match on both `type` and `stop_id` everywhere pinned stops are looked up. Updated `pinStop` to use `s.type === type && s.stop_id === stop_id` and `handlePinToggle` likewise.
+
+---
+
+# 2026-04-28 BUG-017 · Render-time crash when `/alerts` returns alert without `routes` — FIXED
+
+## 🔴 `flatMap((a) => a.routes)` threw `TypeError`, dropping the whole app into the ErrorBoundary — FIXED
+
+**File:** `frontend/src/App.jsx` (`activeAlertRoutes` useMemo), `frontend/src/components/ServiceAlertsBar.jsx`
+
+**What was happening:** `serviceAlerts.flatMap((a) => a.routes).map((r) => r.replace(" Line", ""))` returned `[undefined]` if any alert lacked a `routes` array, then `.replace` on undefined threw and crashed render. `ServiceAlertsBar` had the same problem with `alert.routes.length > 0`.
+
+**Fixed by:** Defensive defaults — `(a.routes ?? [])` in the App.jsx flatMap and `(alert.routes?.length ?? 0) > 0` in ServiceAlertsBar.
+
+---
+
+# 2026-04-28 BUG-018 · Pinned-stop arrivals lookup keyed inconsistently with backend — FIXED
+
+## 🟡 Frontend looked up arrivals by `stop_id` while backend keyed responses by `stop_id`; bus/train collision could cross-contaminate the same key — FIXED
+
+**File:** `backend/main.py` (`/stop-arrivals` response shape), `backend/tests/test_endpoints.py`, `frontend/src/components/PinnedStopsBoard.jsx`
+
+**What was happening:** The backend keyed each entry of `arrivals` by raw `stop_id` (train `mapid` or bus `stop_id`). Two pinned stops with the same numeric id but different types would have their arrivals merged under the same dict entry, and the frontend would render whichever stop's arrivals it picked.
+
+**Fixed by:** Switched the `/stop-arrivals` response to typed keys (`"train:40900"`, `"bus:1234"`) and updated `PinnedStopsBoard` to read `arrivals[`${stop.type}:${stop.stop_id}`]`. Updated the integration test to assert on the new key. Docstring on the endpoint updated to reflect the typed key shape.
+
+---
+
+# 2026-04-28 BUG-019 · RouteCard pinned indicator used untyped stop_id — FIXED
+
+## 🟢 Train mapids could match unrelated bus stop_ids in `pinnedIds` Set, falsely toggling the pin badge — FIXED
+
+**File:** `frontend/src/components/RouteCard.jsx`
+
+**What was happening:** `pinnedIds = new Set(pinnedStops.map(s => s.stop_id))` followed by `pinnedIds.has(leg.from_mapid)` ignored `type`, so a train leg could test as pinned when only a same-id bus stop was actually pinned (or vice versa).
+
+**Fixed by:** Key the Set by `${s.type}:${s.stop_id}` and look up via `${stopType}:${stopId}`, matching the typed-key model used elsewhere after BUG-016/018.
+
+---
+
+# 2026-04-28 BUG-020 · BYOK idle-clear ignored touch input — FIXED
+
+## 🟢 30-minute idle timer wiped the API key mid-session for touch-only users — FIXED
+
+**File:** `frontend/src/App.jsx` (BYOK idle-clear effect)
+
+**What was happening:** The idle-reset listener only handled `mousemove` and `keydown`. On a phone or PWA tap-only session, neither event fires, so the key was wiped after 30 min despite the user actively interacting with the app.
+
+**Fixed by:** Added `pointerdown` and `touchstart` listeners (plus the existing mouse/keyboard ones) and registered them with `{ passive: true }` to avoid scroll-jank. Cleanup symmetric.
+
+---
+
+# 2026-04-28 BUG-021 · WeatherStrip rendered "NaN°" when temperature was missing — FIXED
+
+## 🟢 Math.round on undefined produced NaN in the hero temp display — FIXED
+
+**File:** `frontend/src/components/WeatherStrip.jsx`
+
+**What was happening:** `Math.round(temperature_f)` returned `NaN` for partial weather payloads (forecast/alerts present, temperature absent), surfacing "NaN°" to the user.
+
+**Fixed by:** Guard the temp span with `Number.isFinite(temperature_f)`; the rest of the strip still renders so users get the forecast and any alert text.
+
+---
+
+# 2026-04-28 BUG-022 · Walk-step completion silently failed when `start_lon` was missing — FIXED
+
+## 🟢 `haversineMeters` got `lng: undefined`, returned NaN, comparison never tripped — FIXED
+
+**File:** `frontend/src/App.jsx` (`processTripPosition`)
+
+**What was happening:** Step-completion guard checked `step.start_lat !== undefined` but read `step.start_lon` unguarded. A backend payload with lat but no lon would compute NaN distance forever — the step never got marked complete.
+
+**Fixed by:** Tightened the guard to require both `start_lat` and `start_lon` to be defined before the haversine call.
+
+---
+
+# 2026-04-28 BUG-023 · SettingsPanel input showed stale BYOK key after idle-clear — FIXED
+
+## 🟢 `useState(apiKey)` snapshotted only on mount; an idle-clear left the old key visible and re-saveable — FIXED
+
+**File:** `frontend/src/components/SettingsPanel.jsx`
+
+**What was happening:** When the BYOK idle timer cleared `byokKey` while the settings sheet was open, the local `draft` state still held the old value. The user could click Save and reinstall the cleared key.
+
+**Fixed by:** Added `useEffect(() => setDraft(apiKey), [apiKey])` so external clears propagate to the input immediately.
+
+---
+
+# 2026-04-28 BUG-024 · LinePill could TypeError on undefined line — FIXED
+
+## 🟢 Optional chain only covered `replace`; `.slice` on undefined threw — FIXED
+
+**File:** `frontend/src/components/LinePill.jsx`
+
+**What was happening:** `LINE_ABBREVS[line] ?? line?.replace(" Line", "").slice(0, 2).toUpperCase()` — when `line` was undefined and not in `LINE_ABBREVS`, the optional chain yielded `undefined` and the unguarded `.slice(0, 2)` threw. Latent crash; rare in practice but a real foot-gun.
+
+**Fixed by:** `(line ?? "").replace(" Line", "").slice(0, 2).toUpperCase()` — empty-string fallback so the chain stays safe.
+
+---
+
+# 2026-04-28 BUG-025 · Unhandled promise rejection from `/ping` mount fetch — FIXED
+
+## 🟢 Network failure produced an unhandled rejection visible to error trackers — FIXED
+
+**File:** `frontend/src/App.jsx`
+
+**What was happening:** The DAU-counting ping was documented as "silent on failure" but the code had no `.catch`. Offline users surfaced an unhandled rejection in DevTools and to Sentry-style trackers.
+
+**Fixed by:** Added `.catch(() => {})` so the rejection is actually swallowed.
+
+---
+
+# 2026-04-28 BUG-009 · Crowdedness stop-position factor was always 1.0 — FIXED
+
+## 🟢 Bell-curve stop-position adjustment re-enabled for all transit legs — FIXED
+
+**File:** `backend/transit_graph.py` (new cache + lookup function), `backend/main.py` lines 1203–1215
+
+**What was happening:** `_crowdedness_for_routes()` called `estimate_crowdedness()` with hardcoded `stop_sequence_position=1, total_stops=2` for every leg. The bell-curve formula `0.6 + 0.4 * sin(position/total * π)` always evaluated to `sin(π/2) = 1.0`, so the position factor was permanently maxed out and the lighter-crowding-at-terminals / heavier-in-the-middle adjustment was dead code for every route displayed to users.
+
+**Fixed by:**
+1. Added module-level `_train_stop_pos: dict[tuple[str, str, str], tuple[int, int]]` to `transit_graph.py`, keyed by `(parent_mapid, route_id, direction_id)` → `(position_0based, total_stops)`.
+2. Populated `_train_stop_pos` in `_build_graph()` by iterating the already-built `stop_seqs` dict — zero extra I/O, runs once at startup.
+3. Added public `get_stop_sequence_position(stop_id, route_id) -> (position, total)` that resolves train stops via `_train_stop_pos` and bus stops via the existing `_stop_to_routes` / `_bus_seq_cache` indexes. Falls back to `(1, 2)` (the previous no-op value) for unknown stops.
+4. Updated `_crowdedness_for_routes()` in `main.py` to call `get_stop_sequence_position` and pass the real position to `estimate_crowdedness()`. Terminal stops now correctly receive a lower crowdedness factor (~0.6×) and mid-route stops receive the full 1.0× factor.
+
+---
+
+# 2026-04-28 BUG-008b · `get_counts()` returned stale DAU data by reading from disk — FIXED
+
+## 🟡 In-flight unique visitors omitted from `/admin/dau` response until next batch flush — FIXED
+
+**File:** `backend/dau.py` lines 142–144
+
+**What was happening:** `get_counts()` called `_load()`, which reads `dau.json` from disk. Because `record_visit()` batch-writes to disk only every 20 unique visitors or 30 seconds (whichever comes first), any visits accumulated since the last flush were invisible to `/admin/dau`. The in-memory `_counts_cache` dict and today's in-flight count (`_base_count + len(_seen_hashes)`) are authoritative; the disk file is a lagging snapshot.
+
+**Fixed by:** Rewrote `get_counts()` to acquire `_lock` and return a snapshot of `_counts_cache`. When `_current_day` matches today's Chicago date, today's entry is explicitly overridden with `_base_count + len(_seen_hashes)` to capture all in-flight visits. This eliminates the disk read entirely and prevents a data race between the read and any concurrent `record_visit()` call.
+
+---
+
 # 2026-04-28 BUG-008 · `is_major` threshold was 7 instead of 70 in route alerts — FIXED
 
 ## 🔴 Off-by-10× severity threshold caused nearly all alerts to be flagged as major — FIXED
@@ -109,6 +257,18 @@ Severity / Priority / Impact: 🔴 High · 🟡 Medium · 🟢 Low.
 **What was happening:** The `useEffect` fetching `/alerts` on mount had no AbortController. In React 18 StrictMode (dev), effects are double-invoked; the first mount's in-flight fetch completed after cleanup and called `setServiceAlerts` on an already-unmounted instance, producing a dev-mode warning.
 
 **Fixed by:** Added `const ctrl = new AbortController()`, passed `{ signal: ctrl.signal }` to `fetch`, and returned `() => ctrl.abort()` as the cleanup function.
+
+---
+
+# 2026-04-28 BUG-011b · Last-departure tracking compared arrival time but stored departure string — FIXED
+
+## 🟢 `last_dep` accumulator used `arr_min` for comparison, so latest arrival ≠ latest departure — FIXED
+
+**File:** `backend/transit_graph.py` lines 376–382 (`_stream_all_stop_sequences`)
+
+**What was happening:** The `last_dep` dict tracks the final scheduled departure per `(parent_mapid, direction_id)` to power the "last train" countdown. The accumulator compared `arr_min` (arrival minutes) to find the "latest" row, but stored `dep_str` (the departure time string). For intermediate stops, departure is always ≥ arrival, so the row with the largest `arr_min` is not necessarily the row with the largest `dep_min`. On lines with close last-run spacing (Yellow Line, Purple Express), a trip with a slightly higher arrival time could displace the trip with the true latest departure, making the last-train countdown off by a few minutes.
+
+**Fixed by:** Parsed `dep_str` into `dep_min` via `_parse_gtfs_time(dep_str)` and changed the accumulator comparison to `dep_min > prev[0]`, storing `(dep_min, dep_str)`. The comparison and stored key now refer to the same quantity (departure time).
 
 ---
 
@@ -1661,6 +1821,8 @@ useEffect(() => {
 
 # Technical Debt Paid Off
 
+> **Note on TD numbering:** TD numbers are session-scoped — each scan session assigned numbers starting from a low value, so the same number (e.g. TD-011) may appear in multiple sessions with different meanings. Use the resolution date and description to uniquely identify an entry; do not rely on the number alone across sessions.
+
 ---
 
 ## 2026-04-27 · TD-033 through TD-037 — Frontend component decomposition and code deduplication
@@ -2343,6 +2505,190 @@ Run the suite from `backend/` with: `python -m pytest tests/ -v`
 
 ---
 
+# 2026-04-28 OPT-024 through OPT-028 · Five efficiency improvements to `fetch_station_exits.py` — IMPLEMENTED
+
+**File changed:** `backend/fetch_station_exits.py`
+
+## OPT-024 · Skip full M×N arcsin computation using monotonic argmin shortcut
+
+`arcsin`, `sqrt`, and multiply-by-positive-constant are all monotonically increasing, so `argmin` and `min` on the raw haversine intermediate `a` produce the same nearest-station result as operating on the full `dist` matrix. The M×N arcsin/sqrt/multiply pass is now skipped entirely; only the M winning values (one per entrance) are converted to miles for the threshold test. Replaces ~39 K arcsin calls with ~260.
+
+## OPT-025 · Replace fancy-index gather with `a.min(axis=1)`
+
+`dist[np.arange(len(valid)), best_idx]` allocated a temporary arange array solely to gather per-row minimum values. Replaced with `a.min(axis=1)`, which is semantically equivalent (the minimum value of a row is the value at that row's argmin index) and avoids the allocation. This naturally follows from OPT-024 since the operation now runs on `a` rather than `dist`.
+
+## OPT-026 · Convert `best_idx` to a Python list before the assignment loop
+
+`int(best_idx[i])` inside the for-loop incurred numpy scalar boxing overhead on every iteration. A single `.tolist()` call before the loop converts the entire array to Python ints upfront, eliminating the per-iteration cast.
+
+## OPT-027 · Cache raw Overpass API response to disk
+
+The raw JSON response from the Overpass API is now written to `backend/.overpass_cache.json` after the first successful fetch. Subsequent runs load from the cache and skip the network request and polite sleep entirely, making re-runs during development (e.g. tuning `MAX_ASSIGN_MILES` or matching logic) instantaneous. The file is `.gitignore`d. Delete it to force a fresh OSM query.
+
+## OPT-028 · Free M×N intermediate arrays after use
+
+`del dlat, dlon` is called immediately after `a` is computed, and `del a` and `del best_a` are called as soon as each is no longer needed. This reduces peak memory by releasing the largest intermediate arrays before new ones are allocated.
+
+---
+
+# 2026-04-28 OPT-018 through OPT-023 · Six efficiency improvements to `fetch_gtfs.py` — IMPLEMENTED
+
+**File changed:** `backend/fetch_gtfs.py`
+
+## OPT-018 · Eliminated redundant HEAD request
+
+Removed the separate `HEAD` request that was made solely to read `Content-Length` for the progress message. The `Content-Length` header is available on the `GET` response itself; it is now read there instead, eliminating a full round-trip before every download.
+
+## OPT-019 · Increased download chunk size from 64 KB to 1 MB
+
+Raised `chunk_size` from `64 * 1024` (64 KB) to `1024 * 1024` (1 MB). For a multi-megabyte GTFS zip, this cuts loop iterations by 16× with no change to the downloaded bytes or progress reporting.
+
+## OPT-020 · Removed `shutil.rmtree` before re-download (in-place overwrite)
+
+Removed the `shutil.rmtree(GTFS_DIR)` calls that preceded every re-download. Extraction now overwrites the existing files in place. This is safe in combination with OPT-021 (selective extraction), which ensures exactly the 8 expected files are written and no stale extras accumulate. The `shutil` import was also removed as it was no longer needed.
+
+## OPT-021 · Selective extraction of only EXPECTED_FILES
+
+Replaced `zf.extractall(GTFS_DIR)` with an explicit loop over `EXPECTED_FILES` that calls `zf.extract(filename, GTFS_DIR)` for each file present in the zip. The backend only reads the 8 files in `EXPECTED_FILES` (confirmed by audit), so extracting extras was pure wasted I/O.
+
+## OPT-022 · Batched `stat()` calls in `validate_and_report` via `os.scandir`
+
+Replaced the per-file `path.stat()` calls inside the validation loop with a single `os.scandir(GTFS_DIR)` pass that collects all `DirEntry.stat()` results into a dict upfront. All 8 membership and size checks then operate against the in-memory dict.
+
+## OPT-023 · Replaced `glob("*.txt")` sentinel check with single file existence test
+
+Replaced `any(GTFS_DIR.glob("*.txt"))` — which triggers a full directory scan — with `(GTFS_DIR / "stops.txt").exists()`. `stops.txt` is the most critical GTFS file and is always present in a complete download, making it a reliable sentinel.
+
+---
+
+# 2026-04-28 OPT-013 through OPT-016 · Four efficiency improvements to `dau.py` — IMPLEMENTED
+
+**File changed:** `backend/dau.py`
+
+## OPT-013 · Cached daily HMAC key
+
+Added module-level `_today_hmac_key: bytes = b""`. Previously `(_DAILY_SALT + today).encode()` was string-concatenated and encoded on every unique visit. The key now recomputes once per day inside the day-rollover block alongside `_current_day`, eliminating per-visit allocation and encoding.
+
+## OPT-014 · `digest()` instead of `hexdigest()` for `_seen_hashes`
+
+`_seen_hashes` previously stored 64-character hex strings (one per unique visitor today). Changed to `.digest()`, storing 32-byte `bytes` objects instead — halving per-entry memory. The set is never persisted to disk, so there is no compatibility concern; only the integer counts reach `dau.json`.
+
+## OPT-015 · `_load()` offloaded to thread executor on day rollover
+
+`_load()` was a synchronous blocking file read called directly inside `async with _lock` on day rollover. Changed to `await loop.run_in_executor(None, _load)`, consistent with the existing treatment of `_save()`. The lock is still held during the await (asyncio Lock semantics), so no data race is introduced.
+
+## OPT-016 · `time.monotonic()` deferred via short-circuit evaluation
+
+Previously `now = time.monotonic()` was unconditionally called before the flush condition check on every new unique visit. Restructured the condition to `_visitors_since_last_flush >= _DAU_WRITE_BATCH or time.monotonic() - ...` so Python's short-circuit OR skips the `time.monotonic()` call when the batch threshold fires. A second `time.monotonic()` call inside the block captures an accurate `_last_flush_time` after the save completes.
+
+---
+
+# 2026-04-28 OPT-009 · Five micro-optimisations to `fetch_station_exits.py` — IMPLEMENTED
+
+**File changed:** `backend/fetch_station_exits.py`
+
+## Combined filter + array extraction (change 4)
+The `valid` list comprehension and three separate list comprehensions for `e_rlat`, `e_rlon`, and `e_cos_lat` were replaced with a single `for` loop that simultaneously filters entrances and accumulates the lat/lon lists. Eliminates three extra iterations over the entrance list.
+
+## Single-pass station array extraction (change 3)
+Three separate list comprehensions for `s_rlat`, `s_rlon`, and `s_cos_lat` were replaced with one comprehension that builds a list of `(rlat, rlon, cos_lat)` tuples, then transposes with `zip(*s_vals)`. Iterates `station_ids` once instead of three times.
+
+## `dist.min(axis=1)` instead of fancy indexing (change 1)
+`dist[np.arange(len(valid)), best_idx]` required allocating a temporary `arange` array. Replaced with `dist.min(axis=1)`, which directly computes the minimum without a temporary index array.
+
+## `best_idx.tolist()` before the assignment loop (change 2)
+`int(best_idx[i])` inside the per-entrance loop converted a numpy scalar to a Python int on every iteration. Replaced with a single `.tolist()` call before the loop and plain list indexing inside.
+
+## `heapq.nlargest` for the top-15 summary (change 5)
+`sorted(exits.items(), ..., reverse=True)[:15]` sorted the full stations dict to discard all but 15 results. Replaced with `heapq.nlargest(15, ...)`, which is O(N log 15) vs O(N log N). Effect on the written JSON file is nil; the console summary order may differ for tied exit counts.
+
+---
+
+# 2026-04-28 OPT-012 through OPT-016 · Five efficiency improvements to `crowdedness.py` — IMPLEMENTED
+
+**Files changed:** `backend/crowdedness.py`, `backend/main.py`, `backend/tests/test_crowdedness.py`
+
+## OPT-012 · Pydantic `BaseModel` replaced with `@dataclass` for `CrowdednessEstimate`
+
+`CrowdednessEstimate` was a Pydantic `BaseModel`, triggering full schema validation and reflection overhead on every instantiation. Replaced with a standard `@dataclass`. The only consumer (`_crowdedness_for_routes` in `main.py`) only reads `.level` — no Pydantic-specific methods (`.dict()`, `.model_dump()`, etc.) were in use anywhere.
+
+## OPT-013 · `classify_time_period` now returns local hour as third element
+
+Return type changed from `tuple[TimePeriod, DayType]` to `tuple[TimePeriod, DayType, int]`, where the third element is the Chicago local hour. This eliminates the need for callers to independently derive the local hour after calling this function. `main.py`'s `_get_crowdedness_period` was updated to use `classify_time_period(now)` directly instead of the previous `(*classify_time_period(now), now.hour)` unpacking. All tests updated to unpack the 3-tuple.
+
+## OPT-014 · `strftime` for holiday set lookup replaced with f-string
+
+`local.strftime("%Y-%m-%d")` replaced with `f"{local.year}-{local.month:02d}-{local.day:02d}"`, skipping the format-string parser for a string that is only used as a set key.
+
+## OPT-015 · `factors` dict construction made conditional via `include_factors` flag
+
+Added `include_factors: bool = True` parameter to `estimate_crowdedness`. When `False`, the heuristic `factors` dict (8 keys, multiple `round()` calls) and the live-path 2-key dict are skipped entirely. `CrowdednessEstimate.factors` changed to `dict | None = None`. `main.py`'s hot-path call (`_crowdedness_for_routes`) passes `include_factors=False` since it only uses `est.level`.
+
+## OPT-016 · `stop_id.isdigit()` + `int(stop_id)` double-scan replaced with single `try/except`
+
+`stop_id.isdigit() and int(stop_id) >= 40000` performed two sequential string scans. Replaced with `try: is_train = int(stop_id) >= 40000 / except ValueError: is_train = False`, resolving the train/bus check in a single pass.
+
+---
+
+# 2026-04-28 OPT-011 · Nine micro-optimisations applied to `walking.py` — IMPLEMENTED
+
+## 🟡 Routing hot-path made faster; redundant allocations and trig calls eliminated
+
+**File:** `backend/walking.py`
+
+**Changes made:**
+
+1. **`edge.attributes()` → `edge["name"]`** — `_walk_directions_impl` was calling `edge.attributes()` to produce a full dict copy just to read `"name"`. `_street_name` now accepts the raw attribute value directly, eliminating the allocation on every edge.
+
+2. **Precomputed edge-length NumPy array** — `_load_graph` now builds `_edge_lengths: np.ndarray` once at startup (with `None → 0.0`). `walk_minutes` uses `_edge_lengths[list(epath)].sum()` instead of per-edge `G.es[e]["length"]` attribute lookups. `_walk_directions_impl` also uses `_edge_lengths[eid]` in its grouping loop.
+
+3. **Flat-earth proximity check in `_get_nearest_node`** — replaced the haversine call (uses `sin`, `asin`, `sqrt`) with the flat-earth approximation (`dlat² + (dlon·cos(lat))²` scaled by 111 320 m/°). Accurate to ~0.1 % at Chicago's latitude; sub-meter boundary error. Avoids four trig calls per cache-miss node lookup.
+
+4. **`_cardinal` and `_street_name` moved to module level** — both were defined inside `_walk_directions_impl`, recreating the function objects on every cache miss. Now defined once at import time.
+
+5. **Single-pass grouping in `_walk_directions_impl`** — replaced the two-pass approach (build `raw` list then group) with a single-pass accumulator loop using the new `_make_step` module-level helper, eliminating the intermediate list allocation.
+
+6. **`reversed()` instead of `[::-1]` in `_walk_path_impl`** — geometry coordinate lists that need to be traversed in reverse are now iterated with `reversed()` (zero-copy iterator) rather than `[::-1]` (copies the entire list). The effective-first-coord check uses `geom_coords[-1]` directly without materialising the copy.
+
+7. **`import math` moved to module level** — was inside `_walk_directions_impl`; now a top-level import. Avoids a `sys.modules` dict lookup on every cache miss.
+
+8. **Redundant `_load_graph()` calls removed** — `walk_minutes` and `_walk_directions_impl` both called `_load_graph()` before delegating to `_get_shortest_path`, which calls it again. The redundant calls are removed; both functions now rely on `_get_shortest_path`'s own guard and read `_graph_cache` directly when they need the graph object.
+
+9. **Single-pass vertex coordinate arrays** — `_load_graph` previously built `lons` and `lats` with two separate list comprehensions over `G.vs`. Replaced with a single `[(v["x"], v["y"]) for v in G.vs]` pass producing an (N, 2) array; `lons` and `lats` are zero-copy column views.
+
+---
+
+# 2026-04-28 OPT-007 · Early exit added to `_stream_all_stop_sequences` stop_times.txt pass — IMPLEMENTED
+
+## 🟡 Streaming loop now breaks as soon as all candidate trips are fully processed
+
+**File:** `backend/transit_graph.py` — `_stream_all_stop_sequences()` (streaming loop, formerly lines 357–393)
+
+**What was happening:** The CSV loop iterated all 5.8 M rows of `stop_times.txt` unconditionally. Once all candidate train and bus trips had been read, every remaining row was checked against `all_candidate_tids` and skipped — pure overhead that accounted for the bulk of the observed ~60 s stream time.
+
+**Analysis of the `last_dep` blocker:** The original deferral note flagged that `last_dep` (Feature Last Train) accumulates the latest departure per `(parent_mapid, direction_id)` across *all* weekday train trips. Closer inspection confirms that `last_dep` is updated only when `tid in train_raw`, and `train_raw` is keyed exactly by `train_candidates` — all weekday train trips. The early exit fires only after *all* candidate trips (both train and bus) have been fully consumed, so the `last_dep` dict is complete before the break. No data is skipped.
+
+**Fixed by:**
+1. Added `remaining_tids: set[str] = set(all_candidate_tids)` and `prev_tid: str | None = None` before the loop.
+2. At each trip-ID transition (`tid != prev_tid`): if the outgoing trip was a candidate, `discard` it from `remaining_tids`. If `remaining_tids` is then empty, `break`.
+3. Added a comment noting the assumption that CTA's `stop_times.txt` is sorted by `trip_id` (standard GTFS — all rows for a trip are contiguous), which is required for the transition-detection to be correct.
+
+**Expected improvement:** ~60 s → ~15–20 s for the streaming step at server startup, consistent with the estimate in OPT-007.
+
+---
+
+# 2026-04-28 OPT-009 · Vectorized NumPy haversine replaces 260 K-call nested loop in `fetch_station_exits.py` — IMPLEMENTED
+
+## 🟢 Startup matching loop replaced with single broadcasting pass
+
+**File:** `backend/fetch_station_exits.py` — `build_exits()` (lines 100–170)
+
+**What was happening:** `build_exits()` iterated all ~200 Overpass entrance nodes in an outer loop, and for each node called `_haversine_precomputed` once per station in a Python inner loop (~1,300 stations × ~200 entrances ≈ 260,000 scalar function calls).
+
+**Fixed by:** Replaced both loops with a single NumPy broadcasting pass. Station lat/lon/cos arrays (N,) and entrance lat/lon/cos arrays (M,) are constructed once, then `dlat`/`dlon` are computed as (M, N) matrices via `[:, np.newaxis]` broadcasting. The full distance matrix is computed in one vectorized haversine expression, `argmin(axis=1)` finds the nearest station per entrance, and the scalar result-assembly loop only runs once to build the output dict. Removed the now-unused `_haversine_precomputed` helper. Added `numpy>=1.24,<3` to `requirements.txt` (was an implicit transitive dep via scikit-learn/scipy).
+
+---
+
 # 2026-04-27 OPT-FE-001 · GPS effect fake state updates eliminated; OPT-FE-002 · RouteCard memoized; OPT-FE-003 · favorites.js mutations accept in-memory array
 
 ## 🔴 OPT-FE-001 — GPS effect no longer queues fake `setActiveLegIndex` updates
@@ -2986,7 +3332,9 @@ Changed prd.get("rtdir", "") to prd.get("rtdir", "").lower() in get_bus_arrivals
 
 ---
 
-# Technical Debt Paid Off
+# Technical Debt Paid Off (2026-04-28 scan)
+
+> **Note on TD numbering:** This section uses session-local numbering (`2026-04-28 TD-001` through `2026-04-28 TD-017`), independent of the global TD-NNN sequence used in earlier sections above. The date prefix distinguishes these entries.
 
 ---
 
@@ -3089,5 +3437,272 @@ Changed `DEFAULT_STYLE` in `frontend/src/MapView.jsx` to read from `import.meta.
 ## 2026-04-28 TD-017 · ErrorBoundary.jsx used inline styles disconnected from app CSS theme — RESOLVED
 
 Added `.error-boundary` and child CSS classes to `frontend/src/App.css` using CSS custom properties (`--bg`, `--text`, `--text-muted`, `--accent`) so the error screen responds to theming. Replaced all inline `style={{...}}` in `ErrorBoundary.jsx` with `className` references. Added a `FallbackUI` functional component so the error screen can use `useTranslation`.
+
+---
+
+# 2026-04-28 BUG-010 · "Freezing Sleet" NWS text misclassified as FREEZING_RAIN — FIXED
+
+## 🟢 `"freezing"` check ran before `"sleet"` check, short-circuiting to wrong precipitation type — FIXED
+
+**File:** `backend/weather_service.py` lines 165–168 (`_parse_precip`)
+
+**What was happening:** The `if "freezing" in fc` branch appeared before the `elif "sleet" in fc or "ice pellet" in fc` branch. When NWS short-forecast text contained both words (e.g. `"Freezing Sleet"` or `"Slight Chance Freezing Sleet"`), the first condition matched and classified the precipitation as `FREEZING_RAIN` instead of `SLEET`. The two types are semantically distinct and map to different intensities and routing heuristics.
+
+**Fixed by:** Moved the `"sleet" in fc or "ice pellet" in fc` branch to the top of the chain so it is checked first. The `"freezing"` branch now correctly handles only pure freezing rain (no sleet/ice pellets). The redundant `and "sleet" not in fc and "ice pellet" not in fc` guard on the old `"ice"` sub-check was also removed since sleet/ice-pellet cases can no longer reach that branch.
+
+---
+
+# Efficiency Improvements Implemented
+
+---
+
+## 2026-04-28 · Seven efficiency improvements to transit_graph.py — RESOLVED
+
+**File:** `backend/transit_graph.py`
+
+**Impact:** 🔴 High (intermodal edge loop, file I/O consolidation) / 🟡 Medium (per-request gains)
+
+**What was changed:**
+
+1. **stops.txt read consolidated from 3× to 1×** — Added `_load_all_stops()` decorated with `@lru_cache(maxsize=1)`, which reads stops.txt once and returns all three dicts: `parent_stations` (40000–49999), `platform_to_parent` (30000–39999), and `bus_stop_lookup` (0–29999). `_load_station_data()`, `_load_bus_stop_lookup()`, `_load_parent_stations()`, and `_load_platform_to_parent()` are now thin wrappers around it. `_build_bus_stop_grid()` (called at module import) and `_build_graph()` (called lazily) share the single cached result.
+
+2. **routes.txt read consolidated from 3× to 1×** — Added `_load_all_routes()` decorated with `@lru_cache(maxsize=1)`, which reads routes.txt once and returns `(train_route_ids, bus_route_map, route_short_names)`. `_load_train_route_ids()` and `_load_bus_route_map()` are now thin wrappers. `_build_shape_lookup()` now uses the cached result instead of opening routes.txt a third time.
+
+3. **`_load_weekday_service_ids()` memoized** — Added `@lru_cache(maxsize=1)`. Both `_load_representative_trips()` and `_load_bus_candidate_trips()` called it independently, causing calendar.txt and calendar_dates.txt to be read twice. Now both callers share one cached result.
+
+4. **O(n²) intermodal walk-edge loop replaced with SpatialGrid** — The nested loop over all train stations × all bus stops (~1.5 M haversine calls) is replaced with `_bus_stop_grid.query(s_lat, s_lon, _TRANSFER_RADIUS_MILES)`, which returns only stops within the radius. The grid is already built at module import; no new data structure is introduced. The `dist` value returned by the query replaces the explicit haversine call, so the edge weights are identical.
+
+5. **`get_station_by_name()` exact match is now O(1)** — Added module-level `_station_name_exact` (lowercase name → `(lat, lon)`) and `_station_name_entries` (pre-built list for the contains-match fallback), populated by `_build_station_name_index()` which is called from `warm_up()`. The previous implementation scanned all ~140 stations on every cache miss; exact matches now hit a dict. The `@lru_cache(maxsize=512)` is retained for repeated contains-match queries.
+
+6. **`clip_shape()` nearest-point scan vectorized with numpy** — The inner `_nearest_idx` Python loop (O(N) per call, called twice per transit leg) is replaced with `np.argmin()` on a vectorized squared-distance array. numpy is already an implicit dependency via networkx.
+
+7. **Best-exit scan in `_select_transfer_candidates()` de-duplicated** — Added a local `_exit_cache` dict (keyed by `(route_B_key, t_idx)`) within the function call. The same (route B, boarding-index) pair was rescanned for every route-A arrival that led to the same transfer point; the cache eliminates repeated haversine scans across duplicate combinations within one `find_bus_transfer_routes()` call.
+
+---
+
+## 2026-04-28 OPT-010 · Eight efficiency improvements to gtfs_loader.py — RESOLVED
+
+**File:** `backend/gtfs_loader.py`
+
+**Impact:** 🟡 Medium (geocoding concurrency + startup latency) / 🟢 Low (minor per-call overheads)
+
+**What was changed:**
+
+1. **`_geocode_lock` no longer held during HTTP I/O** — The lock is now acquired only for the pre-flight quota/key check and for the post-flight result store. The actual Google API call runs outside the lock, allowing concurrent requests for *different* queries to proceed in parallel instead of serialising on the single global lock. A re-check inside the inner lock handles the race where two threads request the same uncached query simultaneously.
+
+2. **Monthly geocode counter save batched with existing flush cycle** — `_increment_geocode_call_count()` previously wrote `geocode_counter.json` to disk on every API call. It now marks a `_geocode_counter_dirty` flag and returns the new count; `_flush_geocode_cache_if_dirty()` persists the counter on its 30-second background tick (and on `atexit`). The monthly cap is now a soft cap — increments in a crash window are not persisted — which was accepted as a trade-off.
+
+3. **`import datetime` moved to module level** — Previously imported inside three functions (`_load_geocode_counter`, `_geocode_call_count`, `_increment_geocode_call_count`) on every call. Now a single top-level import.
+
+4. **Redundant `_geocode_call_count()` call eliminated** — `geocode_google()` previously called `_geocode_call_count()` twice: once for the cap check and once inside the success log message. `_increment_geocode_call_count()` now returns the new count, which is used directly in the log.
+
+5. **Pickle cache for parsed GTFS stops** — `_load_stops()` now persists the parsed `(train_stations, bus_stops)` result to `gtfs_data/stops_cache.pkl` alongside the source `stops.txt` mtime. On subsequent starts the pickle is loaded instead of re-parsing the CSV, provided the mtime matches. The pickle is written atomically (tmp → rename). A corrupt or mismatched pickle falls through to full CSV re-parse.
+
+6. **Duplicate `_geocode_max_age_seconds` / `_GEOCODE_MAX_AGE_SECONDS` variables removed** — Both held `_cfg.GEOCODE_CACHE_MAX_AGE_DAYS * 24 * 3600`. Consolidated into the single canonical `_GEOCODE_MAX_AGE_SECONDS`.
+
+7. **`_ABBR_MAP` duplicate-key assertion uses `Counter`** — The error-message expression in the `assert` was O(n²) (`.count()` inside a list comp). Replaced with a single `collections.Counter` pass that produces the same error output in O(n).
+
+8. **`_street_abbr_replace` promoted from closure to module-level function** — The `_replace` inner function inside `_normalize_street_abbr` was recreated on every call. Promoted to `_street_abbr_replace` at module level.
+
+---
+
+## 2026-04-28 OPT-001 · Duplicate condition evaluation and two-pass normalization in route_scoring.py — RESOLVED
+
+**File:** `backend/route_scoring.py`
+
+**What was changed:** Four efficiency improvements were made together:
+
+1. **Shared condition evaluation (#1):** `adjust_weights_for_weather` and `weight_hint_for_weather` previously each evaluated the same three weather threshold conditions (temperature, precipitation, wind gusts) independently. Extracted a private `_active_conditions(c)` helper that evaluates all thresholds once and returns a list of `(weight_deltas_dict, hint_str)` tuples. Both public functions now call it, eliminating all duplicated threshold logic.
+
+2. **Single-pass clamp + normalize (#2):** The normalization step previously produced one intermediate dict for clamping and a second for normalizing. Replaced with a list comprehension for clamped values, a single `sum()`, and one final dict comprehension — one fewer intermediate dict allocation.
+
+3. **Short-circuit when no thresholds fire (#3):** When active conditions is empty (the common case in mild weather), both functions now return immediately without running clamp/normalize. Behavior is identical to the existing `weather is None` early-return path; per design, `base_weights` is returned as-is (not re-normalized) in both no-op cases.
+
+4. **Removed unreachable `total > 0` guard (#4):** The guard `if total > 0:` before normalization was unreachable — `base_weights` values are always positive, and the clamp only floors to `0.0`, so `total` can never be zero with valid input. Removed.
+
+---
+
+## 2026-04-28 OPT-011 · Four efficiency improvements to utils.py — RESOLVED
+
+**File:** `backend/utils.py`
+
+**Impact:** 🟢 Low (minor per-call overheads) / 🟡 Medium (`SpatialGrid.query` inner-loop savings at scale)
+
+**What was changed:**
+
+1. **`_cell`: redundant `int()` wrap around `math.floor()` removed** — In Python 3, `math.floor()` returns an `int` by specification. The `int(math.floor(...))` double-conversion in `_cell` (and the four equivalent expressions in `query`) was a no-op. Replaced with bare `math.floor(...)` throughout.
+
+2. **`haversine_miles`: temporary list removed from `map()` call** — `map(math.radians, [lat1, lon1, lat2, lon2])` allocated a temporary list object on every call. Since `haversine_miles` is called in the inner loop of `SpatialGrid.query`, this allocation repeated at high frequency. Replaced with four direct `math.radians()` assignments, which avoids the allocation entirely.
+
+3. **`SpatialGrid.query`: AABB bounds check skipped for interior cells** — The per-entry lat/lon bounds check (`e_lat < lat_lo or ...`) was applied to all cells in the bounding-box window, including cells whose entire extent lies inside the bounding box. For interior cells (those where `min_cl < cl < max_cl` and `min_cn < cn < max_cn`) every entry is guaranteed to pass the check, so the four comparisons per entry were wasted work. The `interior` flag is now computed once per cell and the check is skipped when true.
+
+4. **`SpatialGrid.query`: cheap planar distance pre-filter added before Haversine** — After the AABB check, `haversine_miles` (which calls `sin`, `cos`, `asin`, `sqrt`) was invoked for every surviving entry. A squared planar distance check using `_MILES_PER_DEG_LAT`/`_MILES_PER_DEG_LON` is now applied first. Because these constants slightly underestimate true arc distance at Chicago's latitude (`d_planar ≤ d_haversine`), a point where `d_planar > radius` is provably outside the radius and haversine can be skipped safely. The comparison uses `>` (not `>=`) so boundary points are never incorrectly discarded. The squared form avoids a `sqrt` call.
+
+---
+
+## 2026-04-28 · Three efficiency improvements to active_routes.py — RESOLVED
+
+**File:** `backend/active_routes.py`
+
+**Impact:** 🟡 Medium (concurrent GTFS load) / 🟢 Low (per-route syscall and string allocation savings)
+
+**What was changed:**
+
+1. **`sys.stdout.isatty()` cached at module level** — `_color_block` previously called `sys.stdout.isatty()` on every invocation, once per bus route in the print loop. Added module-level `_IS_TTY = sys.stdout.isatty()` and updated `_color_block` to test `_IS_TTY` instead. TTY state cannot change mid-run, so this is semantically identical.
+
+2. **`_route_sort_key` single-pass character partition** — The function previously ran two separate generator expressions over the route string (`"".join(c for c in rt if c.isdigit())` and `"".join(c for c in rt if not c.isdigit())`), iterating the string twice. Replaced with a single `for` loop that appends each character to either a `digits` or `letters` list, halving the iterations for mixed-character routes such as `"J14"` or `"X9"`.
+
+3. **GTFS file load overlapped with API fetches** — `_load_gtfs_routes()` previously ran synchronously before the `asyncio.gather` for the two CTA API calls, adding its file-read time to the critical path. It is now dispatched via `asyncio.to_thread(_load_gtfs_routes)` and included as a third coroutine in the `gather`, so the CSV parse runs concurrently with both network requests.
+
+---
+
+## 2026-04-28 · Seven efficiency improvements to main.py and walking.py — RESOLVED
+
+**Files:** `backend/main.py`, `backend/walking.py`
+
+**Impact:** 🔴 High (parallelised async I/O on every cache-miss request) / 🟡 Medium (memory growth bound, session reuse) / 🟢 Low (per-query autocomplete savings)
+
+**What was changed:**
+
+1. **`_fetch_arrivals` and `_safe_weather` parallelised (#1)** — The two calls were sequential in `recommend()` even though weather fetching and CTA arrival fetching are fully independent. Replaced with a single `asyncio.gather(...)` so both run concurrently. Saves ~1–2 s on every cache-miss transit request.
+
+2. **`walk_all` consolidates the three walk functions (#2)** — `recommend()` previously dispatched `_walk_minutes`, `_walk_directions`, and `_walk_path` as three separate `run_in_executor` calls inside `asyncio.gather`. Because `_get_shortest_path` is `@lru_cache` but the three threads could all arrive before any of them cached the result, the Dijkstra path computation could run three times concurrently. Added `walk_all()` to `walking.py`, which calls the three public functions sequentially in a single thread (ensuring `_get_shortest_path` runs at most once), and updated `main.py` to dispatch only that one function.
+
+3. **Origin and destination geocoded in parallel (#3)** — `_resolve_locations` previously geocoded the origin, validated it, then geocoded the destination sequentially. Both `resolve_location` calls are now dispatched together via `asyncio.gather`. Validation of each result is done in order afterward, so error messages remain correct. Saves one geocoding round-trip on every cache-miss request.
+
+4. **API keys and model names cached as module-level constants (#4)** — `os.getenv()` was called on every request in `_validate_api_keys`, `_fetch_arrivals`, `_fetch_transfer_arrivals`, `stop_arrivals`, and `_call_claude`. These values never change at runtime. Replaced with five module-level constants (`_CTA_TRAIN_KEY`, `_CTA_BUS_KEY`, `_ANTHROPIC_KEY`, `_CLAUDE_SIMPLE_MODEL`, `_CLAUDE_COMPLEX_MODEL`) read once at import time. `_claude_client` was updated to use `_ANTHROPIC_KEY` as well.
+
+5. **`_rate_store` IP keys pruned when deques empty (#5)** — The sliding-window eviction loop already removed timestamps older than one hour from each IP's deque, but the dict key itself was never removed. After eviction, if the deque is empty the IP has no activity in the past hour; `_check_rate_limit` now replaces the entry with a fresh deque containing only the current timestamp, preventing unbounded dict growth on long-running servers with many unique visitors.
+
+6. **`/alerts` endpoint reuses the shared `aiohttp` session (#6)** — The endpoint previously created a new `aiohttp.ClientSession()` on every cache miss. The shared session from `cta_client.py` is a plain session with no base URL, custom headers, or auth — safe to reuse for the `transitchicago.com` request. Imported `_get_session` from `cta_client` and removed the per-request session creation.
+
+7. **Autocomplete `_nl` and `_words` precomputed at index build time (#7)** — The `autocomplete` endpoint previously called `suggestion["label"].lower()` and `nl.split()` on every candidate for every query. Both values are now computed once inside `_index_entry` during startup and stored as `_nl` and `_words` in each master entry. The endpoint reads the precomputed fields directly.
+
+---
+
+## 2026-04-28 OPT-012 · Five efficiency improvements to weather_service.py — RESOLVED
+
+**File:** `backend/weather_service.py`
+
+**Impact:** 🔴 High (session reuse) / 🟢 Low (remaining four micro-optimisations)
+
+**What was changed:**
+
+1. **Shared `aiohttp.ClientSession` per service instance (#1)** — `get_weather_context` previously created a new `ClientSession` (and tore it down) on every cache miss, discarding TCP connection pooling. Added `__init__` initialising `self._session = None`, a `_get_session()` helper that creates the session lazily on first use and reuses it on subsequent calls, and an `async close()` method for callers to release the session on shutdown. The `async with aiohttp.ClientSession(...)` block in `get_weather_context` is replaced with `session = self._get_session()`.
+
+2. **`_parse_precip` reduced from three passes to one (#2)** — The original implementation scanned `fc` up to 9 times for the early-exit check (`any(w in fc for w in precip_words)`), then made a second pass for type detection, then a third for intensity. Replaced with a single elif chain that determines type and falls to `else: return NONE` for non-precipitation forecasts. The priority order is preserved exactly (sleet/ice-pellet → freezing/ice → snow/flurr/blizzard → rain/drizzle/shower → none), and "shower" is now explicitly listed in the RAIN branch (it previously fell through to the original `else: ptype = RAIN` clause, producing the same result).
+
+3. **`wind_speed_mph ** 0.16` computed once in `_feels_like` (#3)** — The NWS wind-chill formula used `wind_speed_mph ** 0.16` in two separate terms. Extracted to a local `w` variable, eliminating the duplicate exponentiation.
+
+4. **Alert deduplication uses a set (#4)** — `if headline not in alert_headlines` performed a linear scan on a list. Added a `seen: set[str]` for O(1) membership checks; `alert_headlines` remains a list so insertion order is preserved.
+
+5. **`itertools.islice` replaces `periods[:13]` slice (#5)** — The slice allocated a new list just to iterate 13 elements. Replaced with `itertools.islice(periods, 13)`, which is a zero-copy iterator.
+
+---
+
+## 2026-04-28 · Five efficiency improvements to cta_client.py — RESOLVED
+
+**File:** `backend/cta_client.py`
+
+**Impact:** 🟢 Low (per-request object allocation savings and minor code quality improvements)
+
+**What was changed:**
+
+1. **Module-level `ClientTimeout` objects (#1)** — `aiohttp.ClientTimeout(...)` was previously constructed fresh inside each of the four fetch functions on every call. Added two module-level constants: `_API_TIMEOUT = aiohttp.ClientTimeout(total=_cfg.CTA_API_TIMEOUT_SECONDS)` (shared by `_fetch_station_arrivals` and `_fetch_bus_chunk`) and `_SHORT_TIMEOUT = aiohttp.ClientTimeout(total=5)` (shared by `_fetch_alerts_for_route` and `get_route_statuses`). These objects are immutable value types and are safe to reuse across concurrent requests.
+
+2. **`datetime.now()` computed once per batch in `get_train_arrivals` (#2)** — Previously, each concurrent `_fetch_station_arrivals` task computed its own `now = datetime.now(CHICAGO_TZ)` independently after receiving its API response. `now` is now computed once in `get_train_arrivals` before `asyncio.gather` and passed into each task as a parameter. All arrivals in a batch therefore share a single consistent reference time, eliminating minor per-task clock drift. **Note:** in the rare case where a fetch takes several seconds and an arrival falls exactly on a minute boundary, the reported `arrives_in_minutes` value could differ by ±1 from the previous behaviour.
+
+3. **`itertools.chain.from_iterable` replaces extend loop (#3)** — `get_train_arrivals` accumulated results with an explicit `for result in results: all_arrivals.extend(result)` loop. Replaced with `list(itertools.chain.from_iterable(results))`, which flattens all sub-lists in a single pass without intermediate allocation. `import itertools` added at the top of the file.
+
+4. **`_dly` extracted to a variable in `_fetch_bus_chunk` (#5)** — `prd.get("dly", "")` was evaluated inline inside the dict literal, making the `is_delayed` expression harder to follow. Extracted to `_dly = prd.get("dly", "")` before the `arrivals.append(...)` call; `is_delayed` now reads `str(_dly).lower() in ("true", "1", "yes")`. Logic is identical.
+
+5. **`get_route_statuses` append loop converted to list comprehension (#6)** — The `statuses = []; for r in routes_raw: try: statuses.append({...}); except: continue` pattern is replaced with a direct `return [...]` list comprehension. All four fields use `.get()` with a default and cannot raise, so the `try/except` wrapper was purely defensive and safe to remove.
+
+---
+
+# Technical Debt Paid Off (2026-04-28 frontend scan)
+
+> **Note on TD numbering:** This section uses the global TD-100+ range allocated by the 2026-04-28 frontend tech-debt scan.
+
+---
+
+## 2026-04-28 TD-100 · Hardcoded English strings in tab bar — RESOLVED
+
+Replaced the four hardcoded mobile tab labels (`"Home"`, `"Map"`, `"Alerts"`, `"Saved"`) and the nav `aria-label="Main navigation"` in `frontend/src/App.jsx` with `t("tab_home")`, `t("tab_map")`, `t("tab_alerts")`, `t("tab_saved")`, and `t("aria_main_nav")`. Added the five keys to `frontend/public/locales/en/translation.json`; other locales fall back to en via i18next's built-in fallback.
+
+---
+
+## 2026-04-28 TD-101 · Hardcoded "No active service alerts." string — RESOLVED
+
+Replaced the hardcoded literal in `frontend/src/App.jsx` (alerts tab empty state) with `{t("alerts_empty")}`. Also wrapped the per-row `"Advisory"` severity fallback as `t("alerts_advisory")`. New keys added to `en/translation.json`.
+
+---
+
+## 2026-04-28 TD-102 · Hardcoded "Underway" / "Bus N" labels in MapView — RESOLVED
+
+Replaced hardcoded `"Underway"` kicker, `Bus ${code}` labels (in both the trip overlay and the map legend), and the inline `style={{ fontFamily: ... }}` block in `frontend/src/MapView.jsx`. Now uses `t("map_underway")` and `t("map_bus_label", { code })`. The inline style was extracted to a new `.map-train-card__line-text` rule in `App.css`.
+
+---
+
+## 2026-04-28 TD-103 · Hardcoded English strings in PinnedStopsBoard — RESOLVED
+
+Replaced `aria-label="Live data"`, `title="Refresh arrivals"` (also used as aria-label), `title="Unpin stop"`, and the template-literal `aria-label={`Unpin ${stop.label}`}` in `frontend/src/components/PinnedStopsBoard.jsx`. Now uses `t("psb_live_data")`, `t("psb_refresh")`, `t("psb_unpin_stop")`, and the existing `t("unpin_stop", { stop })` interpolation.
+
+---
+
+## 2026-04-28 TD-104 · Hardcoded "Dismiss" aria-labels — RESOLVED
+
+Three call-sites — `App.jsx:655`, `LocationInput.jsx:259`, `RouteCard.jsx:250` — now share a single `t("aria_dismiss")` key.
+
+---
+
+## 2026-04-28 TD-105 · Hardcoded "Close ×" string in SettingsPanel — RESOLVED
+
+Footer button in `frontend/src/components/SettingsPanel.jsx` now uses `{t("settings_btn_close")} ×` rather than a hardcoded literal. The `×` character is decorative (icon role) and remains outside the translation key.
+
+---
+
+## 2026-04-28 TD-106 · Magic numbers in trip-tracking thresholds — RESOLVED
+
+Extracted `60` (leg-advance radius), `150` (vehicle leg-advance radius), and `30` (walk-step proximity) from `processTripPosition` in `App.jsx` into three named constants in `constants.js`: `LEG_ADVANCE_RADIUS_M`, `LEG_ADVANCE_RADIUS_VEHICLE_M`, `WALK_STEP_PROXIMITY_M`. All GPS-tuning thresholds now live in one file alongside `OFF_ROUTE_THRESHOLD_METERS` and `REROUTE_SUPPRESSION_MS`.
+
+---
+
+## 2026-04-28 TD-107 · Magic 3000 ms in useFavorites duplicates LIMIT_ERROR_DISMISS_MS — RESOLVED
+
+`frontend/src/hooks/useFavorites.js` now imports `LIMIT_ERROR_DISMISS_MS` from `constants.js` and uses it in place of the literal `3000` in the route-save limit-error timer.
+
+---
+
+## 2026-04-28 TD-108 · Magic 1000 ms photo fade duration — RESOLVED
+
+Extracted to `PHOTO_FADE_MS = 1000` in `constants.js` with a comment noting it must match the `.transit-photo--fading` CSS transition. `App.jsx` now uses the constant in `fadePhoto()`.
+
+---
+
+## 2026-04-28 TD-109 · Volume year `2022` hardcoded in masthead — RESOLVED
+
+Extracted to `MASTHEAD_EPOCH_YEAR = 2022` in `constants.js` with a comment explaining its meaning (project-publication year used for the newspaper-style "VOL." number). `App.jsx` imports and uses the constant.
+
+---
+
+## 2026-04-28 TD-110 · TransitPhoto captions are not i18n'd — RESOLVED
+
+Replaced inline string captions in `frontend/src/components/TransitPhoto.jsx` with translation keys: `photo_caption_red_line_howard`, `photo_caption_loop_elevated`, `photo_caption_blue_line_ohare`, `photo_caption_state_lake`, `photo_caption_wrigley_addison`. The component now imports `useTranslation` and resolves the caption via `t(photo.captionKey)`. Image `alt` text reuses the same translated string.
+
+---
+
+## 2026-04-28 TD-111 · Missing component-level test coverage — RESOLVED
+
+Added `@testing-library/react` and `@testing-library/jest-dom` as dev-dependencies. The existing hook tests were already importing `@testing-library/react` (broken — 3 test files failed to load), so this also restored test discovery for `useFavorites.test.js`, `useLocalStorage.test.js`, and `useApiQuery.test.js`. Added a global setup file at `frontend/src/tests/setup.js` (registers jest-dom matchers) and updated `vite.config.js` to include `.test.jsx` files and run the setup file. Added the first component-level test file `frontend/src/tests/LinePill.test.jsx` (4 smoke tests: train abbreviation, bus code, lg-size full label, Yellow Line dark text). Test suite now 81 tests across 7 files (was 50/3 before; the other 3 files were broken). Coverage config now also includes `src/components/**` so future component tests show up in coverage reports.
+
+---
+
+## 2026-04-28 TD-112 · React 18 → React 19 upgrade pending — RESOLVED
+
+Bumped `react` and `react-dom` from `^18.3.1` to `^19` in `frontend/package.json`. Verification:
+- All 81 unit tests pass on React 19.
+- `npm run build` succeeds; PWA service-worker generation unchanged.
+- No code changes were required — the codebase was already React-19-compatible (no legacy `forwardRef` patterns, no string refs, no use of deprecated lifecycle methods, `react-i18next@17` and `vite-plugin-pwa@1` both already support React 19).
 
 ---

@@ -1,6 +1,6 @@
-# CTA Transit PWA
+# The Chicago Routefinder
 
-An AI-powered, real-time Chicago Transit Authority (CTA) route recommendation app. Built as a Progressive Web App (PWA) for mobile use.
+An AI-powered, real-time Chicago Transit Authority (CTA) route recommendation app. Built as a Progressive Web App (PWA) for mobile use, styled under "The Chicago Routefinder" editorial almanac design system — cream paper, charcoal ink, Fraunces serif headlines, and hairline rules throughout.
 
 ## What it does
 

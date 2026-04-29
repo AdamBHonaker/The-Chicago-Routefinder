@@ -26,16 +26,17 @@ from gtfs_loader import (
     resolve_location, geocode_google, NEIGHBORHOOD_COORDS,
     fuzzy_match_neighborhood, _normalize_street_abbr, _load_stops,
 )
-from cta_client import get_train_arrivals, get_bus_arrivals, get_alerts, get_route_statuses, _TRAIN_LINE_TO_ALERT_ID, LINE_NAMES, init_session as _init_cta_session, close_session as _close_cta_session
+from cta_client import get_train_arrivals, get_bus_arrivals, get_alerts, get_route_statuses, _TRAIN_LINE_TO_ALERT_ID, LINE_NAMES, init_session as _init_cta_session, close_session as _close_cta_session, _get_session as _get_cta_session
 from transit_graph import (
     find_routes, find_bus_transfer_routes, warm_up, get_bus_stop_sequences,
     WalkLeg, TransitLeg, Route, get_station_coords, get_station_by_name,
-    get_last_departure,
+    get_last_departure, get_stop_sequence_position,
 )
 from walking import (
     walk_minutes as _walk_minutes,
     walk_directions as _walk_directions,
     walk_path as _walk_path,
+    walk_all as _walk_all,
 )
 from weather_service import WeatherService, WeatherContext, PrecipitationType
 from route_scoring import weight_hint_for_weather
@@ -45,8 +46,15 @@ from crowdedness import (
 )
 from utils import CHICAGO_TZ as _CHICAGO_TZ
 
+# API keys and model names read once at startup — these never change at runtime.
+_CTA_TRAIN_KEY        = os.getenv("CTA_TRAIN_API_KEY", "")
+_CTA_BUS_KEY          = os.getenv("CTA_BUS_API_KEY", "")
+_ANTHROPIC_KEY        = os.getenv("ANTHROPIC_API_KEY", "")
+_CLAUDE_SIMPLE_MODEL  = os.getenv("CLAUDE_SIMPLE_MODEL",  "claude-haiku-4-5-20251001")
+_CLAUDE_COMPLEX_MODEL = os.getenv("CLAUDE_COMPLEX_MODEL", "claude-sonnet-4-6")
+
 # Anthropic client — created once at startup, reused across all requests
-_claude_client = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
+_claude_client = anthropic.AsyncAnthropic(api_key=_ANTHROPIC_KEY)
 
 # Weather service — module-level singleton, manages its own TTL caches internally
 weather_service = WeatherService()
@@ -154,6 +162,11 @@ def _check_rate_limit(ip: str) -> bool:
     # Evict timestamps older than one hour to bound memory growth
     while window and now - window[0] > 3600:
         window.popleft()
+    # Prune the dict key when the deque empties — prevents _rate_store from
+    # accumulating a key per unique IP forever on a long-running server.
+    if not window:
+        _rate_store[ip] = collections.deque([now])
+        return True
     # Per-hour check
     if len(window) >= _RATE_LIMIT_RPH:
         return False
@@ -235,10 +248,10 @@ def _build_autocomplete_index() -> None:
     index: dict[str, list[tuple[int, int, int]]] = {}
 
     def _index_entry(name: str, tier: int, label_type: str) -> None:
-        suggestion = {"label": name, "value": name, "type": label_type}
+        nl = name.lower()
+        suggestion = {"label": name, "value": name, "type": label_type, "_nl": nl, "_words": nl.split()}
         idx = len(master)
         master.append(suggestion)
-        nl = name.lower()
         added: set[str] = set()
         for i, word in enumerate(nl.split()):
             score = 0 if i == 0 else 1
@@ -640,9 +653,9 @@ def _alert_ids_from_routes(ranked_routes: list[tuple]) -> list[str]:
 
 def _validate_api_keys(request: RouteRequest, byok_key: str | None) -> None:
     """Raise HTTPException if any required API key is absent."""
-    train_key     = os.getenv("CTA_TRAIN_API_KEY", "")
-    bus_key       = os.getenv("CTA_BUS_API_KEY", "")
-    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
+    train_key     = _CTA_TRAIN_KEY
+    bus_key       = _CTA_BUS_KEY
+    anthropic_key = _ANTHROPIC_KEY
     if not train_key and request.transit_mode != "Walk":
         raise HTTPException(status_code=500, detail="CTA_TRAIN_API_KEY not configured in backend/.env")
     if byok_key and not byok_key.startswith("sk-ant-"):
@@ -664,8 +677,11 @@ async def _resolve_locations(
     Raises HTTPException(400) if either location is unresolvable or they are
     the same location.
     """
-    origin_stations, origin_bus_stops, _ = await loop.run_in_executor(
-        None, resolve_location, request.origin
+    (origin_stations, origin_bus_stops, _), (dest_stations, dest_bus_stops, dest_match) = (
+        await asyncio.gather(
+            loop.run_in_executor(None, resolve_location, request.origin),
+            loop.run_in_executor(None, resolve_location, request.destination),
+        )
     )
     if not origin_stations and not origin_bus_stops:
         raise HTTPException(
@@ -675,10 +691,6 @@ async def _resolve_locations(
                 "Try a neighborhood name like 'Wrigleyville', 'Lincoln Park', or 'River North'."
             ),
         )
-
-    dest_stations, dest_bus_stops, dest_match = await loop.run_in_executor(
-        None, resolve_location, request.destination
-    )
     if not dest_stations and not dest_bus_stops:
         raise HTTPException(
             status_code=400,
@@ -719,8 +731,8 @@ async def _fetch_arrivals(
 
     Returns (train_arrivals, bus_arrivals, n_train_errors, n_bus_errors).
     """
-    train_key   = os.getenv("CTA_TRAIN_API_KEY", "")
-    bus_key     = os.getenv("CTA_BUS_API_KEY", "")
+    train_key   = _CTA_TRAIN_KEY
+    bus_key     = _CTA_BUS_KEY
     # Pre-filter to the 3 closest stations by walk time to avoid extra CTA API calls.
     origin_stations = sorted(origin_stations, key=lambda s: s.get("walk_minutes", 0))[:3]
     walk_lookup = {s["mapid"]: s.get("walk_minutes", 0) for s in origin_stations}
@@ -895,8 +907,8 @@ async def _fetch_transfer_arrivals(ranked_routes: list[tuple]) -> list[dict]:
     if not ranked_routes:
         return []
 
-    train_key = os.getenv("CTA_TRAIN_API_KEY", "")
-    bus_key   = os.getenv("CTA_BUS_API_KEY", "")
+    train_key = _CTA_TRAIN_KEY
+    bus_key   = _CTA_BUS_KEY
 
     transfer_train_stations, transfer_bus_stop_ids = _extract_transfer_stops(ranked_routes)
     xfer_train_task = (
@@ -958,10 +970,8 @@ async def _call_claude(
     Returns (recommendation_text, model_label) where model_label is 'haiku' or 'sonnet'.
     Raises HTTPException(502) on Claude API failure.
     """
-    simple     = _is_simple_query(ranked_routes)
-    _simple_model  = os.getenv("CLAUDE_SIMPLE_MODEL",  "claude-haiku-4-5-20251001")
-    _complex_model = os.getenv("CLAUDE_COMPLEX_MODEL", "claude-sonnet-4-6")
-    model      = _simple_model if simple else _complex_model
+    simple = _is_simple_query(ranked_routes)
+    model  = _CLAUDE_SIMPLE_MODEL if simple else _CLAUDE_COMPLEX_MODEL
     max_tokens = 300 if simple else 400
     print(f"[claude model={'haiku' if simple else 'sonnet'} simple={simple}]")
 
@@ -1174,7 +1184,7 @@ def _get_crowdedness_period() -> tuple:
     now_mono = time.monotonic()
     if _crowdedness_period_cached is None or now_mono - _crowdedness_period_cache_ts > _CROWDEDNESS_PERIOD_TTL:
         now = datetime.now(_CHICAGO_TZ)
-        _crowdedness_period_cached = (*classify_time_period(now), now.hour)
+        _crowdedness_period_cached = classify_time_period(now)
         _crowdedness_period_cache_ts = now_mono
     return _crowdedness_period_cached
 
@@ -1200,15 +1210,19 @@ def _crowdedness_for_routes(ranked: list[tuple]) -> dict[int, str]:
                 rtdir_to_inbound_outbound(leg.line_code, leg.line)
                 if is_bus else "inbound"
             )
+            seq_pos, seq_total = get_stop_sequence_position(
+                leg.from_mapid or "", leg.line_code or ""
+            )
             est = estimate_crowdedness(
                 route_id=leg.line_code or "",
                 direction=direction,
                 stop_id=leg.from_mapid or "",
-                stop_sequence_position=1,
-                total_stops=2,
+                stop_sequence_position=seq_pos,
+                total_stops=seq_total,
                 time_period=time_period,
                 day_type=day_type,
                 current_hour=now_hour,
+                include_factors=False,
             )
             leg_levels.append(est.level)
         if leg_levels:
@@ -1517,7 +1531,9 @@ async def stop_arrivals(stops: list[str] = Query(default=[])):
     Each stop is specified as "<type>:<stop_id>" — e.g. "train:40500" or "bus:1234".
     Maximum 10 stops per request.
 
-    Response: { "arrivals": { "<stop_id>": { "arrivals": [...], "last_departure_minutes"?: int } } }
+    Response: { "arrivals": { "<type>:<stop_id>": { "arrivals": [...], "last_departure_minutes"?: int } } }
+    Keys are typed (e.g. "train:40900", "bus:1234") so bus stop IDs and train
+    mapids do not collide when they share a numeric value.
     "last_departure_minutes" is included for train stops when within 0–120 min of last run.
     """
     if len(stops) > 10:
@@ -1540,8 +1556,8 @@ async def stop_arrivals(stops: list[str] = Query(default=[])):
         elif typ == "bus":
             bus_stop_ids.append(sid)
 
-    train_key = os.getenv("CTA_TRAIN_API_KEY", "")
-    bus_key   = os.getenv("CTA_BUS_API_KEY", "")
+    train_key = _CTA_TRAIN_KEY
+    bus_key   = _CTA_BUS_KEY
 
     train_station_dicts = [{"mapid": sid, "name": sid} for sid in train_stop_ids]
     train_task = (
@@ -1563,7 +1579,8 @@ async def stop_arrivals(stops: list[str] = Query(default=[])):
         sid = a.get("station_mapid", "")
         if not sid:
             continue
-        entry = arrivals.setdefault(sid, {"arrivals": []})
+        key = f"train:{sid}"
+        entry = arrivals.setdefault(key, {"arrivals": []})
         if len(entry["arrivals"]) < 3:
             entry["arrivals"].append({
                 "route":       a.get("line_code", ""),
@@ -1575,7 +1592,8 @@ async def stop_arrivals(stops: list[str] = Query(default=[])):
         sid = a.get("stop_id", "")
         if not sid:
             continue
-        entry = arrivals.setdefault(sid, {"arrivals": []})
+        key = f"bus:{sid}"
+        entry = arrivals.setdefault(key, {"arrivals": []})
         if len(entry["arrivals"]) < 3:
             entry["arrivals"].append({
                 "route":       a.get("route", ""),
@@ -1587,15 +1605,17 @@ async def stop_arrivals(stops: list[str] = Query(default=[])):
     for item in stops:
         if ":" not in item:
             continue
-        _, sid = item.split(":", 1)
-        arrivals.setdefault(sid, {"arrivals": []})
+        typ, sid = item.split(":", 1)
+        if typ not in ("train", "bus"):
+            continue
+        arrivals.setdefault(f"{typ}:{sid}", {"arrivals": []})
 
     # Feature Last Train: add last_departure_minutes for train stops within window
     now_chicago = datetime.now(_CHICAGO_TZ)
     for sid in train_stop_ids:
         mins = _last_dep_minutes(sid, now_chicago)
         if mins is not None:
-            arrivals.setdefault(sid, {"arrivals": []})["last_departure_minutes"] = mins
+            arrivals.setdefault(f"train:{sid}", {"arrivals": []})["last_departure_minutes"] = mins
 
     result = {"arrivals": arrivals}
 
@@ -1634,10 +1654,10 @@ async def autocomplete(q: str = Query("", min_length=0)):
     seen: set[str] = set()
     for tier, _base_score, idx in candidates:
         suggestion = _ac_master[idx]
-        nl = suggestion["label"].lower()
+        nl = suggestion["_nl"]
         if nl.startswith(query):
             score = 0
-        elif any(w.startswith(query) for w in nl.split()):
+        elif any(w.startswith(query) for w in suggestion["_words"]):
             score = 1
         else:
             continue
@@ -1676,13 +1696,12 @@ async def alerts_endpoint():
         return cached[1]
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                _CTA_CUSTOMER_ALERTS_URL,
-                params={"outputType": "XML", "accessibility": "N"},
-                timeout=aiohttp.ClientTimeout(total=8),
-            ) as resp:
-                text = await resp.text()
+        async with _get_cta_session().get(
+            _CTA_CUSTOMER_ALERTS_URL,
+            params={"outputType": "XML", "accessibility": "N"},
+            timeout=aiohttp.ClientTimeout(total=8),
+        ) as resp:
+            text = await resp.text()
 
         import xml.etree.ElementTree as ET  # lazy import — only used in this endpoint
         root = ET.fromstring(text)
@@ -1802,10 +1821,8 @@ async def recommend(request: RouteRequest, http_request: Request):
         if (dlat * dlat + dlon * dlon) < _SAME_LOCATION_THRESHOLD_DEG2:
             raise HTTPException(status_code=400, detail="Your origin and destination appear to be the same location.")
 
-        walk_min, directions, path, walk_weather = await asyncio.gather(
-            loop.run_in_executor(None, _walk_minutes, origin_coords[0], origin_coords[1], dest_coords[0], dest_coords[1]),
-            loop.run_in_executor(None, _walk_directions, origin_coords[0], origin_coords[1], dest_coords[0], dest_coords[1]),
-            loop.run_in_executor(None, _walk_path, origin_coords[0], origin_coords[1], dest_coords[0], dest_coords[1]),
+        (walk_min, directions, path), walk_weather = await asyncio.gather(
+            loop.run_in_executor(None, _walk_all, origin_coords[0], origin_coords[1], dest_coords[0], dest_coords[1]),
             _safe_weather(origin_coords),
         )
         walk_effective_speed = request.walk_speed * _precip_walk_factor(walk_weather)
@@ -1865,11 +1882,10 @@ async def recommend(request: RouteRequest, http_request: Request):
     ) = await _resolve_locations(loop, request)
     destination_label = dest_match or request.destination
 
-    train_arrivals, bus_arrivals, n_train_errors, n_bus_errors = await _fetch_arrivals(
-        request, origin_stations, origin_bus_stops
+    (train_arrivals, bus_arrivals, n_train_errors, n_bus_errors), weather = await asyncio.gather(
+        _fetch_arrivals(request, origin_stations, origin_bus_stops),
+        _safe_weather(origin_coords),
     )
-
-    weather = await _safe_weather(origin_coords)
 
     ranked_routes = await _run_routing(
         request, origin_coords, dest_coords,

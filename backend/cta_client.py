@@ -9,6 +9,7 @@ resolved by gtfs_loader.find_nearest_bus_stops() and passed in from main.py.
 """
 
 import asyncio
+import itertools
 import os
 from datetime import datetime
 
@@ -50,6 +51,10 @@ def _get_session() -> aiohttp.ClientSession:
 TRAIN_BASE = f"{_CTA_TRAIN_BASE}/ttarrivals.aspx"
 BUS_BASE   = f"{_CTA_BUS_BASE}/getpredictions"
 
+# Reusable timeout objects — created once at module load rather than per request.
+_API_TIMEOUT   = aiohttp.ClientTimeout(total=_cfg.CTA_API_TIMEOUT_SECONDS)
+_SHORT_TIMEOUT = aiohttp.ClientTimeout(total=5)
+
 # Human-readable line names keyed by the API's rt abbreviation
 LINE_NAMES = {
     "Red":  "Red Line",
@@ -72,6 +77,7 @@ async def _fetch_station_arrivals(
     mapid: str,
     station_label: str,
     train_key: str,
+    now: datetime,
 ) -> list[dict]:
     """Fetch live arrivals for one station (by parent station mapid)."""
     params = {
@@ -83,7 +89,7 @@ async def _fetch_station_arrivals(
     try:
         async with session.get(
             TRAIN_BASE, params=params,
-            timeout=aiohttp.ClientTimeout(total=_cfg.CTA_API_TIMEOUT_SECONDS),
+            timeout=_API_TIMEOUT,
         ) as resp:
             data = await resp.json(content_type=None)
     except Exception as exc:
@@ -94,7 +100,6 @@ async def _fetch_station_arrivals(
     if str(err_code) != "0":
         return [{"_error": True, "exc": f"Train API error {err_code}: {ctatt.get('errNm', '')}", "mode": "train"}]
 
-    now = datetime.now(CHICAGO_TZ)
     arrivals = []
 
     eta_list = ctatt.get("eta", [])
@@ -146,16 +151,15 @@ async def get_train_arrivals(
     `stations` is a list of dicts from station_lookup.find_stations().
     Returns (arrivals_sorted_by_minutes, n_errors).
     """
+    now = datetime.now(CHICAGO_TZ)
     session = _get_session()
     tasks = [
-        _fetch_station_arrivals(session, s["mapid"], s["name"], train_key)
+        _fetch_station_arrivals(session, s["mapid"], s["name"], train_key, now)
         for s in stations
     ]
     results = await asyncio.gather(*tasks)
 
-    all_arrivals: list[dict] = []
-    for result in results:
-        all_arrivals.extend(result)
+    all_arrivals = list(itertools.chain.from_iterable(results))
 
     # Filter out error entries for the sorted list, keep errors for logging
     good = [a for a in all_arrivals if not a.get("_error")]
@@ -191,7 +195,7 @@ async def _fetch_bus_chunk(
     try:
         async with session.get(
             BUS_BASE, params=params,
-            timeout=aiohttp.ClientTimeout(total=_cfg.CTA_API_TIMEOUT_SECONDS),
+            timeout=_API_TIMEOUT,
         ) as resp:
             data = await resp.json(content_type=None)
     except Exception as exc:
@@ -222,6 +226,7 @@ async def _fetch_bus_chunk(
             # Normalize to UPPER_SNAKE so filter comparisons work regardless
             # of whether CTA sends "HALF EMPTY" (space) or "HALF_EMPTY" (underscore)
             psgld = raw_psgld.replace(" ", "_").upper()
+            _dly = prd.get("dly", "")
 
             arrivals.append({
                 "type": "bus",
@@ -231,7 +236,7 @@ async def _fetch_bus_chunk(
                 "stop_name": prd.get("stpnm", ""),
                 "destination": prd.get("des", ""),
                 "arrives_in_minutes": minutes,
-                "is_delayed": str(prd.get("dly", "")).lower() in ("true", "1", "yes"),
+                "is_delayed": str(_dly).lower() in ("true", "1", "yes"),
                 "psgld": psgld,  # normalized: EMPTY | HALF_EMPTY | FULL
             })
         except Exception:
@@ -296,7 +301,7 @@ async def _fetch_alerts_for_route(
     try:
         params = {"outputType": "JSON", "routeid": route_id}
         async with session.get(
-            ALERTS_BASE, params=params, timeout=aiohttp.ClientTimeout(total=5)
+            ALERTS_BASE, params=params, timeout=_SHORT_TIMEOUT
         ) as resp:
             data = await resp.json(content_type=None)
     except Exception as exc:
@@ -382,7 +387,7 @@ async def get_route_statuses() -> list[dict]:
         async with session.get(
             ROUTES_BASE,
             params={"outputType": "JSON"},
-            timeout=aiohttp.ClientTimeout(total=5),
+            timeout=_SHORT_TIMEOUT,
         ) as resp:
             data = await resp.json(content_type=None)
     except Exception as exc:
@@ -395,15 +400,12 @@ async def get_route_statuses() -> list[dict]:
     if not isinstance(routes_raw, list):
         return []
 
-    statuses = []
-    for r in routes_raw:
-        try:
-            statuses.append({
-                "service_id": r.get("ServiceId", ""),
-                "route": r.get("Route", ""),
-                "status": r.get("RouteStatus", ""),
-                "status_color": r.get("RouteStatusColor", ""),
-            })
-        except Exception:
-            continue
-    return statuses
+    return [
+        {
+            "service_id": r.get("ServiceId", ""),
+            "route": r.get("Route", ""),
+            "status": r.get("RouteStatus", ""),
+            "status_color": r.get("RouteStatusColor", ""),
+        }
+        for r in routes_raw
+    ]

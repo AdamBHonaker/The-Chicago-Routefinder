@@ -14,8 +14,7 @@ Chunked plans for upcoming major features, followed by ideas deferred until post
 **Chunked Implementation Plans** (in document order):
 1. Feature NorthExpansion — North Side 0.25-Mile Walking Radius Expansion — **Structural** (depends on Feature K ✅)
 2. Feature SouthExpansion — South Side 0.25-Mile Walking Radius Expansion — **Structural** (depends on Feature K ✅)
-3. Feature Heritage — Heritage Organic Design System — **Structural** (no unmet dependencies)
-4. Feature Monetization — House Ads (Phase 1; third-party networks deferred) — **Bolt-On**
+3. Feature Monetization — House Ads (Phase 1; third-party networks deferred) — **Bolt-On**
 
 ---
 
@@ -203,91 +202,6 @@ If peak exceeds ~350 MB, revisit the south boundary per scoping decision 1.
 Upload the new `street_graph.graphml` to the Feature K host. Create a new release tag if pinned (e.g. `street-graph-v2`, or `street-graph-v3` if NorthExpansion was already deployed as v2). Update `STREET_GRAPH_URL` in the Dockerfile if the tag changed.
 
 Trigger a Railway redeploy. Watch build logs for expected file size. Watch runtime startup logs for successful graph load. Spot-check a trip to/from 95th/Dan Ryan and a trip to/from Midway: walk directions should name actual streets rather than a single generic step.
-
----
-
-# Feature Heritage --- Heritage Organic Design System
-
-## Overview
-
-Transitions the app's visual language to the Heritage Organic aesthetic (Design Direction #2): a cream/charcoal color system with muted tan accents, minimalist stroke-weight controls, and a home screen layout that leads with the PinnedStopsBoard carousel. The design language is described in existing HTML mockups in `Design Documents/` (committed 2026-04-22).
-
-The two parts are: (1) the color/typography system, which is independent and can land first; (2) the home screen layout rearrangement, which requires Feature Pinned Stops to be meaningful.
-
-**Why it matters:** The current UI has no consistent design language. The Heritage Organic direction is settled and mocked up; shipping it makes the app feel polished and purposeful, which is critical for PWA installs and user retention.
-
-**Type: Structural** --- depends on Feature Pinned Stops for the full home screen layout (carousel at top). Color/typography chunk can land independently.
-
-**Status: Not started**
-
-**Prerequisites:**
-- Railway + Vercel deployment live (Phase 6 complete).
-- HTML mockups reviewed (`Design Documents/gemini_studio_ctatransit_direction2_fleshedout.html`).
-- Feature Pinned Stops complete before Chunk 2.
-
----
-
-## Scoping decisions
-
-1. **Color tokens.** Implement as CSS custom properties on `:root` in `App.css`. Token names: `--color-bg` (#f2ece0), `--color-text` (#2c2c2c, deep charcoal), `--color-border` (#c9bfa8, muted tan), `--color-surface` (#ffffff or a slightly warmer white for cards). CTA line colors (Red, Blue, Green, etc.) are used only for route badges and status indicators, never for background fills or primary UI chrome.
-
-2. **Typography.** Use a legible serif or humanist sans that reads well outdoors at arm's length. Consult the mockup HTML for the specific font choice. Apply via a Google Fonts import or system-font fallback stack.
-
-3. **CTA line color usage rule.** Line colors appear only on: route badge pills, service alert severity indicators (if they happen to match), and arrival-time countdown accents. Everywhere else: charcoal text on cream background.
-
-4. **Controls and icons.** All buttons use a 1.5px charcoal stroke, no fill, rounded corners. Pin icon follows the same stroke style. No shadows, no gradients. Active/selected state: charcoal fill + cream text (inversion).
-
-5. **Ad unit blending.** Ad containers use `--color-border` as a top divider and `--color-bg` as background, so ad units sit flush in the cream system rather than appearing as a foreign element.
-
-6. **Scope of Chunk 1.** Apply the color tokens and typography to the entire existing UI (App.css + all component CSS) without changing layout or adding new components. This is a safe, reviewable first step.
-
-7. **Scope of Chunk 2.** Rearrange the Home view layout per the design: PinnedStopsBoard carousel at top, route search form below it, results below that. Requires Feature Pinned Stops to be implemented first.
-
----
-
-## Chunk 1 --- Color system and typography
-
-**Files:** `frontend/src/App.css`
-
-**What to build:**
-
-- Add CSS custom properties block at `:root`: `--color-bg`, `--color-text`, `--color-border`, `--color-surface`, `--color-accent` (charcoal).
-- Replace all hardcoded color values throughout `App.css` and any component CSS files with the appropriate token. Do not change layout, spacing, or component structure.
-- Add the chosen font import (per mockup). Update `font-family` on `body` and headings.
-- Apply stroke-style to all buttons: `background: transparent; border: 1.5px solid var(--color-text); color: var(--color-text); border-radius: 6px;`. Active/selected: invert (`background: var(--color-text); color: var(--color-bg)`).
-- Verify contrast: charcoal-on-cream passes WCAG AA for all body text sizes used in the app.
-
-**Notes:**
-- Open the mockup HTML alongside App.css when implementing to match font weight, letter-spacing, and border-radius choices.
-- Do not touch layout rules (flexbox, grid, widths) in this chunk.
-
----
-
-## Chunk 2 --- Home screen layout rearrangement
-
-**Files:** `frontend/src/App.jsx`, `frontend/src/App.css`
-
-**Prerequisites:** Feature Pinned Stops (Chunk 3) complete.
-
-**What to build:**
-
-- Move `PinnedStopsBoard` to the top of the left panel, above the route search form. If no stops are pinned, the board is invisible and the search form stays at the top naturally.
-- Ensure the section order in the left panel matches the design: Pinned Stops -> Route Search -> Results.
-- Verify that `ServiceAlertsBar` (when Feature Service Alerts is implemented) renders below PinnedStopsBoard and above the search form, as described in the layout guidance.
-- Update any hardcoded heights or flex-basis values in `App.css` that assume the search form is at the top.
-
----
-
-## Chunk 3 --- Route card and result visual update
-
-**Files:** `frontend/src/components/RouteCard.jsx`, `frontend/src/components/LoadingSkeleton.jsx`, `frontend/src/App.css`
-
-**What to build:**
-
-- Apply the Heritage stroke style to route cards: cream background, charcoal text, `--color-border` border, no shadow.
-- Line color badges (route pills) keep their CTA colors but use a pill shape (rounded, small, solid fill + white text) for contrast.
-- Loading skeleton uses `--color-border` as the shimmer color instead of any gray.
-- Verify the card visuals match the mockup for the most common route types: train-only, bus-only, mixed.
 
 ---
 

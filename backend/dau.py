@@ -71,11 +71,15 @@ def _save(counts: dict[str, int]) -> None:
 
 # Module-level in-memory state — protected by _lock.
 _current_day: str = ""
-_seen_hashes: set[str] = set()
+_seen_hashes: set[bytes] = set()
 # Visitors already counted for today before this server process started.
 # Loaded from disk when the day initialises so a restart doesn't overwrite them.
 _base_count: int = 0
 _lock = asyncio.Lock()
+
+# Cached HMAC key for today: (_DAILY_SALT + current_day).encode().
+# Recomputed once per day on rollover; avoids per-visit string concat + encode.
+_today_hmac_key: bytes = b""
 
 # In-memory mirror of the persisted counts dict — initialised at import time.
 # Eliminates the disk read that previously happened on every new unique visitor:
@@ -93,7 +97,7 @@ _last_flush_time: float = 0.0
 
 async def record_visit(ip: str) -> None:
     """Hash the IP against today's salt and increment today's unique-visitor count."""
-    global _current_day, _seen_hashes, _base_count, _visitors_since_last_flush, _last_flush_time
+    global _current_day, _seen_hashes, _base_count, _today_hmac_key, _visitors_since_last_flush, _last_flush_time
 
     async with _lock:
         # Recompute today inside the lock so a coroutine that was queued just
@@ -110,17 +114,18 @@ async def record_visit(ip: str) -> None:
                 await loop.run_in_executor(None, _save, _counts_cache)
             # Reload from disk so counts written by a previous process instance
             # (e.g. after a mid-day restart) are not lost.
+            new_counts = await loop.run_in_executor(None, _load)
             _counts_cache.clear()
-            _counts_cache.update(_load())
+            _counts_cache.update(new_counts)
             _seen_hashes = set()
             _current_day = today
+            _today_hmac_key = (_DAILY_SALT + today).encode()
             _base_count = _counts_cache.get(today, 0)
             _visitors_since_last_flush = 0
             _last_flush_time = time.monotonic()
 
         # Compute the digest after confirming today is the authoritative date.
-        hmac_key = (_DAILY_SALT + today).encode()
-        digest = hmac.new(hmac_key, ip.encode(), hashlib.sha256).hexdigest()
+        digest = hmac.new(_today_hmac_key, ip.encode(), hashlib.sha256).digest()
 
         if digest in _seen_hashes:
             return  # already counted today
@@ -129,16 +134,18 @@ async def record_visit(ip: str) -> None:
         _counts_cache[today] = _base_count + len(_seen_hashes)
         _visitors_since_last_flush += 1
 
-        now = time.monotonic()
-        if (
-            _visitors_since_last_flush >= _DAU_WRITE_BATCH
-            or now - _last_flush_time >= _DAU_FLUSH_INTERVAL_SECONDS
-        ):
+        if _visitors_since_last_flush >= _DAU_WRITE_BATCH or time.monotonic() - _last_flush_time >= _DAU_FLUSH_INTERVAL_SECONDS:
+            now = time.monotonic()
             await loop.run_in_executor(None, _save, _counts_cache)
             _visitors_since_last_flush = 0
             _last_flush_time = now
 
 
 async def get_counts() -> dict[str, int]:
-    """Return the persisted DAU counts dict."""
-    return _load()
+    """Return current DAU counts, including in-flight visits not yet flushed to disk."""
+    async with _lock:
+        today = _today_chi()
+        snapshot = dict(_counts_cache)
+        if _current_day == today:
+            snapshot[today] = _base_count + len(_seen_hashes)
+        return snapshot

@@ -55,8 +55,10 @@ export function deleteRoute(id, current) {
 export function getPinnedStops() { return _load(PINNED_KEY); }
 
 // Returns updated array, or null if the cap is already reached.
+// Duplicate check matches on both type AND stop_id — bus stop_ids and train mapids
+// are separate namespaces and can collide on the same numeric value.
 export function pinStop(type, stop_id, label, route_hint, current) {
-  if (current.some((s) => s.stop_id === stop_id)) return current; // already pinned
+  if (current.some((s) => s.type === type && s.stop_id === stop_id)) return current;
   if (current.length >= MAX_ITEMS) return null;
   const next = [...current, { id: crypto.randomUUID(), type, stop_id, label, route_hint }];
   _save(PINNED_KEY, next);

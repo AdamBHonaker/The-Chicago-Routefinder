@@ -13,7 +13,6 @@ import os
 import sys
 import zipfile
 import urllib.request
-import shutil
 from pathlib import Path
 
 GTFS_URL  = "https://www.transitchicago.com/downloads/sch_data/google_transit.zip"
@@ -36,25 +35,19 @@ EXPECTED_FILES = [
 def download_gtfs() -> None:
     GTFS_DIR.mkdir(exist_ok=True)
 
-    total_hint = ""
-    try:
-        head = urllib.request.Request(GTFS_URL, method="HEAD",
-            headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(head, timeout=10) as r:
-            cl = int(r.headers.get("Content-Length", 0))
-            if cl:
-                total_hint = f" (~{cl // (1024*1024)} MB)"
-    except Exception:
-        pass
-    print(f"Downloading CTA GTFS data from {GTFS_URL}{total_hint} ...")
+    print(f"Downloading CTA GTFS data from {GTFS_URL} ...")
     try:
         request = urllib.request.Request(
             GTFS_URL,
             headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36"},
         )
         with urllib.request.urlopen(request, timeout=60) as response:
+            cl = int(response.headers.get("Content-Length", 0))
+            if cl:
+                print(f"  File size: ~{cl // (1024*1024)} MB")
+
             downloaded = 0
-            chunk_size = 64 * 1024  # 64 KB chunks
+            chunk_size = 1024 * 1024  # 1 MB chunks
             last_report_mb = 0
 
             with open(GTFS_ZIP, "wb") as f:
@@ -78,17 +71,20 @@ def download_gtfs() -> None:
 def extract_gtfs() -> None:
     print(f"Extracting to {GTFS_DIR} ...")
     with zipfile.ZipFile(GTFS_ZIP, "r") as zf:
-        zf.extractall(GTFS_DIR)
+        zip_names = set(zf.namelist())
+        for filename in EXPECTED_FILES:
+            if filename in zip_names:
+                zf.extract(filename, GTFS_DIR)
     print("Extraction complete.")
 
 
 def validate_and_report() -> None:
     print("\nGTFS files:")
+    stats = {e.name: e.stat() for e in os.scandir(GTFS_DIR) if e.is_file()}
     all_present = True
     for filename in EXPECTED_FILES:
-        path = GTFS_DIR / filename
-        if path.exists():
-            size_kb = path.stat().st_size / 1024
+        if filename in stats:
+            size_kb = stats[filename].st_size / 1024
             print(f"  ✓  {filename:<25} ({size_kb:,.0f} KB)")
         else:
             print(f"  ✗  {filename:<25} NOT FOUND")
@@ -111,13 +107,12 @@ if __name__ == "__main__":
     # --force always re-downloads.  Non-interactive environments (Railway, CI)
     # skip the prompt but KEEP existing data unless --force is also passed,
     # so deploys don't re-download unnecessarily on every push.
-    force       = "--force" in sys.argv
+    force           = "--force" in sys.argv
     non_interactive = bool(os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("CI"))
-    if GTFS_DIR.exists() and any(GTFS_DIR.glob("*.txt")):
+    sentinel        = GTFS_DIR / "stops.txt"
+    if GTFS_DIR.exists() and sentinel.exists():
         if force:
             print(f"Existing GTFS data found in {GTFS_DIR}. Re-downloading (--force).")
-            shutil.rmtree(GTFS_DIR)
-            print("Old data removed.")
         elif non_interactive:
             print(f"Existing GTFS data found in {GTFS_DIR}. Keeping it (non-interactive; pass --force to re-download).")
             raise SystemExit(0)
@@ -127,8 +122,6 @@ if __name__ == "__main__":
             if answer != "y":
                 print("Aborted. Existing data kept.")
                 raise SystemExit(0)
-            shutil.rmtree(GTFS_DIR)
-            print("Old data removed.")
 
     download_gtfs()
     extract_gtfs()

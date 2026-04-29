@@ -195,8 +195,8 @@ class TestStopArrivalsEndpoint:
         assert resp.status_code == 200
         body = resp.json()
         assert "arrivals" in body
-        assert "40900" in body["arrivals"]
-        arrs = body["arrivals"]["40900"]["arrivals"]
+        assert "train:40900" in body["arrivals"]
+        arrs = body["arrivals"]["train:40900"]["arrivals"]
         assert isinstance(arrs, list)
         assert arrs[0]["route"] == "Red"
         assert arrs[0]["minutes"] == 4

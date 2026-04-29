@@ -1,17 +1,16 @@
 import { useTranslation } from "react-i18next";
-import { LINE_COLORS, getRouteColor } from "../constants.js";
+import { LINE_COLORS } from "../constants.js";
+import LinePill from "./LinePill.jsx";
 
-function ArrivalPill({ route, destination, minutes }) {
-  const isTrainLine = route in LINE_COLORS;
-  const color = getRouteColor(route, "#555");
-  const label = isTrainLine ? route.replace(" Line", "") : route;
-  const due = minutes === 0 ? "Due" : `${minutes} min`;
+function ArrivalRow({ route, destination, minutes }) {
+  const isBus = !(route in LINE_COLORS);
+  const due = minutes === 0 ? "DUE" : `${minutes}m`;
   return (
-    <span className="psb-arrival">
-      <span className="psb-arrival-pill" style={{ background: color }}>{label}</span>
+    <div className="psb-arrival">
+      <LinePill line={route} isBus={isBus} lineCode={isBus ? route : undefined} size="sm" />
       <span className="psb-arrival-dest">{destination}</span>
       <span className="psb-arrival-due">{due}</span>
-    </span>
+    </div>
   );
 }
 
@@ -20,16 +19,25 @@ export default function PinnedStopsBoard({ stops, arrivals, onUnpin, onRefresh }
   if (!stops || stops.length === 0) return null;
 
   return (
-    <div className="psb">
+    <section className="psb">
       <div className="psb-header">
         <span className="psb-title">{t("pinned_stops_heading")}</span>
-        <button className="psb-refresh-btn" onClick={onRefresh} title="Refresh arrivals">
-          ↻
-        </button>
+        <div className="psb-header-right">
+          <span className="signal-lamp" aria-label={t("psb_live_data")} />
+          <button
+            className="psb-refresh-btn"
+            onClick={onRefresh}
+            title={t("psb_refresh")}
+            aria-label={t("psb_refresh")}
+          >
+            ↺
+          </button>
+        </div>
       </div>
+
       <div className="psb-cards">
         {stops.map((stop) => {
-          const data = arrivals?.[stop.stop_id];
+          const data = arrivals?.[`${stop.type}:${stop.stop_id}`];
           const arrList = data?.arrivals ?? [];
           const lastMin = data?.last_departure_minutes;
           const showLastTrain = lastMin !== undefined && lastMin !== null;
@@ -38,22 +46,25 @@ export default function PinnedStopsBoard({ stops, arrivals, onUnpin, onRefresh }
             <div key={stop.id} className="psb-card">
               <div className="psb-card-header">
                 <span className="psb-stop-label">{stop.label}</span>
-                <span className="psb-route-hint">{stop.route_hint}</span>
+                {stop.route_hint && (
+                  <span className="psb-route-hint">{stop.route_hint}</span>
+                )}
                 <button
                   className="psb-unpin-btn"
                   onClick={() => onUnpin(stop.id)}
-                  title="Unpin stop"
-                  aria-label={`Unpin ${stop.label}`}
+                  title={t("psb_unpin_stop")}
+                  aria-label={t("unpin_stop", { stop: stop.label })}
                 >
                   ×
                 </button>
               </div>
+
               <div className="psb-arrivals">
                 {arrList.length === 0 ? (
                   <span className="psb-no-arrivals">{t("no_arrivals")}</span>
                 ) : (
                   arrList.map((a, i) => (
-                    <ArrivalPill
+                    <ArrivalRow
                       key={i}
                       route={a.route}
                       destination={a.destination}
@@ -62,15 +73,16 @@ export default function PinnedStopsBoard({ stops, arrivals, onUnpin, onRefresh }
                   ))
                 )}
               </div>
+
               {showLastTrain && (
-                <div className={`psb-last-train${lastMin <= 15 ? " psb-last-train--urgent" : ""}`}>
+                <p className={`psb-last-train${lastMin <= 15 ? " psb-last-train--urgent" : ""}`}>
                   {t("last_train_in", { min: lastMin })}
-                </div>
+                </p>
               )}
             </div>
           );
         })}
       </div>
-    </div>
+    </section>
   );
 }

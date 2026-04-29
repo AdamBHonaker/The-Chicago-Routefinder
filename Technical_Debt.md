@@ -8,4 +8,4 @@ Known technical debt catalogued for future resolution. Priority: 🔴 High · �
 
 ---
 
-_All 17 items from the 2026-04-28 scan (TD-001 through TD-017) have been resolved. See [RESOLVED_HISTORY.md](RESOLVED_HISTORY.md) for details._
+_No outstanding items at this time._

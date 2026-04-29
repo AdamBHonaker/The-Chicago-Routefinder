@@ -85,10 +85,11 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     globals: true,
-    include: ["src/tests/**/*.test.js"],
+    include: ["src/tests/**/*.test.{js,jsx}"],
+    setupFiles: ["src/tests/setup.js"],
     coverage: {
       provider: "v8",
-      include: ["src/utils/**", "src/hooks/**", "src/favorites.js"],
+      include: ["src/utils/**", "src/hooks/**", "src/favorites.js", "src/components/**"],
     },
   },
 });

@@ -16,9 +16,9 @@ The NWS API provides free, open data with no API key required (but a User-Agent 
 - Dewpoint (°F)
 - Wind speed/direction (mph/degrees)
 - Precipitation probability/type/amount (inches)
-- Relative humidity (%)
+- Relative humidity (%) — parsed and used for heat-index calculation
 - Short/detailed forecast descriptions
-- Feels-like temperature (not directly provided; must derive from wind chill/heat index formulas)
+- Feels-like temperature (derived: NWS wind-chill formula ≤50°F/≥3 mph; NWS Rothfusz heat-index ≥80°F using actual RH; actual temp otherwise)
 
 ## Data Types in Current Observations (`/observations/latest`)
 

@@ -98,3 +98,31 @@ export function getRouteColor(line, fallback = "#4a9eff") {
 // crossing or deliberate detour before the system re-evaluates the route.
 // ---------------------------------------------------------------------------
 export const REROUTE_SUPPRESSION_MS = 90_000;
+
+// ---------------------------------------------------------------------------
+// Trip-tracking proximity thresholds (TD-106).
+// Used by processTripPosition in App.jsx. Kept here so all GPS-related
+// thresholds are tuneable in one file.
+//   - LEG_ADVANCE_RADIUS_M: snap to the next leg when within this distance
+//     of the current leg's endpoint.
+//   - LEG_ADVANCE_RADIUS_VEHICLE_M: wider radius when the user has confirmed
+//     they are on a transit vehicle, since GPS lags behind a moving vehicle.
+//   - WALK_STEP_PROXIMITY_M: mark a walk-step complete when the user is
+//     within this distance of its start coordinate.
+// ---------------------------------------------------------------------------
+export const LEG_ADVANCE_RADIUS_M         = 60;
+export const LEG_ADVANCE_RADIUS_VEHICLE_M = 150;
+export const WALK_STEP_PROXIMITY_M        = 30;
+
+// ---------------------------------------------------------------------------
+// Photo fade-out duration (TD-108).
+// Must match the CSS transition duration on `.transit-photo--fading` in App.css.
+// ---------------------------------------------------------------------------
+export const PHOTO_FADE_MS = 1000;
+
+// ---------------------------------------------------------------------------
+// Masthead epoch year (TD-109). The newspaper-style "VOL." number on the
+// header is computed as (currentYear - MASTHEAD_EPOCH_YEAR). The epoch is the
+// year this project was first published.
+// ---------------------------------------------------------------------------
+export const MASTHEAD_EPOCH_YEAR = 2022;
