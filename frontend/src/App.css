@@ -151,25 +151,13 @@
   min-height: 0; /* required for flex children to scroll independently */
 }
 
+/* Desktop default: 3-column grid, both panels visible regardless of activeTab.
+   Mobile breakpoint below switches to a single-column flex with screen-swap. */
 .layout--split {
   display: grid;
   grid-template-columns: 60px minmax(0, 420px) 1fr;
   min-height: 0;
 }
-
-/* Desktop screen-swap: collapse to 2 columns whenever one of the panels
-   is hidden, so the visible panel fills the remaining viewport. */
-[data-active-tab="map"] .layout--split,
-[data-active-tab="alerts"] .layout--split,
-[data-active-tab="saved"] .layout--split {
-  grid-template-columns: 60px 1fr;
-}
-
-/* Tab-based panel visibility (applies on both desktop and mobile) */
-[data-active-tab="map"] .panel-cards { display: none; }
-[data-active-tab="home"] .panel-map,
-[data-active-tab="alerts"] .panel-map,
-[data-active-tab="saved"] .panel-map { display: none; }
 
 /* Left panel — route cards, form, results */
 .panel-cards {
@@ -275,8 +263,7 @@
   /* Mobile: stack into a single scroll column; hide the desktop rail. */
   .side-rail { display: none; }
 
-  .layout--split,
-  [data-active-tab="map"] .layout--split {
+  .layout--split {
     display: flex;
     flex-direction: column;
     grid-template-columns: none;
@@ -298,6 +285,13 @@
     flex: 1;
     min-height: 0;
   }
+
+  /* Mobile screen-swap: hide the inactive panel so the active one fills
+     the viewport. Desktop keeps both panels visible at all times. */
+  [data-active-tab="map"] .panel-cards { display: none; }
+  [data-active-tab="home"] .panel-map,
+  [data-active-tab="alerts"] .panel-map,
+  [data-active-tab="saved"] .panel-map { display: none; }
 
   /* Tab bar */
   .tab-bar {
