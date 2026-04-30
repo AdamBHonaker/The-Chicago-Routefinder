@@ -13,7 +13,8 @@ export default function WeatherStrip({ weather }) {
 
   const {
     temperature_f,
-    short_forecast,
+    feels_like_f,
+    short_forecast = "",
     precipitation_type,
     precipitation_intensity,
     wind_gust_mph,
@@ -33,17 +34,24 @@ export default function WeatherStrip({ weather }) {
 
   const parts = [short_forecast];
   if (showPrecip && precipLabel) parts.push(precipLabel);
-  if (showWind) parts.push(`gusts ${Math.round(wind_gust_mph)} mph`);
-  const conditionText = parts.join(" · ");
+  if (showWind) parts.push(t("weather_gusts", { mph: Math.round(wind_gust_mph) }));
+  const conditionText = parts.filter(Boolean).join(" · ");
 
   const hasTemp = Number.isFinite(temperature_f);
+  const hasFeelsLike = Number.isFinite(feels_like_f);
+  const showFeelsLike = hasFeelsLike && Math.abs(Math.round(feels_like_f) - Math.round(temperature_f)) >= 2;
 
   return (
     <div className="weather-strip">
       <div className="weather-strip__main">
-        {hasTemp && <span className="weather-strip__temp">{Math.round(temperature_f)}°</span>}
+        {hasTemp && (
+          <span className="weather-strip__temp">
+            {Math.round(temperature_f)}°
+            {showFeelsLike && <span className="weather-strip__feels"> / {t("weather_feels_like", { temp: Math.round(feels_like_f) })}</span>}
+          </span>
+        )}
         <span className="weather-strip__condition">{conditionText}</span>
-        <span className="weather-strip__label">Weather</span>
+        <span className="weather-strip__label">{t("weather_label")}</span>
       </div>
       {alertText && (
         <p className="weather-strip__alert">⚠ {alertText}</p>

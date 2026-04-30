@@ -33,8 +33,9 @@ function WalkLegItem({ leg, index, completedSteps, extraClass = "" }) {
           {stepDone && <span className="leg-step-complete-check">✓</span>}
           {si === 0 ? t("step_walk") : t("step_head")}
           {step.direction_full ? ` ${step.direction_full}` : ""}
-          {` ${t("step_along")} `}
-          <span className="leg-step-street">{step.street}</span>
+          {step.street && step.street !== "unnamed path" && (
+            <>{` ${t("step_along")} `}<span className="leg-step-street">{step.street}</span></>
+          )}
           {` ${t("step_for")} `}
           {formatBlocks(step.blocks ?? 1, step.block_type, t)}
         </span>
@@ -179,7 +180,13 @@ export default memo(function RouteCard({
     const seen = new Set();
     return route.legs
       .filter(l => l.type === "transit")
-      .filter(l => { if (seen.has(l.line)) return false; seen.add(l.line); return true; })
+      .filter(l => {
+        const isBus = l.line in BUS_DIRECTION_COLORS;
+        const key = isBus ? `bus:${l.line_code}` : l.line;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
       .map(l => ({ line: l.line, isBus: l.line in BUS_DIRECTION_COLORS, lineCode: l.line_code }));
   }, [route.legs]);
 

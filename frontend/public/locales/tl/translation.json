@@ -77,5 +77,7 @@
   "trip_dismiss_btn": "Isara",
   "settings_ai_explanation_label": "Paliwanag ng AI",
   "settings_ai_explanation_hint": "Kapag naka-on, nagdaragdag si Claude ng simpleng buod ng iyong mga opsyon sa ruta.",
-  "settings_byok_security_notice": "⚠ Paunawa sa seguridad: Ang iyong susi ay nakaimbak sa browser na ito. Gamitin lamang ang feature na ito sa mga pinagkakatiwalaang personal na device."
+  "settings_byok_security_notice": "⚠ Paunawa sa seguridad: Ang iyong susi ay nakaimbak sa browser na ito. Gamitin lamang ang feature na ito sa mga pinagkakatiwalaang personal na device.",
+  "weather_gusts": "Bugso {{mph}} mph",
+  "weather_label": "Panahon"
 }

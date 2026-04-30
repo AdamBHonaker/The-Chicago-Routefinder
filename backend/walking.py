@@ -268,7 +268,7 @@ def _get_shortest_path(
         return None
 
 
-@lru_cache(maxsize=512)
+@lru_cache(maxsize=256)
 def walk_minutes(
     origin_lat: float,
     origin_lon: float,
@@ -295,7 +295,7 @@ def walk_minutes(
         return _haversine_walk_minutes(origin_lat, origin_lon, dest_lat, dest_lon)
 
 
-@lru_cache(maxsize=512)
+@lru_cache(maxsize=256)
 def _walk_directions_impl(
     origin_lat: float,
     origin_lon: float,
@@ -326,7 +326,7 @@ def _walk_directions_impl(
         end_vertex   = 0
 
         for eid, u, v in zip(epath, vpath, vpath[1:]):
-            name   = _street_name(G.es[eid]["name"])
+            name   = _street_name(G.es[eid].attributes().get("name"))
             length = _edge_lengths[eid]
             if name == current_name:
                 total_length += length
@@ -350,7 +350,7 @@ def _walk_directions_impl(
         total_min = _haversine_walk_minutes(origin_lat, origin_lon, dest_lat, dest_lon)
         fallback_meters = total_min * 60 * WALKING_SPEED_MPS
         fallback_blocks = max(0.5, round(fallback_meters / _LONG_BLOCK_METERS * 2) / 2)
-        return ({"street": "Walk", "direction": "", "direction_full": "", "blocks": fallback_blocks, "block_type": "long", "minutes": total_min, "start_lat": origin_lat, "start_lon": origin_lon},)
+        return ({"street": "", "direction": "", "direction_full": "", "blocks": fallback_blocks, "block_type": "long", "minutes": total_min, "start_lat": origin_lat, "start_lon": origin_lon},)
 
 
 _WALK_DIRECTIONS_MAX_STEPS = 15
@@ -378,7 +378,7 @@ def walk_directions(
     return list(steps[:_WALK_DIRECTIONS_MAX_STEPS])
 
 
-@lru_cache(maxsize=512)
+@lru_cache(maxsize=256)
 def _walk_path_impl(
     origin_lat: float,
     origin_lon: float,

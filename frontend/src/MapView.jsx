@@ -1,8 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import ReactDOM from "react-dom/client";
 import maplibregl from "maplibre-gl";
 import { getRouteColor, BUS_DIRECTION_COLORS } from "./constants.js";
+import { haversineMeters } from "./utils/tripGeometry.js";
 import LinePill from "./components/LinePill.jsx";
+import OriginMarker from "./components/markers/OriginMarker.jsx";
+import DestinationMarker from "./components/markers/DestinationMarker.jsx";
+import LivePositionMarker from "./components/markers/LivePositionMarker.jsx";
 
 // ---------------------------------------------------------------------------
 // Map defaults — overridable via props for future view modes
@@ -25,6 +30,43 @@ const isValidCoord = (c) =>
   Array.isArray(c) && c.length === 2 &&
   typeof c[0] === "number" && isFinite(c[0]) &&
   typeof c[1] === "number" && isFinite(c[1]);
+
+// ---------------------------------------------------------------------------
+// Marker utilities
+// ---------------------------------------------------------------------------
+
+// Intentional snapshot: evaluated at page load, not updated mid-session.
+// A full reload picks up any change to the OS reduced-motion preference.
+const prefersReducedMotion =
+  typeof window !== "undefined" &&
+  window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+// Circular exponential moving average for heading smoothing.
+// alpha=0.3 → each new reading contributes 30%, history 70% (~2–3 reading lag at 1 Hz GPS).
+// Handles the 0°/360° wrap-around correctly — a naive average of 350° and 10° yields 180°.
+function smoothHeading(prev, next, alpha = 0.3) {
+  const delta = ((next - prev + 540) % 360) - 180;
+  return (prev + alpha * delta + 360) % 360;
+}
+
+// Mount a React component as a MapLibre marker at the given [lng, lat].
+// Returns { marker, root } — keep the reference to update props or remove later.
+function mountMarker(map, Component, props, lngLat) {
+  const el = document.createElement("div");
+  const root = ReactDOM.createRoot(el);
+  root.render(<Component {...props} />);
+  const marker = new maplibregl.Marker({ element: el, anchor: "center" })
+    .setLngLat(lngLat)
+    .addTo(map);
+  return { marker, root };
+}
+
+// Remove a marker previously created by mountMarker and clear the ref.
+function removeMarker(ref) {
+  ref.current?.marker.remove();
+  ref.current?.root.unmount();
+  ref.current = null;
+}
 
 // ---------------------------------------------------------------------------
 // Layer management helpers
@@ -180,53 +222,6 @@ function renderStopMarkers(map, legs, legGeoCoords, legColors, layerIds, sourceI
   });
 }
 
-// renderOriginDestMarkers — Pass 3 of route rendering.
-// Adds a blue origin dot and a dark destination dot using the explicit coord
-// props if available, falling back to the first/last leg path point. (TD-037)
-function renderOriginDestMarkers(map, legs, originCoords, destCoords, layerIds, sourceIds) {
-  const originPt = originCoords
-    ? [originCoords[1], originCoords[0]]   // [lat,lon] → [lon,lat]
-    : (() => { const p = legs[0]?.path?.[0]; return p ? toGeo(p) : null; })();
-  if (originPt) {
-    _trackSource(map, "route-origin", {
-      type: "geojson",
-      data: { type: "Feature", geometry: { type: "Point", coordinates: originPt } },
-    }, sourceIds);
-    _trackLayer(map, {
-      id:     "route-origin-circle",
-      type:   "circle",
-      source: "route-origin",
-      paint:  {
-        "circle-radius":       9,
-        "circle-color":        "#4a9eff",
-        "circle-stroke-width": 2,
-        "circle-stroke-color": "#ffffff",
-      },
-    }, layerIds);
-  }
-
-  const lastLegPath = legs.length > 0 ? legs[legs.length - 1]?.path : null;
-  const destPt = destCoords
-    ? [destCoords[1], destCoords[0]]       // [lat,lon] → [lon,lat]
-    : (lastLegPath?.length ? toGeo(lastLegPath[lastLegPath.length - 1]) : null);
-  if (destPt) {
-    _trackSource(map, "route-dest", {
-      type: "geojson",
-      data: { type: "Feature", geometry: { type: "Point", coordinates: destPt } },
-    }, sourceIds);
-    _trackLayer(map, {
-      id:     "route-dest-circle",
-      type:   "circle",
-      source: "route-dest",
-      paint:  {
-        "circle-radius":       9,
-        "circle-color":        "#222222",
-        "circle-stroke-width": 2,
-        "circle-stroke-color": "#ffffff",
-      },
-    }, layerIds);
-  }
-}
 
 function _renderRouteInner(map, route, originCoords, destCoords, layerIds, sourceIds) {
   const { legs } = route;
@@ -246,7 +241,6 @@ function _renderRouteInner(map, route, originCoords, destCoords, layerIds, sourc
 
   renderPolylines(map, legs, legGeoCoords, legColors, allGeoCoords, layerIds, sourceIds);
   renderStopMarkers(map, legs, legGeoCoords, legColors, layerIds, sourceIds);
-  renderOriginDestMarkers(map, legs, originCoords, destCoords, layerIds, sourceIds);
 
   // ── Auto-fit: snap to bounding box of all route coordinates ───────────────
   if (allGeoCoords.length > 0) {
@@ -280,7 +274,11 @@ export default function MapView({
   const mapRef        = useRef(null);
   const routeLayerIds  = useRef([]);   // tracked IDs set during renderRoute
   const routeSourceIds = useRef([]);
-  const userPosLayerRef = useRef(false); // whether user-position layer has been added
+  const originMarkerRef    = useRef(null); // { marker, root } for OriginMarker
+  const destMarkerRef      = useRef(null); // { marker, root } for DestinationMarker
+  const liveMarkerRef      = useRef(null); // { marker, root } for LivePositionMarker
+  const smoothedHeadingRef = useRef(0);    // circular EMA state for heading
+  const arrivedRef         = useRef(false); // one-way latch: destination arrived
   const [unlocked, setUnlocked] = useState(false);
   const [styleError, setStyleError] = useState(false);
 
@@ -348,7 +346,6 @@ export default function MapView({
       });
 
       mapRef.current = map;
-      userPosLayerRef.current = false; // reset on new map instance
     }, 0);
 
     return () => {
@@ -361,61 +358,110 @@ export default function MapView({
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
 
-  // Re-render route layers whenever the route prop changes
+  // Re-render route layers and origin/destination markers whenever route/coords change.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
 
     const render = () => {
+      // Clear previous polylines/stop markers and React origin/dest markers.
       clearRouteLayers(map, routeLayerIds.current, routeSourceIds.current);
-      if (route) renderRoute(map, route, originCoords, destCoords, routeLayerIds.current, routeSourceIds.current);
+      removeMarker(originMarkerRef);
+      removeMarker(destMarkerRef);
+      arrivedRef.current = false;
+
+      if (!route) return;
+
+      renderRoute(map, route, originCoords, destCoords, routeLayerIds.current, routeSourceIds.current);
+
+      // Resolve origin lngLat — explicit prop first, then first path point of first leg.
+      const originLngLat = originCoords
+        ? [originCoords[1], originCoords[0]]
+        : (() => { const p = route.legs?.[0]?.path?.[0]; return p ? toGeo(p) : null; })();
+
+      // Resolve dest lngLat — explicit prop first, then last path point of last leg.
+      const lastLeg = route.legs?.[route.legs.length - 1];
+      const destLngLat = destCoords
+        ? [destCoords[1], destCoords[0]]
+        : (lastLeg?.path?.length ? toGeo(lastLeg.path[lastLeg.path.length - 1]) : null);
+
+      // Render order: origin first, destination second — user position (live effect) last.
+      if (originLngLat) {
+        originMarkerRef.current = mountMarker(map, OriginMarker, {}, originLngLat);
+      }
+      if (destLngLat) {
+        destMarkerRef.current = mountMarker(map, DestinationMarker, { arrived: false }, destLngLat);
+      }
     };
 
     if (map.isStyleLoaded()) {
       render();
     } else {
-      // Style not yet loaded — defer until it is, clean up if route changes first
+      // Style not yet loaded — defer until it is, clean up if route changes first.
       map.once("load", render);
       return () => map.off("load", render);
     }
-  // `renderRoute` and `clearRouteLayers` are stable module-level functions;
-  // `routeLayerIds`/`routeSourceIds` are refs — none are reactive values.
+  // `renderRoute`, `clearRouteLayers`, `mountMarker`, `removeMarker` are stable module-level
+  // functions; refs are not reactive values — omitting them is correct.
   }, [route, originCoords, destCoords]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // User position dot — shown during an active trip
+  // Live position marker — shown during an active trip.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
 
     function render() {
       if (tripActive && userPosition) {
-        const geoData = {
-          type: "Feature",
-          geometry: { type: "Point", coordinates: [userPosition.lng, userPosition.lat] },
+        // Smooth the raw heading before it reaches the marker.
+        if (Number.isFinite(userPosition.heading)) {
+          smoothedHeadingRef.current = smoothHeading(
+            smoothedHeadingRef.current,
+            userPosition.heading,
+          );
+        }
+
+        // Arrived latch — 50 m threshold, never resets during a trip.
+        if (!arrivedRef.current && destCoords) {
+          const dist = haversineMeters(
+            { lat: userPosition.lat, lng: userPosition.lng },
+            { lat: destCoords[0], lng: destCoords[1] }, // destCoords is [lat, lon]
+          );
+          if (dist <= 50) {
+            arrivedRef.current = true;
+            destMarkerRef.current?.root.render(
+              <DestinationMarker arrived={true} />,
+            );
+          }
+        }
+
+        const markerProps = {
+          heading: smoothedHeadingRef.current,
+          hasHeading: Number.isFinite(userPosition.heading),
+          reducedMotion: prefersReducedMotion,
         };
 
-        if (!userPosLayerRef.current) {
-          map.addSource("user-position-source", { type: "geojson", data: geoData });
-          map.addLayer({
-            id:     "user-position-layer",
-            type:   "circle",
-            source: "user-position-source",
-            paint:  {
-              "circle-color":        "#4A90E2",
-              "circle-radius":       10,
-              "circle-stroke-width": 2,
-              "circle-stroke-color": "#ffffff",
-            },
-          });
-          userPosLayerRef.current = true;
-          // Center map on first GPS fix
+        if (!liveMarkerRef.current) {
+          liveMarkerRef.current = mountMarker(
+            map,
+            LivePositionMarker,
+            markerProps,
+            [userPosition.lng, userPosition.lat],
+          );
+          // Center map on first GPS fix.
           map.flyTo({ center: [userPosition.lng, userPosition.lat], zoom: 15 });
         } else {
-          map.getSource("user-position-source")?.setData(geoData);
-          try { map.setLayoutProperty("user-position-layer", "visibility", "visible"); } catch {}
+          liveMarkerRef.current.marker.setLngLat([userPosition.lng, userPosition.lat]);
+          liveMarkerRef.current.root.render(<LivePositionMarker {...markerProps} />);
+          // Keep user centered while map is locked during an active trip.
+          if (!unlocked) {
+            map.easeTo({ center: [userPosition.lng, userPosition.lat] });
+          }
         }
-      } else if (userPosLayerRef.current) {
-        try { map.setLayoutProperty("user-position-layer", "visibility", "none"); } catch {}
+      } else {
+        // Trip ended or no position — tear down marker and reset transient state.
+        removeMarker(liveMarkerRef);
+        smoothedHeadingRef.current = 0;
+        arrivedRef.current = false;
       }
     }
 
@@ -424,8 +470,10 @@ export default function MapView({
       return () => map.off("load", render);
     }
     render();
-  // `mapRef` and `userPosLayerRef` are refs, not reactive values — omitting them is correct.
-  }, [tripActive, userPosition]); // eslint-disable-line react-hooks/exhaustive-deps
+  // `mapRef`, refs, and module-level helpers are not reactive values — omitting is correct.
+  // `destCoords` is intentionally omitted: the arrived latch resets via the route effect
+  // when destCoords changes, and the latch only ever needs the coord at latch-check time.
+  }, [tripActive, userPosition, unlocked]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleUnlock() {
     const map = mapRef.current;
@@ -462,7 +510,7 @@ export default function MapView({
       )}
       {primaryTransitLeg && (
         <div className="map-train-card">
-          <div className="map-train-card__kicker">{t("map_your_train")}</div>
+          <div className="map-train-card__kicker">{t(primaryTransitLeg.line in BUS_DIRECTION_COLORS ? "map_your_bus" : "map_your_train")}</div>
           <div className="map-train-card__line">
             <LinePill
               line={primaryTransitLeg.line}

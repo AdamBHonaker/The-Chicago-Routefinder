@@ -88,3 +88,83 @@ export function distanceToPath(userPosition, path) {
   }
   return minDist;
 }
+
+/**
+ * Pure trip-position computation — no React state or refs.
+ * Calculates what state changes should result from a GPS position update and
+ * returns them as plain values; the caller (App.jsx) applies them to state/refs.
+ *
+ * @param {{ lat: number, lng: number }} pos  Current GPS position
+ * @param {object[]} legs  Route legs array
+ * @param {object} ctx
+ * @param {number}   ctx.currentLegIdx          Active leg index (from ref)
+ * @param {boolean}  ctx.onVehicle              User confirmed on a transit vehicle
+ * @param {number}   ctx.suppressRerouteUntilMs Epoch ms until reroute suppressed
+ * @param {Set<string>} ctx.completedSteps      Current completed walk-step keys
+ * @param {number}   ctx.legAdvanceRadius        Proximity to advance leg (m)
+ * @param {number}   ctx.legAdvanceRadiusVehicle Wider proximity when on vehicle (m)
+ * @param {number}   ctx.walkStepProximity       Proximity to mark step complete (m)
+ * @param {number}   ctx.offRouteThreshold       Distance to flag off-route (m)
+ * @param {number}  [ctx.nowMs]                  Current time (injectable for tests)
+ * @returns {{
+ *   nextLegIdx: number | null,
+ *   clearOffRoute: boolean,
+ *   addedStepKeys: string[],
+ *   isOffRoute: boolean | null,
+ * }}
+ */
+export function computeTripPositionUpdates(pos, legs, {
+  currentLegIdx,
+  onVehicle,
+  suppressRerouteUntilMs,
+  completedSteps,
+  legAdvanceRadius,
+  legAdvanceRadiusVehicle,
+  walkStepProximity,
+  offRouteThreshold,
+  nowMs = Date.now(),
+}) {
+  let idx = currentLegIdx ?? 0;
+  let nextLegIdx = null;
+  let clearOffRoute = false;
+
+  // 1. Leg advancement: advance when within proximity of the current leg's endpoint.
+  const leg = legs[idx];
+  if (leg) {
+    const end = legEndCoord(leg);
+    const radius = (onVehicle && leg.type === "transit") ? legAdvanceRadiusVehicle : legAdvanceRadius;
+    if (end && haversineMeters(pos, end) < radius) {
+      const next = Math.min(idx + 1, legs.length - 1);
+      if (next !== idx) {
+        nextLegIdx = next;
+        idx = next;
+        if (legs[next]?.type !== "walk") clearOffRoute = true;
+      }
+    }
+  }
+
+  // 2. Walk-step completion: mark steps complete when within proximity of their start.
+  const activeLeg = legs[idx];
+  const addedStepKeys = [];
+  if (activeLeg?.type === "walk" && activeLeg.directions?.length) {
+    activeLeg.directions.forEach((step, si) => {
+      const key = `${idx}-${si}`;
+      if (
+        step.start_lat !== undefined &&
+        step.start_lon !== undefined &&
+        !completedSteps.has(key) &&
+        haversineMeters(pos, { lat: step.start_lat, lng: step.start_lon }) < walkStepProximity
+      ) {
+        addedStepKeys.push(key);
+      }
+    });
+  }
+
+  // 3. Off-route detection: only during walk legs and outside suppression window.
+  let isOffRoute = null;
+  if (activeLeg?.type === "walk" && nowMs > suppressRerouteUntilMs) {
+    isOffRoute = distanceToPath(pos, activeLeg.path) > offRouteThreshold;
+  }
+
+  return { nextLegIdx, clearOffRoute, addedStepKeys, isOffRoute };
+}

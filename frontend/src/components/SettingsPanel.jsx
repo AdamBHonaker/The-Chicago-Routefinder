@@ -1,8 +1,6 @@
 import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import { isValidByokKey } from "../constants.js";
-
-const BYOK_ENABLED = import.meta.env.VITE_BYOK_ENABLED === "true";
+import { isValidByokKey, BYOK_ENABLED } from "../constants.js";
 const WALK_SPEEDS = ["slow", "standard", "brisk"];
 
 export default function SettingsPanel({

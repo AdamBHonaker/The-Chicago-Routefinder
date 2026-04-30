@@ -23,7 +23,7 @@ export const LIMIT_ERROR_DISMISS_MS  = 3000;  // save-limit banner auto-dismiss
 export const GEO_OPTIONS = {
   enableHighAccuracy: true,
   timeout: 10000,
-  maximumAge: 30000, // tolerate a 30-s cached fix for one-shot detection
+  maximumAge: 0, // always request a fresh fix — stale cached positions can resolve to IP-based location near the Loop
 };
 
 export const TRIP_GEO_OPTIONS = {
@@ -126,3 +126,10 @@ export const PHOTO_FADE_MS = 1000;
 // year this project was first published.
 // ---------------------------------------------------------------------------
 export const MASTHEAD_EPOCH_YEAR = 2022;
+
+// ---------------------------------------------------------------------------
+// BYOK feature flag — set VITE_BYOK_ENABLED=true in frontend/.env to show
+// the settings panel and include the user's key in requests.
+// The backend must also have BYOK_ENABLED=true to honour the key.
+// ---------------------------------------------------------------------------
+export const BYOK_ENABLED = import.meta.env.VITE_BYOK_ENABLED === "true";

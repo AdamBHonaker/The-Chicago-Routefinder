@@ -118,6 +118,7 @@
   "alerts_advisory": "Advisory",
   "map_underway": "Underway",
   "map_your_train": "Your Train",
+  "map_your_bus": "Your Bus",
   "map_bus_label": "Bus {{code}}",
   "psb_live_data": "Live data",
   "psb_refresh": "Refresh arrivals",
@@ -127,5 +128,6 @@
   "photo_caption_loop_elevated": "The Loop — Elevated Track",
   "photo_caption_blue_line_ohare": "Blue Line — O'Hare",
   "photo_caption_state_lake": "State/Lake — The Loop",
-  "photo_caption_wrigley_addison": "Addison — Wrigley Field"
+  "photo_caption_wrigley_addison": "Addison — Wrigley Field",
+  "weather_label": "Weather"
 }

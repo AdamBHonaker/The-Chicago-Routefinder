@@ -77,5 +77,7 @@
   "trip_dismiss_btn": "Ignoră",
   "settings_ai_explanation_label": "Explicație AI",
   "settings_ai_explanation_hint": "Când este activat, Claude adaugă un rezumat în limbaj simplu al opțiunilor de rută.",
-  "settings_byok_security_notice": "⚠ Notă de securitate: Cheia ta este stocată în acest browser. Folosește această funcție doar pe dispozitive personale de încredere."
+  "settings_byok_security_notice": "⚠ Notă de securitate: Cheia ta este stocată în acest browser. Folosește această funcție doar pe dispozitive personale de încredere.",
+  "weather_gusts": "Rafale {{mph}} mph",
+  "weather_label": "Vreme"
 }

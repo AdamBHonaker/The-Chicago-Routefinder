@@ -287,7 +287,7 @@ async def get_bus_arrivals(
 ALERTS_BASE = os.getenv("CTA_ALERTS_API_URL", "https://lapi.transitchicago.com/api/1.0/alerts.aspx")
 
 # Maps app-internal line_code values to the lowercase routeid the Alerts API expects
-_TRAIN_LINE_TO_ALERT_ID = {
+TRAIN_LINE_TO_ALERT_ID = {
     "Red": "red", "Blue": "blue", "Brn": "brn", "G": "g",
     "Org": "org", "P": "p", "Pink": "pink", "Y": "y",
 }

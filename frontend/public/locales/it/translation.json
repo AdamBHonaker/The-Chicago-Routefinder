@@ -77,5 +77,7 @@
   "trip_dismiss_btn": "Ignora",
   "settings_ai_explanation_label": "Spiegazione AI",
   "settings_ai_explanation_hint": "Quando è attivo, Claude aggiunge un riepilogo in linguaggio semplice delle opzioni del percorso.",
-  "settings_byok_security_notice": "⚠ Avviso di sicurezza: La tua chiave è memorizzata in questo browser. Usa questa funzione solo su dispositivi personali affidabili."
+  "settings_byok_security_notice": "⚠ Avviso di sicurezza: La tua chiave è memorizzata in questo browser. Usa questa funzione solo su dispositivi personali affidabili.",
+  "weather_gusts": "Raffiche {{mph}} mph",
+  "weather_label": "Meteo"
 }

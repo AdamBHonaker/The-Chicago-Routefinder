@@ -47,6 +47,38 @@ A log of features that have been designed and fully implemented. Entries are mov
 29. Feature Service Alerts — CTA Service Alerts Feed — **Bolt-On**
 30. Feature K — Restore Street-Network Walking Graph in Production — **Bolt-On**
 31. Feature Heritage — Editorial Almanac Redesign — **Bolt-On**
+32. Feature MapMarkers — Editorial On-Map Symbols — **Bolt-On**
+
+---
+
+# Feature MapMarkers — Editorial On-Map Symbols
+
+**Completed: 2026-04-30**
+
+**Overview:** Replaced the three legacy on-map symbols (a blue circle origin dot, a dark circle destination dot, and a pulsing blue `circle` layer for live position) with the three orthogonal editorial marks defined in *Specimen E · Map Marks* of the Chicago Routefinder design system. The new marks are deliberately distinct silhouettes — § square, ✦ concentric ring, ➤ compass needle — so they cannot be confused at any zoom level. All three are self-contained React SVG components mounted as MapLibre `Marker` elements via `ReactDOM.createRoot`.
+
+**What was implemented:**
+
+- **`OriginMarker.jsx`** (`frontend/src/components/markers/`) — italic silcrow § inside a double-ruled ink square on a cream paper backing. Supports an optional `label` / `flagSide` flag.
+- **`DestinationMarker.jsx`** — surveyor's crosshair ring (concentric circle + four ticks + bullseye) on a cream backing. Supports an `arrived` boolean: when true the ring fills solid ink, the crosshair/ticks hide, and an italic "arrived" caption appears. Label weight 500 to match `OriginMarker` (both are coordinates, neither is primary).
+- **`LivePositionMarker.jsx`** — rust compass needle inside a pulsing rust ring on a cream backing. Heading-aware: CSS `transform: rotate()` on the needle group with a 200 ms linear transition. Pulse ring uses SMIL `<animate>` nodes that are conditionally not rendered (not just paused) when `reducedMotion={true}`, since `animation-play-state` doesn't reliably pause SMIL in all browsers.
+- **`MapView.jsx`** — `renderOriginDestMarkers` (MapLibre circle layers) deleted. Module-level `prefersReducedMotion`, `smoothHeading` (circular EMA, alpha=0.3, wrap-aware), `haversineMetres`, `mountMarker`, and `removeMarker` helpers added. Five new refs: `originMarkerRef`, `destMarkerRef`, `liveMarkerRef`, `smoothedHeadingRef`, `arrivedRef`. Route effect now mounts React origin/dest markers after polylines (preserving coord-fallback logic). User-position circle layer effect replaced with `LivePositionMarker` logic: heading EMA, 50 m arrived latch (one-way, trip-scoped), fly-to on first GPS fix, center-follow while locked.
+- **`App.css`** — Added scoped `@media (prefers-reduced-motion: reduce) { .marker-live-position animate { animation-play-state: paused !important; } }` as a belt-and-suspenders fallback.
+
+**Key design decisions:**
+- MapLibre integration uses Option A (imperative `maplibregl.Marker` + `ReactDOM.createRoot`) — no `react-map-gl` dependency introduced.
+- CSS `transform` via `style` on the needle group — SVG `transform` *attributes* do not respond to CSS transitions.
+- `prefersReducedMotion` is a module-level snapshot (page-load only, intentional) — a full reload picks up OS changes.
+- Arrived latch is a `useRef` boolean, never reverses during an active trip even if GPS drifts past the 50 m threshold.
+- Labels are omitted when mounting markers on the map; place names surface only in the bottom-sheet route summary.
+- Z-order: render origin → destination → user in DOM order so user paints last (on top).
+
+**Files changed:**
+- `frontend/src/components/markers/OriginMarker.jsx` — new file
+- `frontend/src/components/markers/DestinationMarker.jsx` — new file
+- `frontend/src/components/markers/LivePositionMarker.jsx` — new file
+- `frontend/src/MapView.jsx` — removed `renderOriginDestMarkers`; replaced user-position circle layer; added marker utilities and refs
+- `frontend/src/App.css` — added `.marker-live-position` reduced-motion CSS
 
 ---
 
@@ -137,7 +169,7 @@ A log of features that have been designed and fully implemented. Entries are mov
 
 **Completed: 2026-04-27**
 
-**Overview:** The already-fetched `WeatherContext` (from Feature Weather) was invisible to riders — they could only see weather through Claude's prose. A compact `WeatherStrip` component now appears at the top of every result set, showing temperature, feels-like, short forecast, precipitation badge, and wind gusts at a glance. Active NWS alerts render as an amber one-liner below.
+**Overview:** The already-fetched `WeatherContext` (from Feature Weather) was invisible to riders — they could only see weather through Claude's prose. A compact `WeatherStrip` component now appears at the top of every result set, showing temperature, short forecast, precipitation badge, and wind gusts at a glance. Active NWS alerts render as an amber one-liner below. A "Feels Like" temperature was added in a follow-up fix (BUG-030, 2026-04-30) — see below.
 
 **What was implemented (2 chunks):**
 
@@ -147,10 +179,12 @@ A log of features that have been designed and fully implemented. Entries are mov
   - Updated both `_format_response()` call sites to pass `weather=walk_weather` (Walk mode path) and `weather=weather` (main routing path). Purely additive — callers that don't read the new key are unaffected.
 
 - **Chunk 2 (frontend + i18n):**
-  - `frontend/src/components/WeatherStrip.jsx` (new): Props `weather` (serialized object or null). Returns `null` when weather is null. Line 1: temperature + feels-like (i18n'd) + short forecast text + precipitation badge (shown when `precipitation_type !== "none"`) + wind gust note (shown when `wind_gust_mph >= 15`). Line 2 (optional): amber alert bar `⚠ NWS: {alerts[0]}` when alerts present, truncated to 80 chars.
+  - `frontend/src/components/WeatherStrip.jsx` (new): Props `weather` (serialized object or null). Returns `null` when weather is null. Line 1: temperature + short forecast text + precipitation badge (shown when `precipitation_type !== "none"`) + wind gust note (shown when `wind_gust_mph >= 15`). Line 2 (optional): amber alert bar `⚠ NWS: {alerts[0]}` when alerts present, truncated to 80 chars.
   - `frontend/src/App.jsx`: Added `WeatherStrip` import. Added `weather: data.weather || null` to `setResult` in both `handleSubmit` and `handleReroute`. Mounts `<WeatherStrip weather={result.weather} />` at the top of the `.results` div, above the recommendation text.
   - `frontend/src/App.css`: Added `.weather-strip` (0.85rem, cream-forward `var(--color-surface)` bg, `var(--color-border)` bottom border), `.weather-strip__main` (flex-wrap row), `.weather-strip__badge` (small pill), and `.weather-strip__alert` (`#fef3c7` amber bg, `#2c2c2c` text, 0.8rem). CSS variables include fallbacks for the current dark theme; tokens will activate fully with Feature Heritage.
   - All 22 `frontend/public/locales/*/translation.json` files: Added `weather_feels_like` (`"feels like {{temp}}°F"` / native-language equivalents) and `weather_nws_alert` (`"NWS: {{headline}}"`) keys. NWS short-forecast text remains English (NWS data is English-only).
+
+**Post-launch fix (2026-04-30 BUG-030):** `feels_like_f` was sent by the backend but not rendered. Fixed in `WeatherStrip.jsx`: now shows `/ feels N°` inline with the temperature when the apparent temperature differs from the actual by ≥ 2°F.
 
 ---
 
@@ -201,6 +235,8 @@ A log of features that have been designed and fully implemented. Entries are mov
   - **22 locale files**: `alerts_active_count` and `alerts_dismiss` keys added to all locales.
 
 **Files changed:** `backend/main.py`, `frontend/src/App.jsx`, `frontend/src/App.css`, `frontend/src/components/ServiceAlertsBar.jsx` (new), `frontend/src/components/RouteCard.jsx`, all 22 `frontend/public/locales/*/translation.json`.
+
+**Post-launch enhancement (2026-04-30):** Alerts on the home page are now filtered to only those relevant to the user's currently selected route. Previously all non-dismissed alerts appeared regardless of whether they affected the displayed route. Fixed in `App.jsx`: added `currentRouteLines` (a `useMemo` Set of `line_code` identifiers extracted from the selected route's transit legs) and updated `visibleAlerts` to filter against it. When no route has been searched yet, all alerts continue to show. Alert route names and route leg line codes are both normalized by stripping any " Line" suffix before comparison.
 
 ---
 

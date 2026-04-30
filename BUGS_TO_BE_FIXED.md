@@ -30,3 +30,17 @@ Known issues catalogued for future fixing. Severity: 🔴 High · 🟡 Medium ·
 > Found: 10 bug(s) · 10 fixed (BUG-016, BUG-017, BUG-018, BUG-019, BUG-020, BUG-021, BUG-022, BUG-023, BUG-024, BUG-025) — all resolved, see RESOLVED_HISTORY.md
 
 ---
+
+## Bug Scan — 2026-04-30 (frontend/src/)
+
+> Scanned: `frontend/src/App.jsx`, `frontend/src/MapView.jsx`, `frontend/src/constants.js`, `frontend/src/favorites.js`, `frontend/src/i18n.js`, `frontend/src/main.jsx`, `frontend/src/hooks/useApiQuery.js`, `frontend/src/hooks/useFavorites.js`, `frontend/src/hooks/useLocalStorage.js`, `frontend/src/utils/fetchWithRetry.js`, `frontend/src/utils/tripGeometry.js`, `frontend/src/components/ErrorBoundary.jsx`, `frontend/src/components/LabelSavePanel.jsx`, `frontend/src/components/LinePill.jsx`, `frontend/src/components/LoadingSkeleton.jsx`, `frontend/src/components/LocationInput.jsx`, `frontend/src/components/PinnedStopsBoard.jsx`, `frontend/src/components/RouteCard.jsx`, `frontend/src/components/SavedRoutesPanel.jsx`, `frontend/src/components/ServiceAlertsBar.jsx`, `frontend/src/components/SettingsPanel.jsx`, `frontend/src/components/SideRail.jsx`, `frontend/src/components/SignalLamp.jsx`, `frontend/src/components/TransitPhoto.jsx`, `frontend/src/components/WeatherStrip.jsx`, `frontend/src/components/markers/OriginMarker.jsx`, `frontend/src/components/markers/DestinationMarker.jsx`, `frontend/src/components/markers/LivePositionMarker.jsx`
+> Found: 3 bug(s) · 3 fixed (BUG-026, BUG-027, BUG-028) — all resolved, see RESOLVED_HISTORY.md
+
+---
+
+## Bug Scan — 2026-04-30 (backend/)
+
+> Scanned: `backend/main.py`, `backend/gtfs_loader.py`, `backend/walking.py`, `backend/transit_graph.py` (partial), `backend/cta_client.py`, `backend/route_scoring.py`, `backend/weather_service.py`, `backend/utils.py`, `backend/crowdedness.py`, `backend/dau.py`
+> Found: 2 bug(s) · 2 fixed (BUG-029, BUG-030) — all resolved, see RESOLVED_HISTORY.md
+
+---

@@ -77,5 +77,7 @@
   "trip_dismiss_btn": "Odrzuć",
   "settings_ai_explanation_label": "Wyjaśnienie AI",
   "settings_ai_explanation_hint": "Po włączeniu Claude dodaje proste podsumowanie opcji trasy.",
-  "settings_byok_security_notice": "⚠ Ostrzeżenie bezpieczeństwa: Twój klucz jest przechowywany w tej przeglądarce. Używaj tej funkcji tylko na zaufanych urządzeniach osobistych."
+  "settings_byok_security_notice": "⚠ Ostrzeżenie bezpieczeństwa: Twój klucz jest przechowywany w tej przeglądarce. Używaj tej funkcji tylko na zaufanych urządzeniach osobistych.",
+  "weather_gusts": "Porywy {{mph}} mph",
+  "weather_label": "Pogoda"
 }

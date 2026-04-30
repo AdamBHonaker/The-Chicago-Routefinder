@@ -243,6 +243,7 @@ Sits at top of main column above the form.
 Stack of `.special-dispatch` blocks below pinned stops, above the form.
 
 - Each: kicker is `Major` (rust) / `Minor` (navy) / `Advisory` (mute), serif italic body, mono “{when}” right side, dismiss `×` ghost top-right
+- The page/section title for the full-screen Alerts view must use `var(--ink)` — **not** `var(--paper-bright)`
 
 ### SettingsPanel (`<SettingsPanel>`) — modal/sheet
 
@@ -285,9 +286,9 @@ Replace the current `.header` block with a masthead:
 
 - Top row: caps date (left) “Monday, April 28” + caps “Vol. IV · No. 112” (right). The volume/issue is a deterministic hash of `new Date()` — keep it; it sets the editorial tone.
 - Thick rule
-- Title: “The Chicago” (Fraunces 38/500 italic) + “Routefinder.” (Fraunces 38/700, period in `var(--rust)`)
-- Tagline: serif italic 12, `var(--mute)` — replace `t("tagline")` English string with “A working guide to the trains, buses, and schedules of the city.”
-- Right side: settings ⚙, saved-routes ⭐, transit-mode `<select>`, language `<select>` — restyle as ghost icon buttons with hairline border, no rounded corners
+- Title: “The Chicago” (Fraunces 38/500 italic `var(--ink)`) + “Routefinder.” (Fraunces 38/700 `var(--ink)`, period in `var(--rust)`). **Both halves of the title must use `var(--ink)` — never `var(--paper-bright)` or any paper variant.**
+- Tagline: serif italic 12, `var(--mute)` — replace `t(“tagline”)` English string with “A working guide to the trains, buses, and schedules of the city.”
+- Controls row (settings ⚙, saved-routes ⭐, transit-mode `<select>`, language `<select>`): placed **below the title, above the origin/destination form** — not in the top-right of the masthead. Styled as ghost icon buttons / selects with hairline border, no rounded corners. This placement prevents horizontal overflow on narrow viewports.
 
 ### Tab bar (mobile — implement)
 
@@ -302,7 +303,13 @@ Replace the current single-column scroll model with a **fixed bottom tab bar** o
 
 ### Map overlays
 
-The MapLibre map itself is unchanged. Add a floating `.special-dispatch` card top-right showing live train info (“Train №412 · 3 min away”), and a bottom-left line legend chip. These are pure CSS additions on top of the existing `<MapView>`.
+The MapLibre map itself is unchanged. Add a floating `.map-train-card` panel top-right showing live vehicle info, and a bottom-left `.map-legend` line chip. These are pure CSS additions on top of the existing `<MapView>`.
+
+**Vehicle label rules:**
+- When on a train route: label reads **”Your Train”**
+- When on a bus route: label reads **”Your Bus”**
+- The label is driven by whether the active route uses `LINE_COLORS` (train) vs `BUS_DIRECTION_COLORS` (bus)
+- The route name text beside the vehicle symbol (e.g. “Bus 78”, “Red Line”) uses `var(--ink)` — **never** a paper or muted color
 
 ## Screens (full inventory)
 

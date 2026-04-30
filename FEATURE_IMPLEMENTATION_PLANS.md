@@ -16,6 +16,11 @@ Chunked plans for upcoming major features, followed by ideas deferred until post
 2. Feature SouthExpansion — South Side 0.25-Mile Walking Radius Expansion — **Structural** (depends on Feature K ✅)
 3. Feature Monetization — House Ads (Phase 1; third-party networks deferred) — **Bolt-On**
 4. Feature TabTransition — Tab-change page transition animation — **Bolt-On**
+5. Feature ReLock — Re-lock / "Follow Me" Map Button — **Bolt-On**
+6. Feature ArrivedToast — Arrived Notification Toast — **Bolt-On** (pairs naturally with Feature ReLock)
+7. Feature TapRecentre — Tap Live Position Marker to Re-lock — **Bolt-On** (depends on Feature ReLock)
+8. Feature RouteProgress — Grey Out Completed Route Legs — **Bolt-On**
+9. Feature HeadingUp — Heading-Up Map Orientation — **Bolt-On**
 
 ---
 
@@ -449,3 +454,263 @@ The mobile `@media (max-width: 800px)` block already overrides layout to `displa
 ## Why this was deferred
 
 The transition cannot be added as a simple CSS one-liner because the current `display: none` architecture is load-bearing for the grid collapse. Changing it requires careful verification of the desktop layout at every tab combination. The risk of a subtle layout regression (e.g. the map being 60px narrower than intended on home tab) outweighs the purely cosmetic benefit of a 220ms slide. Implement this during a focused layout QA session where all 4 tabs × desktop + mobile + RTL can be verified before merging.
+
+---
+
+# Consideration — Migrate MapView to react-map-gl/maplibre
+
+## Context
+
+During the On-Map Symbols implementation (2026-04-30), we chose **Option A** for marker integration: raw `maplibregl.Marker` + `ReactDOM.createRoot`, keeping the existing imperative MapLibre GL JS approach in `MapView.jsx`. The three editorial markers (§ origin, ✦ destination, ➤ live position) are now proper React SVG components mounted this way — see Feature MapMarkers in `FEATURES_IMPLEMENTED_HISTORY.md`.
+
+`react-map-gl/maplibre` was considered but deferred because:
+- The existing imperative approach is already well-managed (tracked layer/source IDs, `clearRouteLayers`, solid `useEffect` cleanup)
+- The `setTimeout(0)` StrictMode fix, interaction lock system, and style error handler all work correctly and would need careful re-porting
+- No user-facing correctness benefit — purely a developer ergonomics improvement
+
+## When to reconsider
+
+Migrate to `react-map-gl/maplibre` if any of the following arise:
+- A new map feature requires complex layer/source lifecycle that the imperative approach struggles with
+- Layer or source leaks appear in production (layers not cleaning up between route changes)
+- The imperative `_trackSource`/`_trackLayer` pattern becomes hard to follow as MapView grows
+
+## What migration would involve
+
+1. Replace `new maplibregl.Map(...)` init block with `<Map>` component from `react-map-gl/maplibre`
+2. Re-port the `setTimeout(0)` StrictMode WebGL fix (may not be needed — check react-map-gl version)
+3. Replace `map.addSource`/`map.addLayer` calls with `<Source>`/`<Layer>` JSX children
+4. Replace imperative `maplibregl.Marker` + `ReactDOM.createRoot` marker mounting with `<Marker>` wrappers
+5. Re-port interaction lock system (`scrollZoom.disable()` etc.) via `<Map>` event handlers or `ref`
+6. Re-port style error handling (`map.on("error", ...)`) via `<Map onError={...}>` prop
+
+---
+
+# Consideration (Optional) — Intermediate Transfer Station Marks on Map
+
+## Decision
+
+During the On-Map Symbols handoff (2026-04-30), intermediate transfer station marks were explicitly **ruled out** for the initial implementation. The polyline shape already communicates the route; the existing board/exit circle rendering provides sufficient transfer context. Adding more marks was judged to clutter the editorial language without meaningful navigational benefit.
+
+## When to reconsider
+
+Only revisit if user research or feedback indicates riders are confused about where to transfer. The bar should be high — a cluttered map is a worse outcome than a sparse one in the editorial design language.
+
+## If implemented
+
+- Use a smaller mark than the origin/destination markers (suggested: 8–10 px, no label)
+- Render only at board/exit points for each transit leg, not at every intermediate stop
+- Must not visually compete with the origin § and destination ✦ marks
+- Z-order: transfer marks below destination, above polylines
+
+---
+
+# Feature ReLock — Re-lock / "Follow Me" Map Button
+
+## Overview
+
+Once a user unlocks the map during an active trip to look around, there is no way to resume position-following without ending the trip. The unlock button (`map-unlock-btn`) disappears after the first tap and `unlocked` stays `true` for the trip's duration. A "Follow me" / "↻ Follow" button that re-engages position-following closes this loop.
+
+**Type: Bolt-On** — all position-following logic (`map.easeTo`, the `unlocked` state, the live marker) already exists; this feature is purely a UI control wired to `setUnlocked(false)`.
+
+## Behaviour
+
+- Button appears only during an active trip (`tripActive && unlocked`).
+- Tapping it calls `setUnlocked(false)`, which causes the live position effect to resume `map.easeTo()` on the next GPS update.
+- The button disappears again once following resumes (same visibility condition: `tripActive && unlocked`).
+- Editorial style: same hairline/cream/serif-italic treatment as the existing `map-unlock-btn` — they are inverse states of each other.
+
+## Chunk 1 — UI control
+
+**Files:** `frontend/src/MapView.jsx`, `frontend/src/App.css`
+
+In the `MapView` JSX, add a button alongside the existing `map-unlock-btn`:
+
+```jsx
+{route && tripActive && unlocked && !styleError && (
+  <button className="map-relock-btn" onClick={() => setUnlocked(false)}>
+    ↻ Follow
+  </button>
+)}
+```
+
+Add `.map-relock-btn` CSS — same base as `.map-unlock-btn` but positioned bottom-right (or top-left, away from the unlock button's position). Verify both buttons never appear simultaneously (`map-unlock-btn` shows when `!unlocked`, `map-relock-btn` when `unlocked`).
+
+---
+
+# Feature ArrivedToast — Arrived Notification Toast
+
+## Overview
+
+The destination arrived latch fires silently — the ✦ ring fills solid ink, but nothing draws the user's eye to the screen. Riders watching the street or their phone lock screen miss the visual cue entirely. A brief editorial toast that auto-dismisses after ~5 seconds completes the trip arc.
+
+**Type: Bolt-On** — the `arrivedRef` flip already fires in the live position effect; this feature adds a React state flag and a styled `<div>`. No new GPS or routing logic needed.
+
+**Pairs naturally with Feature ReLock** — implement in the same session if both are being built.
+
+## Behaviour
+
+- When `arrivedRef.current` flips to `true`, also set a React state flag `arrivedToast: true` in `MapView` (or lift to `App.jsx` if the toast should appear over the full UI rather than just the map).
+- Toast auto-dismisses after 5 seconds (`setTimeout` clearing the flag).
+- Toast is also dismissible by tap.
+- Does not re-trigger if the user re-plans a route and arrives again — the latch reset on trip end handles that.
+
+## Chunk 1 — Toast state and trigger
+
+**Files:** `frontend/src/MapView.jsx`
+
+Add `const [showArrivedToast, setShowArrivedToast] = useState(false)`. In the live position effect, alongside `arrivedRef.current = true`, call `setShowArrivedToast(true)`.
+
+```js
+if (dist <= 50) {
+  arrivedRef.current = true;
+  setShowArrivedToast(true);
+  destMarkerRef.current?.root.render(<DestinationMarker arrived={true} />);
+}
+```
+
+In the trip-end cleanup block, also call `setShowArrivedToast(false)`.
+
+## Chunk 2 — Toast UI and CSS
+
+**Files:** `frontend/src/MapView.jsx`, `frontend/src/App.css`
+
+```jsx
+{showArrivedToast && (
+  <div className="map-arrived-toast" onClick={() => setShowArrivedToast(false)}>
+    <span className="map-arrived-toast__kicker">ARRIVED</span>
+    <span className="map-arrived-toast__body">You have reached your destination.</span>
+  </div>
+)}
+```
+
+Editorial style: cream paper, ink border (hairline), Fraunces italic body, Inter 800 caps kicker (rust). Positioned top-center of the map. `@keyframes` fade-in from `opacity: 0` → `1` over 300 ms; fade-out can be CSS-driven or timer-driven. Add `prefers-reduced-motion` suppression of the fade animation.
+
+---
+
+# Feature TapRecentre — Tap Live Position Marker to Re-lock
+
+## Overview
+
+Tapping the ➤ live position marker re-engages map following — an alternative entry point to Feature ReLock that feels natural to users who instinctively tap the "you are here" indicator. The acceptance checklist in the On-Map Symbols handoff already noted this as a future interactive feature requiring a 44×44 tap target wrapper.
+
+**Type: Bolt-On** — depends on Feature ReLock (shares the same `setUnlocked(false)` call). Implement after Feature ReLock is in place.
+
+## Chunk 1 — Add click handler to live marker element
+
+**Files:** `frontend/src/MapView.jsx`
+
+`mountMarker` creates a `div` element and passes it to `maplibregl.Marker`. After `mountMarker` returns, attach a click listener to the element:
+
+```js
+liveMarkerRef.current = mountMarker(map, LivePositionMarker, markerProps, [lng, lat]);
+liveMarkerRef.current.marker.getElement().addEventListener("click", () => {
+  setUnlocked(false);
+});
+```
+
+## Chunk 2 — 44×44 tap target
+
+**Files:** `frontend/src/App.css`
+
+The `LivePositionMarker` SVG is 36×36 px. Wrap the marker element in a larger transparent hit area:
+
+```css
+.marker-live-position-wrapper {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+```
+
+Update `mountMarker` call for the live marker to set `el.className = "marker-live-position-wrapper"` before rendering the component into it.
+
+---
+
+# Feature RouteProgress — Grey Out Completed Route Legs
+
+## Overview
+
+As the user advances along a route, walk and transit polylines they have already passed shift to a muted visual state — the same pattern as `.leg-complete` in the route card, applied to the map. This gives a clear sense of progress and reduces cognitive load by de-emphasising past legs.
+
+**Type: Bolt-On** — the route polyline layers are already rendered per-leg; changing their paint properties is a single `map.setPaintProperty()` call per layer. The challenge is detecting which leg the user is currently on.
+
+## Behaviour
+
+- A leg is "complete" when the user has passed its terminal point (exit stop for transit legs, final path point for walk legs) within a configurable radius (suggested: 80 m).
+- Completed walk legs: `line-color` → `var(--mute)` equivalent hex, `line-opacity` → 0.4, `line-dasharray` unchanged.
+- Completed transit legs: `line-color` → muted version of leg color (reduce saturation, e.g. mix with `#8a7a60`), `line-opacity` → 0.35.
+- The current leg stays fully rendered.
+- Board/exit circle markers for completed legs also mute (reduce opacity to 0.3).
+
+## Chunk 1 — Leg completion detection
+
+**Files:** `frontend/src/MapView.jsx`
+
+Add a `completedLegsRef = useRef(new Set())` alongside the existing refs. In the live position effect, after the arrived latch check, iterate the route legs and check haversine distance to each leg's terminal point. When within 80 m, add the leg index to `completedLegsRef.current`.
+
+## Chunk 2 — Apply muted paint to completed layers
+
+**Files:** `frontend/src/MapView.jsx`
+
+When `completedLegsRef.current` gains a new entry, call `map.setPaintProperty()` on the corresponding layer IDs (`route-walk-line-{i}`, `route-transit-line-{i}`, `route-boardexit-circle-{i}`). Layer IDs follow the existing naming convention from `_renderRouteInner`.
+
+---
+
+# Feature HeadingUp — Heading-Up Map Orientation
+
+## Overview
+
+The map currently stays north-up throughout a trip. Many navigation apps rotate the map to face the direction of travel (heading-up), which some riders find more intuitive when following turn-by-turn walk directions. The smoothed heading is already computed every GPS cycle; the only missing pieces are a `map.rotateTo()` call and a toggle UI.
+
+**Type: Bolt-On** — no new GPS or heading logic; `smoothedHeadingRef.current` is already available in the live position effect.
+
+## Behaviour
+
+- Off by default — north-up is the existing behaviour and is less disorienting for the many riders who just glance at the map.
+- A toggle button (e.g. a compass rose icon) switches between north-up and heading-up.
+- In heading-up mode, `map.rotateTo(-smoothedHeadingRef.current, { duration: 200 })` is called alongside `map.easeTo()` on each GPS update.
+- Rotation only applies while the map is locked (following). If the user unlocks the map, rotation stops.
+- A compass rose indicator (or the button itself) shows current bearing so the user can orient themselves.
+
+## Design notes
+
+- The ➤ compass needle in `LivePositionMarker` always points the direction of travel relative to the SVG's own frame. In heading-up mode the map is rotated so that "up" is forward — the needle should still visually point "up" (forward), which means the needle's CSS rotation should account for the map bearing offset. Specifically: `headingProp = smoothedHeading - mapBearing`, where `mapBearing` is read via `map.getBearing()`.
+- In north-up mode, `mapBearing = 0` so the needle angle equals the raw smoothed heading — no change from current behaviour.
+
+## Chunk 1 — Toggle state and map rotation
+
+**Files:** `frontend/src/MapView.jsx`
+
+Add `const [headingUp, setHeadingUp] = useState(false)`. In the live position effect, after `map.easeTo()`:
+
+```js
+if (headingUp && Number.isFinite(smoothedHeadingRef.current)) {
+  map.rotateTo(-smoothedHeadingRef.current, { duration: 200 });
+}
+```
+
+## Chunk 2 — Needle bearing correction
+
+**Files:** `frontend/src/MapView.jsx`
+
+Pass an adjusted heading to `LivePositionMarker` that accounts for the current map bearing:
+
+```js
+const displayHeading = (smoothedHeadingRef.current - map.getBearing() + 360) % 360;
+```
+
+Pass `displayHeading` as the `heading` prop instead of `smoothedHeadingRef.current`.
+
+## Chunk 3 — Toggle UI
+
+**Files:** `frontend/src/MapView.jsx`, `frontend/src/App.css`
+
+Add a compass toggle button to the map overlay (top-left, clear of the unlock/re-lock buttons). Show current bearing numerically (e.g. "NW 315°") or via a rotated compass rose SVG. Reset map bearing to 0 when switching back to north-up mode (`map.rotateTo(0, { duration: 300 })`).
+
+---
+
+# Consideration (Optional) — Intermediate Transfer Station Marks on Map

@@ -699,10 +699,45 @@ def geocode_google(query: str) -> tuple[float, float] | None:
         # Transient errors (OVER_QUERY_LIMIT, REQUEST_DENIED, UNKNOWN_ERROR, etc.)
         # must not be cached so future requests can retry.
         if status == "ZERO_RESULTS":
+            # BUG-029: ZERO_RESULTS still costs one API credit — count it
+            _increment_geocode_call_count()
             _geocode_cache[query] = None
             _geocode_pending[query] = None
             _geocode_ages[query] = time.time()
 
+    return None
+
+
+def reverse_geocode_google(lat: float, lon: float) -> str | None:
+    """
+    Reverse geocode (lat, lon) to a human-readable address string using the
+    Google Maps Geocoding API.  Returns None on any failure or missing key.
+
+    The returned string has the zip code and country stripped so it fits
+    cleanly in the location input, e.g. "78 E Washington St, Chicago, IL".
+    """
+    if not _GOOGLE_MAPS_API_KEY:
+        return None
+    try:
+        resp = _http_session.get(
+            _GOOGLE_MAPS_GEOCODE_URL,
+            params={
+                "latlng": f"{lat},{lon}",
+                "key": _GOOGLE_MAPS_API_KEY,
+            },
+            timeout=5,
+        )
+        data = resp.json()
+    except Exception as exc:
+        print(f"[gtfs_loader] Reverse geocoding failed for ({lat},{lon}): {exc}")
+        return None
+
+    if data.get("status") == "OK" and data.get("results"):
+        addr = data["results"][0].get("formatted_address", "")
+        # Strip zip code and country suffix, e.g. ", 60602, USA" or ", IL 60602, USA"
+        addr = re.sub(r",\s*\d{5}(-\d{4})?(?=,|$)", "", addr)
+        addr = re.sub(r",\s*(United States|USA)$", "", addr)
+        return addr.strip() or None
     return None
 
 

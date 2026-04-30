@@ -3,6 +3,7 @@ import collections
 import os
 import time
 import traceback
+import xml.etree.ElementTree as ET
 from contextlib import asynccontextmanager
 from datetime import datetime
 
@@ -23,10 +24,10 @@ load_dotenv()
 import dau
 
 from gtfs_loader import (
-    resolve_location, geocode_google, NEIGHBORHOOD_COORDS,
+    resolve_location, geocode_google, reverse_geocode_google, NEIGHBORHOOD_COORDS,
     fuzzy_match_neighborhood, _normalize_street_abbr, _load_stops,
 )
-from cta_client import get_train_arrivals, get_bus_arrivals, get_alerts, get_route_statuses, _TRAIN_LINE_TO_ALERT_ID, LINE_NAMES, init_session as _init_cta_session, close_session as _close_cta_session, _get_session as _get_cta_session
+from cta_client import get_train_arrivals, get_bus_arrivals, get_alerts, get_route_statuses, TRAIN_LINE_TO_ALERT_ID, LINE_NAMES, init_session as _init_cta_session, close_session as _close_cta_session, _get_session as _get_cta_session
 from transit_graph import (
     find_routes, find_bus_transfer_routes, warm_up, get_bus_stop_sequences,
     WalkLeg, TransitLeg, Route, get_station_coords, get_station_by_name,
@@ -164,8 +165,10 @@ def _check_rate_limit(ip: str) -> bool:
         window.popleft()
     # Prune the dict key when the deque empties — prevents _rate_store from
     # accumulating a key per unique IP forever on a long-running server.
+    # BUG-030: actually delete the key so it is removed from the dict; the
+    # next call from this IP will reinitialise via setdefault above.
     if not window:
-        _rate_store[ip] = collections.deque([now])
+        del _rate_store[ip]
         return True
     # Per-hour check
     if len(window) >= _RATE_LIMIT_RPH:
@@ -288,6 +291,7 @@ async def lifespan(app: FastAPI):
     print("[main] Ready.")
     yield
     await _close_cta_session()
+    await weather_service.close()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -640,7 +644,7 @@ def _alert_ids_from_routes(ranked_routes: list[tuple]) -> list[str]:
             if not isinstance(leg, TransitLeg):
                 continue
             code = leg.line_code or ""
-            alert_id = _TRAIN_LINE_TO_ALERT_ID.get(code, code)
+            alert_id = TRAIN_LINE_TO_ALERT_ID.get(code, code)
             if alert_id and alert_id not in seen:
                 seen.add(alert_id)
                 ids.append(alert_id)
@@ -1703,7 +1707,6 @@ async def alerts_endpoint():
         ) as resp:
             text = await resp.text()
 
-        import xml.etree.ElementTree as ET  # lazy import — only used in this endpoint
         root = ET.fromstring(text)
         parsed: list[dict] = []
         for alert_el in root.findall("Alert"):
@@ -1746,6 +1749,26 @@ async def alerts_endpoint():
     if len(_alerts_cache) > 10:
         _alerts_cache.popitem(last=False)
 
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Route statuses cache — 60-second TTL
+# ---------------------------------------------------------------------------
+_ROUTE_STATUSES_CACHE_TTL = 60
+_route_statuses_cache: collections.OrderedDict[str, tuple[float, list]] = collections.OrderedDict()
+
+
+async def _get_route_statuses_cached() -> list[dict]:
+    cache_key = "route_statuses"
+    now_mono = time.monotonic()
+    cached = _route_statuses_cache.get(cache_key)
+    if cached and now_mono < cached[0]:
+        return cached[1]
+    result = await get_route_statuses()
+    _route_statuses_cache[cache_key] = (now_mono + _ROUTE_STATUSES_CACHE_TTL, result)
+    if len(_route_statuses_cache) > 10:
+        _route_statuses_cache.popitem(last=False)
     return result
 
 
@@ -1898,7 +1921,7 @@ async def recommend(request: RouteRequest, http_request: Request):
     alert_ids = _alert_ids_from_routes(ranked_routes)
     alerts, route_statuses = await asyncio.gather(
         get_alerts(alert_ids),
-        get_route_statuses(),
+        _get_route_statuses_cached(),
     )
 
     prompt = build_prompt(
@@ -1946,3 +1969,14 @@ async def recommend(request: RouteRequest, http_request: Request):
             _response_cache.popitem(last=False)  # O(1) — drops the oldest insertion
 
     return response
+
+
+@app.get("/reverse-geocode")
+def reverse_geocode_endpoint(lat: float, lon: float):
+    """
+    Convert GPS coordinates to a human-readable address string.
+    Used by the frontend after geolocation to display a place name instead of raw coordinates.
+    Falls back to "lat,lon" if the Google Maps API is unavailable.
+    """
+    address = reverse_geocode_google(lat, lon)
+    return {"address": address or f"{lat:.6f},{lon:.6f}"}

@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>The Chicago Routefinder — Design System</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Fraunces:ital,opsz,wght@0,9..144,400..900;1,9..144,400..900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" />
+<style>
+  html, body { margin: 0; padding: 0; background: #f0eee9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  #root { min-height: 100vh; }
+</style>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<!-- shared -->
+<script type="text/babel" src="data.jsx"></script>
+<script type="text/babel" src="schematic-map.jsx"></script>
+<script type="text/babel" src="design-canvas.jsx"></script>
+
+<!-- direction 2 -->
+<script type="text/babel" src="d2-editorial.jsx"></script>
+<script type="text/babel" src="d2-system.jsx"></script>
+
+<script type="text/babel">
+
+function App() {
+  return (
+    <DesignCanvas>
+      <DCSection id="system"
+      title="The Chicago Routefinder — Design System"
+      subtitle="Specimen sheets: type, palette, components, principles. Editable as a living reference.">
+        
+        <DCArtboard id="type" label="A · Type" width={540} height={720}>
+          <D2Type />
+        </DCArtboard>
+        <DCArtboard id="colors" label="B · Color" width={540} height={720}>
+          <D2Colors />
+        </DCArtboard>
+        <DCArtboard id="components" label="C · Components" width={540} height={720}>
+          <D2Components />
+        </DCArtboard>
+        <DCArtboard id="principles" label="D · Principles" width={540} height={720}>
+          <D2Principles />
+        </DCArtboard>
+        <DCArtboard id="map-markers" label="E · Map Marks" width={780} height={720}>
+          <D2MapMarkers />
+        </DCArtboard>
+      </DCSection>
+    </DesignCanvas>);
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

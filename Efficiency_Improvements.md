@@ -27,3 +27,4 @@ Known efficiency improvements catalogued for future improvement. Impact: 🔴 Hi
 - **Note**: **Requires care** — `_build_shape_lookup()` intentionally reads all trips (no weekday filter) to collect the full set of `shape_id` candidates. The other two loaders filter to weekday service IDs only. A merged pass must apply the weekday filter only to the trip-candidate outputs, not to the shape_id collection step. Failing to respect this distinction would cause weekend-only services to lose their GTFS shape, falling back to a straight-line polyline.
 
 ---
+

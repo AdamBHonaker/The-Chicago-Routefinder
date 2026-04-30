@@ -9,18 +9,15 @@ import SettingsPanel from "./components/SettingsPanel.jsx";
 import RouteCard from "./components/RouteCard.jsx";
 import PinnedStopsBoard from "./components/PinnedStopsBoard.jsx";
 import ServiceAlertsBar from "./components/ServiceAlertsBar.jsx";
+import AlertList from "./components/AlertList.jsx";
 import WeatherStrip from "./components/WeatherStrip.jsx";
 import { useFavorites } from "./hooks/useFavorites.js";
+import { useTripTracker } from "./hooks/useTripTracker.js";
+import { useByokIdleClear } from "./hooks/useByokIdleClear.js";
 import {
   BACKEND_URL,
-  TRIP_GEO_OPTIONS,
-  OFF_ROUTE_THRESHOLD_METERS,
   RETRY_DELAYS_MS,
-  BYOK_IDLE_TIMEOUT_MS,
-  REROUTE_SUPPRESSION_MS,
-  LEG_ADVANCE_RADIUS_M,
-  LEG_ADVANCE_RADIUS_VEHICLE_M,
-  WALK_STEP_PROXIMITY_M,
+  BYOK_ENABLED,
   PHOTO_FADE_MS,
   MASTHEAD_EPOCH_YEAR,
 } from "./constants.js";
@@ -32,14 +29,7 @@ import SignalLamp from "./components/SignalLamp.jsx";
 import { useApiQuery } from "./hooks/useApiQuery.js";
 import { useLocalStorage } from "./hooks/useLocalStorage.js";
 import { fetchWithRetry as _fetchWithRetry } from "./utils/fetchWithRetry.js";
-import { haversineMeters, pointToSegmentMeters, legEndCoord, distanceToPath } from "./utils/tripGeometry.js";
-
-// ---------------------------------------------------------------------------
-// BYOK feature flag — set VITE_BYOK_ENABLED=true in frontend/.env to show
-// the settings panel and include the user's key in requests.
-// The backend must also have BYOK_ENABLED=true to honour the key.
-// ---------------------------------------------------------------------------
-const BYOK_ENABLED = import.meta.env.VITE_BYOK_ENABLED === "true";
+import { renderMarkdown } from "./utils/renderMarkdown.js";
 
 // Thin wrapper so call-sites don't need to pass RETRY_DELAYS_MS explicitly.
 // Full implementation and JSDoc live in utils/fetchWithRetry.js (TD-040).
@@ -75,21 +65,6 @@ const LANGUAGE_NAMES = {
 
 const RTL_LANGS = new Set(["ar", "ur", "ps"]);
 
-function renderMarkdown(text) {
-  // Strip common markdown so plain text reaches the rider
-  return text
-    .replace(/^#{1,3}\s+/gm, "")              // strip heading markers (# / ## / ###)
-    .replace(/\*\*(.*?)\*\*/g, "$1")           // strip bold **text**
-    .replace(/\*([^*]+)\*/g, "$1")             // strip italic *text*
-    .replace(/_([^_]+)_/g, "$1")               // strip italic _text_
-    .replace(/`([^`]+)`/g, "$1")               // strip inline code `text`
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")   // strip link [label](url) → label
-    .replace(/^[-*>]\s+/gm, "")               // strip bullet / blockquote markers
-    .trim();
-}
-
-// Trip-geometry helpers (haversineMeters, pointToSegmentMeters, legEndCoord,
-// distanceToPath) are imported from utils/tripGeometry.js (TD-041).
 const WALK_SPEED_FACTORS = { slow: 0.75, standard: 1.0, brisk: 1.25 };
 
 // LabelSavePanel, LocationInput, and SavedRoutesPanel are in frontend/src/components/.
@@ -185,19 +160,36 @@ export default function App() {
       return new Set();
     }
   });
-  const activeAlertRoutes = useMemo(
-    () => new Set(
-      serviceAlerts
-        .filter((a) => !dismissedAlertIds.has(a.alert_id))
-        .flatMap((a) => a.routes ?? [])
-        .map((r) => r.replace(" Line", ""))
-    ),
-    [serviceAlerts, dismissedAlertIds]
-  );
-  const visibleAlerts = useMemo(
+  const undismissedAlerts = useMemo(
     () => serviceAlerts.filter((a) => !dismissedAlertIds.has(a.alert_id)),
     [serviceAlerts, dismissedAlertIds]
   );
+  const activeAlertRoutes = useMemo(
+    () => new Set(
+      undismissedAlerts
+        .flatMap((a) => a.routes ?? [])
+        .map((r) => r.replace(" Line", ""))
+    ),
+    [undismissedAlerts]
+  );
+  const currentRouteLines = useMemo(() => {
+    const route = result?.routes?.[selectedRouteIndex];
+    if (!route?.legs) return null;
+    const lines = new Set();
+    for (const leg of route.legs) {
+      if (leg.type !== "transit") continue;
+      const id = leg.line_code?.replace(" Line", "");
+      if (id) lines.add(id);
+    }
+    return lines.size > 0 ? lines : null;
+  }, [result, selectedRouteIndex]);
+
+  const visibleAlerts = useMemo(() => {
+    if (!currentRouteLines) return undismissedAlerts;
+    return undismissedAlerts.filter((a) =>
+      (a.routes ?? []).some((r) => currentRouteLines.has(r.replace(" Line", "")))
+    );
+  }, [undismissedAlerts, currentRouteLines]);
 
   // Fire-and-forget ping on mount for DAU counting — silent on failure.
   useEffect(() => { fetch(`${BACKEND_URL}/ping`).catch(() => {}); }, []);
@@ -246,29 +238,8 @@ export default function App() {
     }
   }
 
-  // Auto-clear BYOK key after 30 minutes of idle (no mouse/keyboard activity).
-  // Only active when a key is actually stored. (BUG-014)
-  useEffect(() => {
-    if (!BYOK_ENABLED || !byokKey) return;
-    let idleTimer;
-    const resetTimer = () => {
-      clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => {
-        sessionStorage.removeItem("byok_api_key");
-        setByokKey("");
-      }, BYOK_IDLE_TIMEOUT_MS);
-    };
-    // pointerdown covers mouse, pen, and touch on modern browsers; mousemove
-    // and keydown are kept for desktop users who don't generate pointer events
-    // unless they click. (BUG-020: previously missed all touch-only input.)
-    const events = ["mousemove", "keydown", "pointerdown", "touchstart"];
-    events.forEach((ev) => window.addEventListener(ev, resetTimer, { passive: true }));
-    resetTimer();
-    return () => {
-      clearTimeout(idleTimer);
-      events.forEach((ev) => window.removeEventListener(ev, resetTimer));
-    };
-  }, [byokKey]);
+  // Auto-clear BYOK key after idle (BUG-014) — logic lives in useByokIdleClear.
+  useByokIdleClear(byokKey, setByokKey);
 
   // Photo state — managed entirely within handleSubmit via photoFadeTimer ref
   const [photoMounted, setPhotoMounted] = useState(false);
@@ -281,160 +252,11 @@ export default function App() {
   const searchIdRef = useRef(0);
 
   // ── Feature Trip — Live Trip-in-Progress ──────────────────────────────────
-  const [tripActive, setTripActive]         = useState(false);
-  const [userPosition, setUserPosition]     = useState(null);   // {lat, lng} | null
-  const [activeLegIndex, setActiveLegIndex] = useState(null);   // number | null
-  const [completedSteps, setCompletedSteps] = useState(new Set());
-  const [isOffRoute, setIsOffRoute]         = useState(false);
-  const [tripGeoError, setTripGeoError]     = useState(false);
-  const [onVehicle, setOnVehicle]           = useState(false);
-  const watchIdRef            = useRef(null);
-  const suppressRerouteUntil  = useRef(0);
-  // Ref mirror of activeLegIndex — lets the GPS effect read the current value
-  // synchronously without queuing fake setActiveLegIndex updates. (OPT-FE-005)
-  const activeLegIndexRef = useRef(null);
-  // Ref mirror of onVehicle for synchronous reads in the GPS effect.
-  const onVehicleRef = useRef(false);
-
-  function startTrip() {
-    if (!navigator.geolocation) {
-      setTripGeoError(true);
-      return;
-    }
-    watchIdRef.current = navigator.geolocation.watchPosition(
-      (pos) => {
-        setTripGeoError(false);
-        setUserPosition({ lat: pos.coords.latitude, lng: pos.coords.longitude });
-      },
-      (err) => {
-        console.error("[trip] GPS error:", err);
-        if (err.code === err.PERMISSION_DENIED) {
-          setTripGeoError(true);
-          stopTrip();
-        }
-      },
-      TRIP_GEO_OPTIONS,
-    );
-    setTripActive(true);
-    activeLegIndexRef.current = 0;
-    setActiveLegIndex(0);
-    setCompletedSteps(new Set());
-    setIsOffRoute(false);
-    suppressRerouteUntil.current = 0;
-    setOnVehicle(false);
-    onVehicleRef.current = false;
-  }
-
-  function stopTrip() {
-    if (watchIdRef.current !== null) {
-      navigator.geolocation.clearWatch(watchIdRef.current);
-      watchIdRef.current = null;
-    }
-    setTripActive(false);
-    setUserPosition(null);
-    activeLegIndexRef.current = null;
-    setActiveLegIndex(null);
-    setCompletedSteps(new Set());
-    setIsOffRoute(false);
-    setTripGeoError(false);
-    setOnVehicle(false);
-    onVehicleRef.current = false;
-  }
-
-  function toggleOnVehicle() {
-    setOnVehicle(v => {
-      onVehicleRef.current = !v;
-      return !v;
-    });
-  }
-
-  // Clear "on vehicle" whenever the active leg changes. `setOnVehicle` and
-  // `onVehicleRef` are stable (state setter + ref) — omitting them is correct.
-  useEffect(() => {
-    setOnVehicle(false);
-    onVehicleRef.current = false;
-  }, [activeLegIndex]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // ── GPS position update handler ────────────────────────────────────────────
-  // processTripPosition — orchestrates all three GPS-triggered state updates
-  // in a single named function so their ordering and interdependencies are
-  // auditable in one place. (TD-036)
-  //
-  //   1. Leg advancement — when the user is within 60 m of the current leg's
-  //      endpoint (150 m on a transit leg when "on vehicle" is toggled on,
-  //      since GPS can lag behind a moving vehicle), activeLegIndex advances.
-  //      We read activeLegIndexRef — not the state — so passes 2 and 3 see the
-  //      already-advanced index from pass 1 within the same invocation.
-  //
-  //   2. Walk-step completion — for the active walk leg, any step whose start
-  //      coordinate is within 30 m of the user is added to completedSteps (a
-  //      Set keyed by "legIdx-stepIdx" strings).
-  //
-  //   3. Off-route detection — during walk legs only, distanceToPath() computes
-  //      the minimum perpendicular distance to the leg path. Exceeding
-  //      OFF_ROUTE_THRESHOLD_METERS shows the off-route banner. Skipped while
-  //      the suppression timer is active (set when the user dismisses the banner).
-  //
-  // All three passes are independent — leg advancement shouldn't skip step
-  // completion, and off-route detection should still run after a step completes.
-  // ---------------------------------------------------------------------------
-  function processTripPosition(pos, route) {
-    const { legs } = route;
-
-    // 1. Advance active leg when within proximity of its endpoint.
-    let idx = activeLegIndexRef.current ?? 0;  // read ref, not state (OPT-FE-005)
-    const leg = legs[idx];
-    if (leg) {
-      const end = legEndCoord(leg);
-      // Wider radius when user confirmed on vehicle — GPS lags behind movement.
-      const advanceRadius = (onVehicleRef.current && leg.type === "transit") ? LEG_ADVANCE_RADIUS_VEHICLE_M : LEG_ADVANCE_RADIUS_M;
-      if (end && haversineMeters(pos, end) < advanceRadius) {
-        const next = Math.min(idx + 1, legs.length - 1);
-        if (next !== idx) {
-          activeLegIndexRef.current = next;
-          setActiveLegIndex(next);
-          idx = next;
-        }
-      }
-    }
-
-    // 2. Walk step completion for the active walk leg.
-    const activeLeg = legs[idx];
-    if (activeLeg?.type === "walk" && activeLeg.directions?.length) {
-      setCompletedSteps(prev => {
-        let changed = false;
-        const next = new Set(prev);
-        activeLeg.directions.forEach((step, si) => {
-          if (
-            step.start_lat !== undefined &&
-            step.start_lon !== undefined &&
-            !next.has(`${idx}-${si}`)
-          ) {
-            if (haversineMeters(pos, { lat: step.start_lat, lng: step.start_lon }) < WALK_STEP_PROXIMITY_M) {
-              next.add(`${idx}-${si}`);
-              changed = true;
-            }
-          }
-        });
-        return changed ? next : prev;
-      });
-    }
-
-    // 3. Off-route detection (only during walk legs).
-    if (activeLeg?.type === "walk" && Date.now() > suppressRerouteUntil.current) {
-      setIsOffRoute(distanceToPath(pos, activeLeg.path) > OFF_ROUTE_THRESHOLD_METERS);
-    }
-  }
-
-  // Intentionally dep on `userPosition` only — all other values are accessed
-  // via refs inside processTripPosition so this effect fires on GPS tick
-  // without re-subscribing when unrelated state changes.
-  useEffect(() => {
-    if (!tripActive || !userPosition || !result) return;
-    const route = result.routes?.[selectedRouteIndex];
-    if (!route?.legs?.length) return;
-    processTripPosition(userPosition, route);
-  }, [userPosition]); // eslint-disable-line react-hooks/exhaustive-deps
+  const {
+    tripActive, userPosition, activeLegIndex, completedSteps,
+    isOffRoute, tripGeoError, onVehicle,
+    startTrip, stopTrip, toggleOnVehicle, dismissOffRoute, dismissTripGeoError, resetForReroute,
+  } = useTripTracker({ result, selectedRouteIndex });
 
   // Shared /recommend API call — used by both handleSubmit and handleReroute
   // so the request body, error handling, and setResult shape stay in one place.
@@ -492,10 +314,7 @@ export default function App() {
     abortRef.current = new AbortController();
 
     setOrigin(gpsOrigin);
-    setIsOffRoute(false);
-    activeLegIndexRef.current = 0;
-    setActiveLegIndex(0);
-    setCompletedSteps(new Set());
+    resetForReroute();
     setSelectedRouteIndex(0);
     searchIdRef.current += 1;
 
@@ -595,46 +414,46 @@ export default function App() {
                 <span className="masthead-title-italic">The Chicago</span>
                 <span className="masthead-title-roman"> Routefinder<span className="masthead-period">.</span></span>
               </h1>
-              <div className="masthead-controls">
-                <button
-                  className={`btn-ghost-icon${byokKey ? " btn-ghost-icon--active" : ""}`}
-                  onClick={() => setSettingsOpen((v) => !v)}
-                  aria-label={byokKey ? t("aria_settings_active") : t("aria_settings")}
-                  title={byokKey ? t("aria_settings_active") : t("aria_settings")}
-                >
-                  ⚙
-                </button>
-                <button
-                  type="button"
-                  className={`btn-ghost-icon${showSavedRoutes ? " btn-ghost-icon--active" : ""}`}
-                  onClick={() => setShowSavedRoutes((v) => !v)}
-                  aria-label={t("fav_saved_routes_heading")}
-                  title={t("fav_saved_routes_heading")}
-                >
-                  ⭐
-                </button>
-                <select
-                  className="masthead-select"
-                  value={transitMode}
-                  onChange={(e) => setTransitMode(e.target.value)}
-                  aria-label={t("aria_transit_mode")}
-                >
-                  <option value="All">{t("mode_all")}</option>
-                  <option value="Train">{t("mode_train")}</option>
-                  <option value="Bus">{t("mode_bus")}</option>
-                  <option value="Walk">{t("mode_walk")}</option>
-                </select>
-                <select
-                  className="masthead-select"
-                  value={i18n.language}
-                  onChange={(e) => i18n.changeLanguage(e.target.value)}
-                  aria-label={t("aria_language")}
-                >
-                  {SUPPORTED.map((code) => (
-                    <option key={code} value={code}>{LANGUAGE_NAMES[code]}</option>
-                  ))}
-                </select>
-              </div>
+            </div>
+            <div className="masthead-controls">
+              <button
+                className={`btn-ghost-icon${byokKey ? " btn-ghost-icon--active" : ""}`}
+                onClick={() => setSettingsOpen((v) => !v)}
+                aria-label={byokKey ? t("aria_settings_active") : t("aria_settings")}
+                title={byokKey ? t("aria_settings_active") : t("aria_settings")}
+              >
+                ⚙
+              </button>
+              <button
+                type="button"
+                className={`btn-ghost-icon${showSavedRoutes ? " btn-ghost-icon--active" : ""}`}
+                onClick={() => setShowSavedRoutes((v) => !v)}
+                aria-label={t("fav_saved_routes_heading")}
+                title={t("fav_saved_routes_heading")}
+              >
+                ⭐
+              </button>
+              <select
+                className="masthead-select"
+                value={transitMode}
+                onChange={(e) => setTransitMode(e.target.value)}
+                aria-label={t("aria_transit_mode")}
+              >
+                <option value="All">{t("mode_all")}</option>
+                <option value="Train">{t("mode_train")}</option>
+                <option value="Bus">{t("mode_bus")}</option>
+                <option value="Walk">{t("mode_walk")}</option>
+              </select>
+              <select
+                className="masthead-select"
+                value={i18n.language}
+                onChange={(e) => i18n.changeLanguage(e.target.value)}
+                aria-label={t("aria_language")}
+              >
+                {SUPPORTED.map((code) => (
+                  <option key={code} value={code}>{LANGUAGE_NAMES[code]}</option>
+                ))}
+              </select>
             </div>
             <p className="masthead-tagline">{t("tagline")}</p>
           </header>
@@ -670,22 +489,7 @@ export default function App() {
 
           {activeTab === "alerts" && (
             <main className="main tab-alerts-view">
-              {visibleAlerts.length === 0 ? (
-                <p className="tab-empty">{t("alerts_empty")}</p>
-              ) : (
-                <ul className="tab-alerts-list">
-                  {visibleAlerts.map((a) => (
-                    <li key={a.alert_id} className={`tab-alert tab-alert--${(a.severity ?? "minor").toLowerCase()}`}>
-                      <div className="tab-alert-header">
-                        <span className="tab-alert-kicker">{a.severity ?? t("alerts_advisory")}</span>
-                        <button className="tab-alert-dismiss" onClick={() => handleAlertDismiss(a.alert_id)} aria-label={t("aria_dismiss")}>×</button>
-                      </div>
-                      <p className="tab-alert-headline">{a.headline}</p>
-                      {a.short_description && <p className="tab-alert-desc">{a.short_description}</p>}
-                    </li>
-                  ))}
-                </ul>
-              )}
+              <AlertList alerts={visibleAlerts} onDismiss={handleAlertDismiss} />
             </main>
           )}
 
@@ -782,7 +586,7 @@ export default function App() {
                     {result.alerts.length > 3 && (
                       <p className="alerts-more">
                         <a
-                          href="https://www.transitchicago.com/travel-information/alerts/"
+                          href="https://www.transitchicago.com/alerts/"
                           target="_blank"
                           rel="noreferrer"
                         >
@@ -803,10 +607,7 @@ export default function App() {
                       </button>
                       <button
                         className="btn-ghost-text"
-                        onClick={() => {
-                          setIsOffRoute(false);
-                          suppressRerouteUntil.current = Date.now() + REROUTE_SUPPRESSION_MS;
-                        }}
+                        onClick={dismissOffRoute}
                       >
                         {t("trip_dismiss_btn")}
                       </button>
@@ -858,7 +659,7 @@ export default function App() {
                             onStartTrip={startTrip}
                             onStopTrip={stopTrip}
                             tripGeoError={tripGeoError && i === selectedRouteIndex}
-                            onDismissTripGeoError={() => setTripGeoError(false)}
+                            onDismissTripGeoError={dismissTripGeoError}
                             onVehicle={onVehicle && i === selectedRouteIndex}
                             onToggleVehicle={toggleOnVehicle}
                             pinnedStops={pinnedStops}

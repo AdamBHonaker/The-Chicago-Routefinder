@@ -142,6 +142,7 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  color: var(--ink);
 }
 
 /* Two layout modes — swap the modifier class to switch views */
@@ -155,7 +156,7 @@
    Mobile breakpoint below switches to a single-column flex with screen-swap. */
 .layout--split {
   display: grid;
-  grid-template-columns: 60px minmax(0, 420px) 1fr;
+  grid-template-columns: 60px minmax(0, 460px) 1fr;
   min-height: 0;
 }
 
@@ -250,6 +251,18 @@
 
 .tab-bar {
   display: none; /* shown only inside the mobile breakpoint */
+}
+
+/* ── Desktop tab switching ───────────────────────────────────────────────── */
+/* On Home/Alerts/Saved: hide map. On Map: hide cards and expand map to fill. */
+
+@media (min-width: 801px) {
+  [data-active-tab="home"] .panel-map,
+  [data-active-tab="alerts"] .panel-map,
+  [data-active-tab="saved"] .panel-map { display: none; }
+
+  [data-active-tab="map"] .panel-cards { display: none; }
+  [data-active-tab="map"] .layout--split { grid-template-columns: 60px 1fr; }
 }
 
 /* ── Mobile breakpoint ───────────────────────────────────────────────────── */
@@ -464,10 +477,6 @@
 }
 
 .masthead-title-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-end;
-  gap: var(--sp-4);
   margin-bottom: var(--sp-2);
 }
 
@@ -495,9 +504,11 @@
 
 .masthead-controls {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--sp-2);
-  flex-shrink: 0;
+  margin-top: var(--sp-3);
+  margin-bottom: var(--sp-3);
 }
 
 .btn-ghost-icon {
@@ -839,8 +850,8 @@
   flex-shrink: 0;
 }
 
-.lin-pill--sm { height: 20px; min-width: 22px; font-size: 9px;  padding: 0 4px; }
-.lin-pill--md { height: 26px; min-width: 26px; font-size: 11px; padding: 0 5px; }
+.lin-pill--sm { height: 22px; width: 22px; font-size: 9px;  padding: 0 2px; overflow: hidden; }
+.lin-pill--md { height: 26px; width: 26px; font-size: 11px; padding: 0 3px; overflow: hidden; }
 .lin-pill--lg { height: 34px; min-width: 34px; font-size: 13px; padding: 0 8px; }
 
 /* ── Signal lamp ─────────────────────────────────────────────────────────── */
@@ -1502,6 +1513,7 @@
   font-family: var(--serif);
   font-size: 13px;
   font-weight: 600;
+  color: var(--ink);
 }
 
 .map-train-card__desc {
@@ -2519,4 +2531,15 @@
   color: var(--rust);
   margin: 0;
   line-height: 1.4;
+}
+
+/* ── Map markers ──────────────────────────────────────────────────────────── */
+
+/* Belt-and-suspenders fallback for reduced-motion on the live position pulse.
+   The preferred path is not rendering <animate> nodes at all (see LivePositionMarker.jsx),
+   since animation-play-state does not reliably pause SMIL in all browsers. */
+@media (prefers-reduced-motion: reduce) {
+  .marker-live-position animate {
+    animation-play-state: paused !important;
+  }
 }

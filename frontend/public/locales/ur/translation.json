@@ -77,5 +77,7 @@
   "no_arrivals": "کوئی آمد نہیں",
   "last_train_in": "آخری ٹرین {{min}} منٹ میں",
   "pin_stop": "{{stop}} پِن کریں",
-  "unpin_stop": "{{stop}} اَن پِن کریں"
+  "unpin_stop": "{{stop}} اَن پِن کریں",
+  "weather_gusts": "جھکڑ {{mph}} mph",
+  "weather_label": "موسم"
 }

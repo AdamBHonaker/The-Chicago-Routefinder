@@ -1,4 +1,4 @@
-import { getRouteColor } from "../constants.js";
+import { getRouteColor, BUS_DIRECTION_COLORS } from "../constants.js";
 
 const LINE_ABBREVS = {
   "Red Line":    "RD",
@@ -14,9 +14,10 @@ const LINE_ABBREVS = {
 export default function LinePill({ line, isBus, lineCode, size = "sm" }) {
   const bg = getRouteColor(line);
   const textColor = line === "Yellow Line" ? "#111" : "#fff";
+  const isBusRoute = isBus || (line in BUS_DIRECTION_COLORS);
 
   let label;
-  if (isBus) {
+  if (isBusRoute) {
     label = lineCode ?? line;
   } else if (size === "lg") {
     label = line;
@@ -24,11 +25,16 @@ export default function LinePill({ line, isBus, lineCode, size = "sm" }) {
     label = LINE_ABBREVS[line] ?? (line ?? "").replace(" Line", "").slice(0, 2).toUpperCase();
   }
 
+  const len = (label ?? "").length;
+  const fontStyle = (size === "sm" || size === "md") && len >= 3
+    ? { fontSize: size === "sm" ? "7px" : "9px", letterSpacing: 0 }
+    : {};
+
   return (
     <span
       className={`lin-pill lin-pill--${size}`}
-      style={{ background: bg, color: textColor }}
-      aria-label={isBus ? `Bus ${lineCode}` : line}
+      style={{ background: bg, color: textColor, ...fontStyle }}
+      aria-label={isBusRoute ? `Bus ${lineCode}` : line}
     >
       {label}
     </span>

@@ -77,5 +77,7 @@
   "trip_dismiss_btn": "Descartar",
   "settings_ai_explanation_label": "Explicación de IA",
   "settings_ai_explanation_hint": "Cuando está activado, Claude añade un resumen en lenguaje sencillo de las opciones de tu ruta.",
-  "settings_byok_security_notice": "⚠ Aviso de seguridad: Tu clave está almacenada en este navegador. Usa esta función solo en dispositivos personales de confianza."
+  "settings_byok_security_notice": "⚠ Aviso de seguridad: Tu clave está almacenada en este navegador. Usa esta función solo en dispositivos personales de confianza.",
+  "weather_gusts": "Ráfagas {{mph}} mph",
+  "weather_label": "Tiempo"
 }

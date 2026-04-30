@@ -77,5 +77,7 @@
   "trip_dismiss_btn": "关闭",
   "settings_ai_explanation_label": "AI 解释",
   "settings_ai_explanation_hint": "开启后，Claude 会为您的路线选项添加简明摘要。",
-  "settings_byok_security_notice": "⚠ 安全提示：您的密钥存储在此浏览器中。请仅在受信任的个人设备上使用此功能。"
+  "settings_byok_security_notice": "⚠ 安全提示：您的密钥存储在此浏览器中。请仅在受信任的个人设备上使用此功能。",
+  "weather_gusts": "阵风 {{mph}} mph",
+  "weather_label": "天气"
 }

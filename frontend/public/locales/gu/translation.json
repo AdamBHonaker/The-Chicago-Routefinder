@@ -77,5 +77,7 @@
   "no_arrivals": "કોઈ આગમન નથી",
   "last_train_in": "છેલ્લી ટ્રેન {{min}} મિનિટમાં",
   "pin_stop": "{{stop}} પિન કરો",
-  "unpin_stop": "{{stop}} અનપિન કરો"
+  "unpin_stop": "{{stop}} અનપિન કરો",
+  "weather_gusts": "ઝાપટ {{mph}} mph",
+  "weather_label": "હવામાન"
 }

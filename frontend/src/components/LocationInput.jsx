@@ -19,35 +19,28 @@ export default function LocationInput({ value, onChange, placeholder, savedLocat
   const [labelDraft, setLabelDraft] = useState("");
   const [limitError, setLimitError] = useState(false);
   const [geoState, setGeoState] = useState("idle"); // 'idle' | 'loading' | 'denied' | 'error'
-  const limitTimerRef = useRef(null);
-  const geoTimerRef = useRef(null);
-  const blurTimerRef = useRef(null);
-
+  const timersRef = useRef({});
   const [acSuggestions, setAcSuggestions] = useState([]);
   const [acActiveIndex, setAcActiveIndex] = useState(-1);
-  const acDebounceRef = useRef(null);
   const acAbortRef = useRef(null);
 
   const isSaved = savedLocations.some((loc) => loc.value === value);
   const showStar = value.trim().length > 0;
 
   useEffect(() => () => {
-    if (limitTimerRef.current) clearTimeout(limitTimerRef.current);
-    if (geoTimerRef.current) clearTimeout(geoTimerRef.current);
-    if (blurTimerRef.current) clearTimeout(blurTimerRef.current);
-    if (acDebounceRef.current) clearTimeout(acDebounceRef.current);
+    Object.values(timersRef.current).forEach(clearTimeout);
     if (acAbortRef.current) acAbortRef.current.abort();
   }, []);
 
   function fetchAcSuggestions(query) {
-    if (acDebounceRef.current) clearTimeout(acDebounceRef.current);
+    if (timersRef.current.acDebounce) clearTimeout(timersRef.current.acDebounce);
     if (acAbortRef.current) acAbortRef.current.abort();
     if (query.trim().length < 2) {
       setAcSuggestions([]);
       setAcActiveIndex(-1);
       return;
     }
-    acDebounceRef.current = setTimeout(async () => {
+    timersRef.current.acDebounce = setTimeout(async () => {
       const ctrl = new AbortController();
       acAbortRef.current = ctrl;
       try {
@@ -69,28 +62,43 @@ export default function LocationInput({ value, onChange, placeholder, savedLocat
     onChange(suggestion.value);
     setAcSuggestions([]);
     setAcActiveIndex(-1);
-    if (acDebounceRef.current) clearTimeout(acDebounceRef.current);
+    if (timersRef.current.acDebounce) clearTimeout(timersRef.current.acDebounce);
     if (acAbortRef.current) acAbortRef.current.abort();
   }
 
   function handleGeoClick() {
     if (!navigator.geolocation) {
       setGeoState("error");
-      geoTimerRef.current = setTimeout(() => setGeoState("idle"), GEO_ERROR_RESET_MS);
+      timersRef.current.geo = setTimeout(() => setGeoState("idle"), GEO_ERROR_RESET_MS);
       return;
     }
     setGeoState("loading");
     navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const coords = `${pos.coords.latitude.toFixed(6)},${pos.coords.longitude.toFixed(6)}`;
+      async (pos) => {
+        const { latitude, longitude } = pos.coords;
+        const coords = `${latitude.toFixed(6)},${longitude.toFixed(6)}`;
+        // Set raw coords immediately so the form can submit even if reverse geocoding is slow
         onChange(coords);
+        try {
+          const res = await fetch(
+            `${BACKEND_URL}/reverse-geocode?lat=${latitude.toFixed(6)}&lon=${longitude.toFixed(6)}`
+          );
+          if (res.ok) {
+            const data = await res.json();
+            if (data.address && data.address !== coords) {
+              onChange(data.address);
+            }
+          }
+        } catch {
+          // silently keep the raw coordinate fallback already set above
+        }
         setGeoState("idle");
       },
       (err) => {
         const isDenied = err.code === err.PERMISSION_DENIED;
         setGeoState(isDenied ? "denied" : "error");
         if (!isDenied) {
-          geoTimerRef.current = setTimeout(() => setGeoState("idle"), GEO_UNAVAILABLE_RESET_MS);
+          timersRef.current.geo = setTimeout(() => setGeoState("idle"), GEO_UNAVAILABLE_RESET_MS);
         }
       },
       GEO_OPTIONS
@@ -112,8 +120,8 @@ export default function LocationInput({ value, onChange, placeholder, savedLocat
     const next = saveLocation(trimmedLabel, value, savedLocations);
     if (next === null) {
       setLimitError(true);
-      if (limitTimerRef.current) clearTimeout(limitTimerRef.current);
-      limitTimerRef.current = setTimeout(() => { setLimitError(false); setSavingMode(false); }, LIMIT_ERROR_DISMISS_MS);
+      if (timersRef.current.limit) clearTimeout(timersRef.current.limit);
+      timersRef.current.limit = setTimeout(() => { setLimitError(false); setSavingMode(false); }, LIMIT_ERROR_DISMISS_MS);
     } else {
       onSavedLocationsChange(next);
       setSavingMode(false);
@@ -141,7 +149,7 @@ export default function LocationInput({ value, onChange, placeholder, savedLocat
             }
           }}
           onBlur={() => {
-            blurTimerRef.current = setTimeout(() => {
+            timersRef.current.blur = setTimeout(() => {
               setDropdownOpen(false);
               setAcSuggestions([]);
               setAcActiveIndex(-1);
@@ -253,7 +261,7 @@ export default function LocationInput({ value, onChange, placeholder, savedLocat
             type="button"
             className="geo-denied-dismiss"
             onClick={() => {
-              if (geoTimerRef.current) clearTimeout(geoTimerRef.current);
+              if (timersRef.current.geo) clearTimeout(timersRef.current.geo);
               setGeoState("idle");
             }}
             aria-label={t("aria_dismiss")}

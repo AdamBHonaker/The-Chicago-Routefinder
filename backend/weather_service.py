@@ -10,6 +10,7 @@ NWS requires a real contact email in the User-Agent header.
 
 import asyncio
 import itertools
+import logging
 import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -20,7 +21,14 @@ import aiohttp
 from cachetools import TTLCache
 from pydantic import BaseModel
 
-_NWS_USER_AGENT = f"CTA-Transit-PWA/1.0 ({os.getenv('NWS_CONTACT_EMAIL', 'adambhonaker@gmail.com')})"
+_nws_contact_email = os.getenv("NWS_CONTACT_EMAIL")
+if not _nws_contact_email:
+    logging.getLogger(__name__).warning(
+        "NWS_CONTACT_EMAIL is not set. NWS API policy requires a contact email in the "
+        "User-Agent. Set this environment variable to a real address before deploying."
+    )
+    _nws_contact_email = "nws-contact-not-configured@example.com"
+_NWS_USER_AGENT = f"CTA-Transit-PWA/1.0 ({_nws_contact_email})"
 _NWS_BASE = "https://api.weather.gov"
 
 # Grid-point URL cache: (lat_2dp, lon_2dp) → (forecast_url, forecast_hourly_url)

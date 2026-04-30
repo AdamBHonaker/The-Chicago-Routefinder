@@ -77,5 +77,7 @@
   "no_arrivals": "ਕੋਈ ਆਗਮਨ ਨਹੀਂ",
   "last_train_in": "ਆਖਰੀ ਟ੍ਰੇਨ {{min}} ਮਿੰਟਾਂ ਵਿੱਚ",
   "pin_stop": "{{stop}} ਪਿੰਨ ਕਰੋ",
-  "unpin_stop": "{{stop}} ਅਨਪਿੰਨ ਕਰੋ"
+  "unpin_stop": "{{stop}} ਅਨਪਿੰਨ ਕਰੋ",
+  "weather_gusts": "ਝੱਖੜ {{mph}} mph",
+  "weather_label": "ਮੌਸਮ"
 }

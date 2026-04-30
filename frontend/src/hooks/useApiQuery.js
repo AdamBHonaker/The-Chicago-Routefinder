@@ -25,7 +25,7 @@
  *
  * @returns {{ data, loading, error, refetch }}
  */
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useCallback, useRef } from "react";
 
 export function useApiQuery(fetcher, deps = [], { refetchInterval = 0, enabled = true } = {}) {
   const [data, setData]       = useState(null);
@@ -37,6 +37,12 @@ export function useApiQuery(fetcher, deps = [], { refetchInterval = 0, enabled =
   const intervalRef = useRef(null);
 
   const refetch = useCallback(() => setTick(t => t + 1), []);
+
+  // BUG-028: set loading=true synchronously (before paint) when enabled
+  // transitions false→true, preventing a one-frame flash of loading=false/data=null.
+  useLayoutEffect(() => {
+    if (enabled) setLoading(true);
+  }, [enabled]);
 
   useEffect(() => {
     if (!enabled) {

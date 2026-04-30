@@ -16,6 +16,168 @@ Severity / Priority / Impact: 🔴 High · 🟡 Medium · 🟢 Low.
 
 ---
 
+# 2026-04-30 BUG-026 · `isOffRoute` banner persisted after advancing from walk leg to transit leg — FIXED
+
+## 🔴 Off-route banner never cleared when leg index advanced to a transit leg — FIXED
+
+**File:** `frontend/src/App.jsx`
+
+**What was happening:** `processTripPosition` pass 3 only called `setIsOffRoute(...)` when `activeLeg.type === "walk"`. When pass 1 advanced the leg index from a walk leg to a transit leg (either within the same GPS tick or across ticks), `activeLeg` was already the transit leg by the time pass 3 ran, so `setIsOffRoute(false)` was never called. The "Advisory / off route" banner persisted on screen while the user was riding a bus or train until they manually dismissed it, rerouted, or ended the trip.
+
+**Fixed by:** Adding `if (legs[next]?.type !== "walk") setIsOffRoute(false);` immediately after `idx = next` inside the `if (next !== idx)` block in pass 1 (`processTripPosition`, line ~411). This clears the off-route state synchronously at the moment the leg advances to transit, so the banner never bleeds into the transit leg.
+
+---
+
+# 2026-04-30 BUG-027 · `WeatherStrip` rendered the string "undefined" when `short_forecast` was absent — FIXED
+
+## 🟡 `short_forecast` without a default propagated `undefined` into joined condition text — FIXED
+
+**File:** `frontend/src/components/WeatherStrip.jsx`
+
+**What was happening:** `short_forecast` was destructured from `weather` with no default value. When the backend returned a partial weather object omitting `short_forecast` (e.g., during an API error), the variable was `undefined`. It was unconditionally inserted as the first element of `parts` and joined with `" · "`, producing a visible string like `"undefined · gusts 22 mph"` in the weather strip.
+
+**Fixed by:**
+1. Added a default value in destructuring: `short_forecast = ""` — guards against `undefined` at the source.
+2. Changed `parts.join(" · ")` → `parts.filter(Boolean).join(" · ")` — ensures any remaining falsy values (empty string, null) are dropped before joining, so no leading or trailing `" · "` separators appear.
+
+---
+
+# 2026-04-30 BUG-028 · `useApiQuery` flashed stale `loading=false` for one render frame when `enabled` transitioned false → true — FIXED
+
+## 🟢 Initial `loading` state seeded from `enabled` prop caused one-frame flash of empty state — FIXED
+
+**File:** `frontend/src/hooks/useApiQuery.js`
+
+**What was happening:** `loading` was initialised as `useState(enabled)`. React only evaluates initial state at mount. If the hook mounted with `enabled=false` (e.g., no pinned stops), `loading` was permanently seeded as `false`. When `enabled` later transitioned to `true` (user pinned a stop), there was one render frame where `enabled=true`, `loading=false`, and `data=null` before the `useEffect` fired. `PinnedStopsBoard` briefly flashed its "no arrivals" placeholder instead of a loading indicator.
+
+**Fixed by:** Added a `useLayoutEffect(() => { if (enabled) setLoading(true); }, [enabled])` that runs synchronously after DOM mutation but before the browser paints. This ensures `loading` is already `true` on the first visible frame when `enabled` transitions to `true`, closing the gap between `enabled` becoming true and the async `useEffect` firing. `useLayoutEffect` was added to the React import.
+
+---
+
+# 2026-04-30 BUG-029 · `geocode_google()` didn't count `ZERO_RESULTS` responses toward monthly API quota — FIXED
+
+## 🟡 `_increment_geocode_call_count()` not called for `ZERO_RESULTS`, allowing silent budget overrun — FIXED
+
+**File:** `backend/gtfs_loader.py`
+
+**What was happening:** `_increment_geocode_call_count()` was only called when the Google Maps API returned `status == "OK"`. A `ZERO_RESULTS` response (invalid address, out-of-bounds location, etc.) still costs one Google Maps API credit but was not counted toward `_GEOCODE_CALL_LIMIT`. Users typing addresses that returned `ZERO_RESULTS` could silently exceed the intended monthly budget cap.
+
+**Fixed by:** Added `_increment_geocode_call_count()` at the top of the `if status == "ZERO_RESULTS":` block, before the cache entries are written. The existing quota guard inside the function already prevents further network requests once the limit is reached, so no double-counting risk exists.
+
+---
+
+# 2026-04-30 BUG-030 · `_rate_store` keys were never pruned despite comment claiming they were — FIXED
+
+## 🟢 Empty-deque branch reassigned rather than deleted the key, causing unbounded IP accumulation — FIXED
+
+**File:** `backend/main.py`
+
+**What was happening:** The comment at lines 165–166 stated that the dict key was pruned when its deque emptied. In practice the implementation reassigned `_rate_store[ip] = collections.deque([now])`, leaving the key permanently in the dict. Every unique IP that ever sent a request accumulated a persistent key. Memory impact was bounded but grew monotonically, and the stated intent was not fulfilled.
+
+**Fixed by:** Replaced the reassignment with `del _rate_store[ip]` followed by `return True`. On the next request from the same IP, `setdefault` (line 161) reinitialises the key cleanly — so no behavioural change, only the pruning now actually happens.
+
+---
+
+# 2026-04-30 BUG-031 · Walk steps showed "Walk along Walk" or omitted street names entirely — FIXED · Walk steps showed "Walk along Walk" or omitted street names entirely — FIXED
+
+## 🟡 `KeyError` on missing graph edge attribute collapsed all walking directions to a single "Walk" fallback step — FIXED
+
+**Files:** `backend/walking.py`, `frontend/src/components/RouteCard.jsx`
+
+**What was happening:** Two distinct failure modes:
+
+1. **`KeyError` → "Walk along Walk":** `_walk_directions_impl` accessed `G.es[eid]["name"]` directly. In igraph, accessing an attribute key that does not exist on the edge sequence raises `KeyError`. When the graph was loaded from GraphML (no igraph pickle present), the "name" attribute may be absent. The `KeyError` was swallowed by the function-level `except Exception` block, which returned a single fallback step with `"street": "Walk"`. The frontend then rendered this as "Walk [direction] along Walk for N blocks" — a confusing tautology.
+
+2. **Unnamed OSM paths → "unnamed path" still rendered:** Even when routing succeeded, edges with no OSM name attribute yielded the literal string `"unnamed path"`. The frontend rendered "Walk along unnamed path for N blocks" regardless of whether the step had a valid direction, which was uninformative and looked like a bug to users.
+
+**Fixed by:**
+- `walking.py` line 329: Changed `G.es[eid]["name"]` → `G.es[eid].attributes().get("name")` so a missing attribute returns `None` instead of raising `KeyError`. This keeps the per-edge routing path alive for all edges.
+- `walking.py` line 353 (fallback step): Changed `"street": "Walk"` → `"street": ""` so the haversine fallback no longer injects a misleading street label.
+- `RouteCard.jsx` `renderStep`: The "along [street]" phrase and `<span className="leg-step-street">` are now only rendered when `step.street` is non-empty and not the literal string `"unnamed path"`. Steps without a resolvable street name render cleanly as e.g. "Walk S for 2 short blocks."
+
+---
+
+# 2026-04-30 BUG-032 · Route symbol pills had inconsistent sizes — bus number pills wider than train abbreviation pills — FIXED
+
+## 🟢 `min-width` on `.lin-pill--sm` let 3-digit bus numbers stretch the pill wider than its height, breaking the square shape — FIXED
+
+**Files:** `frontend/src/App.css`, `frontend/src/components/LinePill.jsx`
+
+**What was happening:** All `LinePill` usages pass `size="sm"`. The CSS rule `.lin-pill--sm { height: 20px; min-width: 22px; }` set a fixed height but only a minimum width, allowing the pill to grow horizontally to fit its text content. Train-line abbreviations (2 chars: "RD", "BL") stayed near-square at ~22 px wide, while 3-digit bus route numbers (e.g. "147") stretched to ~30 px wide at `font-size: 9px; letter-spacing: 1px; font-weight: 900`. The result was visually inconsistent — bus pills were noticeably wider and taller-feeling than train pills in the same route card.
+
+**Fixed by:**
+- `App.css`: Replaced `min-width: 22px` with `width: 22px` on `.lin-pill--sm` (and equivalently `width: 26px` on `.lin-pill--md`) so pills are always a fixed square. Added `overflow: hidden` as a safety guard. Padding reduced from `0 4px` to `0 2px` to reclaim space within the tighter constraint.
+- `LinePill.jsx`: Added `fontStyle` computed inline style — when `size` is `"sm"` or `"md"` and the label is 3+ characters, `fontSize` is set to `"7px"` (sm) / `"9px"` (md) and `letterSpacing` to `0`. At 7 px bold with no letter-spacing, a 3-digit number occupies ~15 px of content width, comfortably fitting in the 22 px square with 4 px of total padding.
+
+---
+
+# 2026-04-30 BUG-029 · Bus route pills showed direction code ("WE", "NO") instead of route number — FIXED
+
+## 🟡 `LinePill` fell back to a 2-char direction abbreviation when `isBus` prop was unexpectedly false — FIXED
+
+**Files:** `frontend/src/components/LinePill.jsx`, `frontend/src/components/RouteCard.jsx`
+
+**What was happening:** `LinePill` determined the pill label via three branches: `isBus → lineCode ?? line`, `size === "lg" → line`, else `LINE_ABBREVS[line] ?? line.slice(0,2).toUpperCase()`. If any caller passed `isBus={false}` for a bus leg (where `line = "Westbound"`, etc.), the third branch fired and sliced the direction string to its first two characters — "WE", "NO", "SO", "EA" — instead of showing the numeric route code (e.g., "92").
+
+A secondary issue existed in `RouteCard.transitLines`: the deduplication key for bus legs was `l.line` (the direction name). Two different bus routes sharing a direction — e.g., route 66 and 92 both going Westbound — collapsed to a single pill showing whichever came first.
+
+**Fixed by:**
+- `LinePill.jsx`: imported `BUS_DIRECTION_COLORS` alongside `getRouteColor`. Added `const isBusRoute = isBus || (line in BUS_DIRECTION_COLORS)` so that a leg whose `line` is "Westbound"/"Northbound"/etc. is always treated as a bus regardless of the prop value. All label and `aria-label` logic now uses `isBusRoute`.
+- `RouteCard.jsx`: changed the dedup key for bus legs from `l.line` to `` `bus:${l.line_code}` `` so two routes with the same direction but different route numbers each get their own pill.
+
+---
+
+# 2026-04-30 BUG-030 · "Feels Like" temperature was not displayed in the weather strip — FIXED
+
+## 🟡 `WeatherStrip` component omitted `feels_like_f` despite the backend sending it and the feature spec requiring it — FIXED
+
+**File:** `frontend/src/components/WeatherStrip.jsx`
+
+**What was happening:** Feature Weather UI was documented as displaying "temperature + feels-like." The backend serialized `feels_like_f` in the `/recommend` response, but `WeatherStrip.jsx` never destructured or rendered it — the field was silently ignored. Riders saw only the raw temperature with no indication of apparent warmth or cold.
+
+**Fixed by:** Destructured `feels_like_f` from the `weather` prop. Added `showFeelsLike` flag (true when `feels_like_f` is finite and differs from `temperature_f` by ≥ 2°F after rounding — suppresses noise for negligible differences). When `showFeelsLike` is true, renders `/ feels N°` inline inside the `.weather-strip__temp` span, styled via `.weather-strip__feels`.
+
+---
+
+# 2026-04-30 BUG-026 · "See more alerts" link pointed to a defunct CTA URL — FIXED
+
+## 🟢 `href` on the "and N more alerts" link returned a 404 — FIXED
+
+**File:** `frontend/src/App.jsx` (alerts section, ~line 785)
+
+**What was happening:** When a route had more than 3 service alerts, the "and N more" link pointed to `https://www.transitchicago.com/travel-information/alerts/`. The CTA reorganized their website and this path no longer exists, so the link silently 404'd in the browser.
+
+**Fixed by:** Updated the href to `https://www.transitchicago.com/alerts/`, the current canonical CTA service-alerts page.
+
+---
+
+# 2026-04-30 BUG-027 · Mobile geolocation always resolved to the Loop — FIXED
+
+## 🟡 `GEO_OPTIONS.maximumAge: 30000` allowed browsers to return a stale IP-based position — FIXED
+
+**File:** `frontend/src/constants.js` (`GEO_OPTIONS`)
+
+**What was happening:** `navigator.geolocation.getCurrentPosition` was called with `maximumAge: 30000`, which tells the browser it may return any cached position up to 30 seconds old. On mobile, that cached position is often sourced from IP-based geolocation (not GPS), which resolves Chicago-area devices to a coordinate near the Loop. On subsequent taps within the 30-second window, the browser served the same stale Loop position even after the user had moved.
+
+**Fixed by:** Set `maximumAge: 0` in `GEO_OPTIONS`, forcing the browser to request a fresh position on every tap. The 10-second timeout and `enableHighAccuracy: true` are unchanged.
+
+---
+
+# 2026-04-30 BUG-028 · Raw GPS coordinates shown in the origin field instead of an address — FIXED
+
+## 🟢 Geolocation success wrote a raw `"lat,lon"` string to the input with no human-readable label — FIXED
+
+**Files:** `backend/gtfs_loader.py` (`reverse_geocode_google`), `backend/main.py` (`GET /reverse-geocode`), `frontend/src/components/LocationInput.jsx` (`handleGeoClick`)
+
+**What was happening:** When the user tapped "Use my location," `handleGeoClick` set the origin field to the raw coordinate string (e.g., `"41.882345,-87.623456"`). The backend can route from these coordinates correctly, but the field displayed an unreadable string rather than a place name or street address.
+
+**Fixed by:**
+- Added `reverse_geocode_google(lat, lon) -> str | None` to `backend/gtfs_loader.py`. Reuses the existing `_http_session` and `_GOOGLE_MAPS_API_KEY`; calls the Google Maps Geocoding API with a `latlng` parameter, then strips zip code and country from the `formatted_address` (e.g., `"78 E Washington St, Chicago, IL"`).
+- Added `GET /reverse-geocode?lat=&lon=` endpoint to `backend/main.py`. Synchronous `def` so FastAPI runs it in a thread pool (consistent with other blocking geocoding calls). Falls back to `"lat,lon"` string if the API is unavailable.
+- Updated `handleGeoClick` in `LocationInput.jsx`: raw coordinates are written to the input immediately (so the form can submit without waiting), then a background `fetch` to `/reverse-geocode` replaces the value with the human-readable address if the call succeeds. Errors are silently swallowed — the coordinate fallback already set is always valid.
+
+---
+
 # 2026-04-28 BUG-016 · Pinned-stop type collision in favorites — FIXED
 
 ## 🟡 Bus stop_ids and train mapids dedupe by id only, silently rejecting the second pin — FIXED
@@ -1881,9 +2043,9 @@ Replaced the monolithic `_renderRouteInner` body with three named sub-functions 
 
 - **`renderPolylines(map, legs, legGeoCoords, legColors, allGeoCoords, layerIds, sourceIds)`** — adds walk (dashed grey) and transit (solid colored) `LineString` layers; accumulates `allGeoCoords` for the subsequent `fitBounds` call.
 - **`renderStopMarkers(map, legs, legGeoCoords, legColors, layerIds, sourceIds)`** — adds board/exit circle markers and intermediate stop dots for transit legs.
-- **`renderOriginDestMarkers(map, legs, originCoords, destCoords, layerIds, sourceIds)`** — adds the blue origin dot and dark destination dot.
+- **`renderOriginDestMarkers(map, legs, originCoords, destCoords, layerIds, sourceIds)`** — adds the blue origin dot and dark destination dot. *(Superseded 2026-04-30 by Feature MapMarkers — deleted and replaced with React `OriginMarker` / `DestinationMarker` components mounted via `ReactDOM.createRoot`.)*
 
-`_renderRouteInner` now precomputes `legColors` and `legGeoCoords`, calls all three functions in order, then does the `fitBounds` auto-fit. The coordinate-math and GL layer construction concerns are now isolated per function.
+`_renderRouteInner` now precomputes `legColors` and `legGeoCoords`, calls the remaining two functions in order, then does the `fitBounds` auto-fit. The coordinate-math and GL layer construction concerns are isolated per function.
 
 ---
 
@@ -3704,5 +3866,213 @@ Bumped `react` and `react-dom` from `^18.3.1` to `^19` in `frontend/package.json
 - All 81 unit tests pass on React 19.
 - `npm run build` succeeds; PWA service-worker generation unchanged.
 - No code changes were required — the codebase was already React-19-compatible (no legacy `forwardRef` patterns, no string refs, no use of deprecated lifecycle methods, `react-i18next@17` and `vite-plugin-pwa@1` both already support React 19).
+
+---
+
+## 2026-04-30 · Six efficiency improvements (frontend/src/ + backend/) — IMPLEMENTED
+
+> From the 2026-04-30 efficiency scan. OPT-017 and OPT-010 remain deferred (see Efficiency_Improvements.md).
+
+### OPT-018 · `serviceAlerts` filtered twice in separate `useMemo`s — IMPLEMENTED
+
+**File:** `frontend/src/App.jsx` (lines 188–215)
+**Impact:** 🟢 Low
+
+Extracted a shared `undismissedAlerts` memo (`serviceAlerts.filter((a) => !dismissedAlertIds.has(a.alert_id))`) that both `activeAlertRoutes` and `visibleAlerts` consume. Both downstream memos now reference `undismissedAlerts` as their only dependency for the filter step, removing the redundant `.filter()` call from each and making the recompute dependency chain explicit.
+
+---
+
+### OPT-019 · `LocationInput` managed four independent timer refs — IMPLEMENTED
+
+**File:** `frontend/src/components/LocationInput.jsx` (lines 22–38)
+**Impact:** 🟢 Low
+
+Consolidated `limitTimerRef`, `geoTimerRef`, `blurTimerRef`, and `acDebounceRef` into a single `timersRef = useRef({})` with keys `limit`, `geo`, `blur`, and `acDebounce`. Cleanup is now `Object.values(timersRef.current).forEach(clearTimeout)` — one line that automatically covers any timer added to the object in the future. `acAbortRef` (an `AbortController`, not a timeout handle) is kept as its own ref.
+
+---
+
+### OPT-020 · `get_route_statuses()` uncached on every `/recommend` request — IMPLEMENTED
+
+**File:** `backend/main.py` (after alerts endpoint)
+**Impact:** 🟡 Medium
+
+Added `_route_statuses_cache` (a module-level `collections.OrderedDict`) with a 60-second TTL and a `_get_route_statuses_cached()` async wrapper, mirroring the existing `_alerts_cache` pattern. The `/recommend` endpoint now calls `_get_route_statuses_cached()` instead of `get_route_statuses()` directly, eliminating one CTA Routes API round-trip on all but the first request per minute.
+
+---
+
+### OPT-021 · `_rate_store` dict grew unbounded — CONFIRMED ALREADY IMPLEMENTED
+
+**File:** `backend/main.py` (line 170)
+**Impact:** 🟡 Medium
+
+The `del _rate_store[ip]` fix was already present in the codebase (with a `# BUG-030` comment) when this efficiency scan ran. No code change required; entry added here for traceability.
+
+---
+
+### OPT-022 · Lazy `import xml.etree.ElementTree` inside `/alerts` endpoint — IMPLEMENTED
+
+**File:** `backend/main.py` (line 1707 → top-level imports)
+**Impact:** 🟢 Low
+
+Moved `import xml.etree.ElementTree as ET` from inside the `alerts_endpoint` function body to the module-level import block. The module is now imported once at startup; each `/alerts` call no longer executes an `import` statement (which triggered a `sys.modules` dict lookup on every uncached invocation).
+
+---
+
+### OPT-023 · Three independent `lru_cache(maxsize=512)` for derived walk properties — IMPLEMENTED
+
+**File:** `backend/walking.py` (lines 271, 298, 381)
+**Impact:** 🟢 Low
+
+Reduced `walk_minutes`, `_walk_directions_impl`, and `_walk_path_impl` from `maxsize=512` to `maxsize=256` each. The primary `_get_shortest_path` cache (the expensive Dijkstra result) remains at `maxsize=512`. Combined derived-cache footprint drops from 1536 to 768 entries maximum, halving the memory overhead for routing sessions without materially affecting hit rates.
+
+---
+
+# Technical Debt Paid Off (2026-04-30 scan)
+
+> All 15 actionable items from the 2026-04-30 frontend + backend scan resolved in a single session. TD-BE-004 (dual graph library) was intentionally deferred — the debt file marked it "⚠️ Unsure" and recommended profiling before attempting migration.
+
+---
+
+## 2026-04-30 TD-BE-001 · `scikit-learn` dead dependency removed — RESOLVED
+
+**File:** `backend/requirements.txt`
+**Priority:** 🔴 High
+
+Removed `scikit-learn>=1.0,<2` from `requirements.txt`. Zero import usages existed across the entire backend. Removes ~200 MB of compiled binaries (scipy, joblib, threadpoolctl) from the Docker image.
+
+---
+
+## 2026-04-30 TD-BE-002 · `weather_service` session not closed on shutdown — RESOLVED
+
+**File:** `backend/main.py` lifespan function
+**Priority:** 🟡 Medium
+
+Added `await weather_service.close()` to the lifespan shutdown block immediately after `_close_cta_session()`. Eliminates the `ResourceWarning: Unclosed client session` in Railway logs and fixes aiohttp test-teardown failures.
+
+---
+
+## 2026-04-30 TD-BE-003 · `shapely` unlisted production dependency — RESOLVED
+
+**File:** `backend/requirements.txt`
+**Priority:** 🟡 Medium
+
+Added `shapely>=2.0,<3` to `requirements.txt`. The optional-import guard in `walking.py` is retained as a defensive fallback.
+
+---
+
+## 2026-04-30 TD-BE-005 · `fastapi` and `uvicorn` stale exact-pins — RESOLVED
+
+**File:** `backend/requirements.txt`
+**Priority:** 🟡 Medium
+
+Changed `fastapi==0.115.0` → `fastapi>=0.115,<0.116` and `uvicorn==0.30.6` → `uvicorn>=0.30,<1`. Patch releases can now be picked up automatically without manual pin bumps.
+
+---
+
+## 2026-04-30 TD-BE-006 · Manual holiday list replaced with `holidays` package — RESOLVED
+
+**File:** `backend/crowdedness.py`
+**Priority:** 🟢 Low
+
+Replaced the hand-maintained `_HOLIDAYS` frozenset and `_HOLIDAY_MAX_YEAR` warning with a `_build_holiday_set()` function that uses `holidays.US(state="IL", years=range(...))` to generate the set dynamically. Added `holidays>=0.46,<1` to `requirements.txt`. No annual manual update required.
+
+---
+
+## 2026-04-30 TD-BE-007 · `_TRAIN_LINE_TO_ALERT_ID` private symbol exported publicly — RESOLVED
+
+**Files:** `backend/cta_client.py`, `backend/main.py`
+**Priority:** 🟢 Low
+
+Renamed `_TRAIN_LINE_TO_ALERT_ID` → `TRAIN_LINE_TO_ALERT_ID` in `cta_client.py` and updated all import/usage sites in `main.py`.
+
+---
+
+## 2026-04-30 TD-BE-008 · NWS contact email hardcoded personal fallback — RESOLVED
+
+**File:** `backend/weather_service.py`
+**Priority:** 🟢 Low
+
+Removed the `adambhonaker@gmail.com` default. Now logs a `WARNING` at startup when `NWS_CONTACT_EMAIL` is unset and falls back to an obviously-misconfigured placeholder address so deployments without the env var don't silently attribute traffic to a personal inbox.
+
+---
+
+## 2026-04-30 TD-FE-001 · Duplicate `haversineMetres` in MapView.jsx — RESOLVED
+
+**Files:** `frontend/src/MapView.jsx`, `frontend/src/utils/tripGeometry.js`
+**Priority:** 🟡 Medium
+
+Deleted the local `haversineMetres` function from `MapView.jsx` and imported `haversineMeters` from `utils/tripGeometry.js`. The single call site (arrived-latch check) updated to the canonical spelling.
+
+---
+
+## 2026-04-30 TD-FE-002 · `BYOK_ENABLED` duplicated across two modules — RESOLVED
+
+**Files:** `frontend/src/constants.js`, `frontend/src/App.jsx`, `frontend/src/components/SettingsPanel.jsx`
+**Priority:** 🟢 Low
+
+Added `export const BYOK_ENABLED = import.meta.env.VITE_BYOK_ENABLED === "true"` to `constants.js`. Removed the local copy from both `App.jsx` and `SettingsPanel.jsx`; both now import from `constants.js`.
+
+---
+
+## 2026-04-30 TD-FE-003 · Untranslated strings in WeatherStrip.jsx — RESOLVED
+
+**Files:** `frontend/src/components/WeatherStrip.jsx`, all 22 locale files
+**Priority:** 🟡 Medium
+
+Replaced three hardcoded English strings with `t()` calls:
+- `"gusts X mph"` → `t("weather_gusts", { mph: ... })`
+- `"/ feels X°"` → `t("weather_feels_like", { temp: ... })` (key already existed in all locales)
+- `"Weather"` → `t("weather_label")`
+
+Added `weather_gusts` and `weather_label` keys to all 22 locale files with appropriate translations.
+
+---
+
+## 2026-04-30 TD-FE-004 · Alerts tab renders markup inline — RESOLVED
+
+**Files:** `frontend/src/components/AlertList.jsx` (new), `frontend/src/App.jsx`
+**Priority:** 🟢 Low
+
+Extracted the 15-line inline alert list from the `activeTab === "alerts"` branch of `App.jsx` into a new `AlertList` component. The alerts tab now renders `<AlertList alerts={visibleAlerts} onDismiss={handleAlertDismiss} />`. `AlertList` handles both the empty state and the mapped list items with dismiss buttons.
+
+---
+
+## 2026-04-30 TD-FE-005 · `processTripPosition` untestable inside App.jsx — RESOLVED
+
+**Files:** `frontend/src/utils/tripGeometry.js`, `frontend/src/App.jsx`
+**Priority:** 🟡 Medium
+
+Extracted the pure computation logic into `computeTripPositionUpdates(pos, legs, ctx)` in `tripGeometry.js`. The function takes all inputs as explicit arguments and returns `{ nextLegIdx, clearOffRoute, addedStepKeys, isOffRoute }` — no refs, no state setters. `processTripPosition` in `App.jsx` (now inside `useTripTracker`) calls it and applies the returned updates. The pure function is independently unit-testable.
+
+---
+
+## 2026-04-30 TD-FE-006 · No tests for UI components except LinePill — RESOLVED (partial)
+
+**Files:** `frontend/src/tests/RouteCard.test.jsx` (new), `frontend/src/tests/LocationInput.test.jsx` (new), `frontend/src/tests/renderMarkdown.test.js` (new)
+**Priority:** 🟡 Medium
+
+Added test suites for `RouteCard` (expand/collapse, best badge, trip footer state, pin button), `LocationInput` (rendering, geo button, save star, autocomplete fetch, keyboard selection), and `renderMarkdown` (all markdown strip cases). `ServiceAlertsBar` and `SettingsPanel` remain untested — follow-up item.
+
+---
+
+## 2026-04-30 TD-FE-007 · `renderMarkdown` utility in App.jsx — RESOLVED
+
+**Files:** `frontend/src/utils/renderMarkdown.js` (new), `frontend/src/App.jsx`
+**Priority:** 🟢 Low
+
+Moved the pure `renderMarkdown` function from `App.jsx` module scope to `frontend/src/utils/renderMarkdown.js`. `App.jsx` now imports it. Added `frontend/src/tests/renderMarkdown.test.js` with 10 test cases covering all markdown patterns the function strips.
+
+---
+
+## 2026-04-30 TD-FE-008 · App.jsx 930 lines with multiple unrelated responsibilities — RESOLVED
+
+**Files:** `frontend/src/hooks/useTripTracker.js` (new), `frontend/src/hooks/useByokIdleClear.js` (new), `frontend/src/App.jsx`
+**Priority:** 🟡 Medium
+
+Extracted two hooks:
+- `useTripTracker({ result, selectedRouteIndex })` — owns all trip state (GPS watch, leg advancement, step completion, off-route detection, on-vehicle toggle, reroute suppression). Returns `startTrip`, `stopTrip`, `toggleOnVehicle`, `dismissOffRoute`, `dismissTripGeoError`, `resetForReroute`.
+- `useByokIdleClear(byokKey, setByokKey)` — owns the 30-minute idle timer that clears the BYOK key from sessionStorage.
+
+`App.jsx` drops from ~930 to ~830 lines. The trip state machine is now independently readable, testable, and not interleaved with photo, form, and alert state.
 
 ---
