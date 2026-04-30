@@ -16,8 +16,10 @@ RUN pip install -r requirements.txt
 COPY . .
 
 # Download the pre-built igraph street graph from GitHub Releases (Feature K).
-# Pass token via Railway: Service → Variables → GITHUB_TOKEN=<PAT Contents:Read>
+# Pass token via Railway: Service → Build Arguments → GITHUB_TOKEN=<PAT Contents:Read>
 # Asset ID is resolved dynamically from the release tag so it never goes stale.
+# CACHEBUST: set to a new value in Railway Build Arguments to force cache invalidation.
+ARG CACHEBUST=1
 ARG GITHUB_TOKEN
 RUN python3 - <<'PYEOF'
 import os, sys, urllib.request, json
