@@ -19,7 +19,7 @@ import { computeTripPositionUpdates } from "../utils/tripGeometry.js";
  * @param {{ result: object|null, selectedRouteIndex: number }} params
  * @returns {{
  *   tripActive: boolean,
- *   userPosition: {lat: number, lng: number} | null,
+ *   userPosition: {lat: number, lng: number, heading: number|null} | null,
  *   activeLegIndex: number | null,
  *   completedSteps: Set<string>,
  *   isOffRoute: boolean,
@@ -60,7 +60,7 @@ export function useTripTracker({ result, selectedRouteIndex }) {
     watchIdRef.current = navigator.geolocation.watchPosition(
       (pos) => {
         setTripGeoError(false);
-        setUserPosition({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        setUserPosition({ lat: pos.coords.latitude, lng: pos.coords.longitude, heading: pos.coords.heading ?? null });
       },
       (err) => {
         console.error("[trip] GPS error:", err);

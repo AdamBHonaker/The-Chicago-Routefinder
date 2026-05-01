@@ -661,7 +661,7 @@ def geocode_google(query: str) -> tuple[float, float] | None:
         resp = _http_session.get(
             _GOOGLE_MAPS_GEOCODE_URL,
             params={
-                "address": query if "chicago" in query.lower() else query + ", Chicago, IL",
+                "address": query if ("chicago" in query.lower() or ", il" in query.lower() or "illinois" in query.lower()) else query + ", Chicago, IL",
                 "key": _GOOGLE_MAPS_API_KEY,
                 "components": "country:US",
                 "bounds": _CHICAGO_BOUNDS,

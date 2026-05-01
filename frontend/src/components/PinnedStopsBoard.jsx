@@ -4,8 +4,9 @@ import LinePill from "./LinePill.jsx";
 import SignalLamp from "./SignalLamp.jsx";
 
 function ArrivalRow({ route, destination, minutes }) {
+  const { t } = useTranslation();
   const isBus = !(route in LINE_COLORS);
-  const due = minutes === 0 ? "DUE" : `${minutes}m`;
+  const due = minutes === 0 ? t("wait_due_short") : `${minutes}m`;
   return (
     <div className="psb-arrival">
       <LinePill line={route} isBus={isBus} lineCode={isBus ? route : undefined} size="sm" />
@@ -24,7 +25,10 @@ export default function PinnedStopsBoard({ stops, arrivals, onUnpin, onRefresh }
       <div className="psb-header">
         <span className="psb-title">{t("pinned_stops_heading")}</span>
         <div className="psb-header-right">
-          <SignalLamp ariaLabel={t("psb_live_data")} />
+          <SignalLamp
+            ariaLabel={t("psb_live_data")}
+            label={t("signal_lamp_label")}
+          />
           <button
             className="psb-refresh-btn"
             onClick={onRefresh}

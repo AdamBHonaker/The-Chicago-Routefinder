@@ -9,7 +9,6 @@ import SettingsPanel from "./components/SettingsPanel.jsx";
 import RouteCard from "./components/RouteCard.jsx";
 import PinnedStopsBoard from "./components/PinnedStopsBoard.jsx";
 import ServiceAlertsBar from "./components/ServiceAlertsBar.jsx";
-import AlertList from "./components/AlertList.jsx";
 import WeatherStrip from "./components/WeatherStrip.jsx";
 import { useFavorites } from "./hooks/useFavorites.js";
 import { useTripTracker } from "./hooks/useTripTracker.js";
@@ -24,6 +23,7 @@ import {
 import LabelSavePanel from "./components/LabelSavePanel.jsx";
 import LocationInput from "./components/LocationInput.jsx";
 import SavedRoutesPanel from "./components/SavedRoutesPanel.jsx";
+import SharedRouteBanner from "./components/SharedRouteBanner.jsx";
 import SideRail from "./components/SideRail.jsx";
 import SignalLamp from "./components/SignalLamp.jsx";
 import { useApiQuery } from "./hooks/useApiQuery.js";
@@ -93,6 +93,7 @@ export default function App() {
   const { t, i18n } = useTranslation();
 
   const [origin, setOrigin] = useState("");
+  const [originGeoCoords, setOriginGeoCoords] = useState(null);
   const [destination, setDestination] = useState("");
   const [transitMode, setTransitMode] = useState("All");
 
@@ -101,6 +102,7 @@ export default function App() {
   const [error, setError] = useState("");
 
   const [selectedRouteIndex, setSelectedRouteIndex] = useState(0);
+  const [isSharedLink, setIsSharedLink] = useState(false);
 
   // BYOK state — key persisted to sessionStorage (clears on tab close, NOT across tabs).
   // sessionStorage and localStorage are equally readable by any same-origin JavaScript,
@@ -206,9 +208,10 @@ export default function App() {
 
   // RTL support — flip document direction when an RTL language is selected.
   useEffect(() => {
-    document.documentElement.dir = RTL_LANGS.has(i18n.language) ? "rtl" : "ltr";
-    document.documentElement.lang = i18n.language;
-  }, [i18n.language]);
+    const lang = i18n.resolvedLanguage ?? i18n.language;
+    document.documentElement.dir = RTL_LANGS.has(lang) ? "rtl" : "ltr";
+    document.documentElement.lang = lang;
+  }, [i18n.resolvedLanguage, i18n.language]);
 
   function handleAiChange(value) {
     setAiEnabled(value);
@@ -258,9 +261,10 @@ export default function App() {
     startTrip, stopTrip, toggleOnVehicle, dismissOffRoute, dismissTripGeoError, resetForReroute,
   } = useTripTracker({ result, selectedRouteIndex });
 
-  // Shared /recommend API call — used by both handleSubmit and handleReroute
+  // Shared /recommend API call — used by both performSearch and handleReroute
   // so the request body, error handling, and setResult shape stay in one place.
-  async function callRecommendAPI(originStr) {
+  // Returns the number of routes in the response (used by performSearch for route-index pre-selection).
+  async function callRecommendAPI(originStr, destinationStr) {
     const res = await fetchWithRetry(
       `${BACKEND_URL}/recommend`,
       {
@@ -268,7 +272,7 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           origin:       originStr,
-          destination:  destination.trim(),
+          destination:  destinationStr,
           transit_mode: transitMode,
           ai_enabled:   aiEnabled,
           language:     i18n.language,
@@ -287,15 +291,17 @@ export default function App() {
     }
 
     const data = await res.json();
+    const routes = data.routes || [];
     setResult({
       recommendation: data.recommendation != null ? renderMarkdown(data.recommendation) : null,
-      routes: data.routes || [],
+      routes,
       alerts: data.alerts || [],
       originCoords: data.origin_coords,
       destCoords:   data.dest_coords,
       busDataPartial: (data.bus_errors > 0) && !(data.bus_arrivals?.length),
       weather: data.weather || null,
     });
+    return routes.length;
   }
 
   function fadePhoto() {
@@ -328,7 +334,7 @@ export default function App() {
     setResult(null);
 
     try {
-      await callRecommendAPI(gpsOrigin);
+      await callRecommendAPI(gpsOrigin, destination.trim());
       fadePhoto();
     } catch (err) {
       if (err.name === "AbortError") return;
@@ -347,27 +353,19 @@ export default function App() {
     };
   }, []);
 
-  async function handleSubmit(e) {
-    e.preventDefault();
-    if (!origin.trim() || !destination.trim()) return;
+  function pushUrlState(from, to) {
+    const params = new URLSearchParams({ from, to });
+    window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
+  }
 
-    // Stop any active trip before starting a fresh search
-    stopTrip();
-
-    // Reset route save UI
-    setSavingRoute(false);
-    setRouteLimitError(false);
-
-    // Cancel any in-flight request from a previous search
+  async function performSearch(fromStr, toStr, preferredRouteIndex = 0) {
     if (abortRef.current) abortRef.current.abort();
     abortRef.current = new AbortController();
 
-    // Cancel any in-progress photo fade from a previous search
     if (photoFadeTimer.current) clearTimeout(photoFadeTimer.current);
     setSelectedRouteIndex(0);
     searchIdRef.current += 1;
 
-    // Mount a fresh photo for this search (new key → new random pick)
     setPhotoKey((k) => k + 1);
     setPhotoMounted(true);
     setPhotoFading(false);
@@ -377,8 +375,12 @@ export default function App() {
     setResult(null);
 
     try {
-      await callRecommendAPI(origin.trim());
+      const routeCount = await callRecommendAPI(fromStr, toStr);
       fadePhoto();
+      pushUrlState(fromStr, toStr);
+      if (preferredRouteIndex > 0 && routeCount > preferredRouteIndex) {
+        setSelectedRouteIndex(preferredRouteIndex);
+      }
     } catch (err) {
       if (err.name === "AbortError") return;
       setError(err.message || t("error_generic"));
@@ -386,6 +388,32 @@ export default function App() {
     } finally {
       setLoading(false);
     }
+  }
+
+  // Parse share URL params on mount and auto-submit the pre-filled search.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const from = params.get("from");
+    const to = params.get("to");
+    const routeIndex = parseInt(params.get("route") ?? "0", 10) || 0;
+    if (from && to) {
+      setOrigin(from);
+      setDestination(to);
+      setIsSharedLink(true);
+      performSearch(from, to, routeIndex);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    if (!origin.trim() || !destination.trim()) return;
+
+    stopTrip();
+    setSavingRoute(false);
+    setRouteLimitError(false);
+    setIsSharedLink(false);
+
+    await performSearch(originGeoCoords ?? origin.trim(), destination.trim());
   }
 
   const effectiveShowSavedRoutes = showSavedRoutes || activeTab === "saved";
@@ -446,7 +474,7 @@ export default function App() {
               </select>
               <select
                 className="masthead-select"
-                value={i18n.language}
+                value={i18n.resolvedLanguage ?? i18n.language}
                 onChange={(e) => i18n.changeLanguage(e.target.value)}
                 aria-label={t("aria_language")}
               >
@@ -489,7 +517,14 @@ export default function App() {
 
           {activeTab === "alerts" && (
             <main className="main tab-alerts-view">
-              <AlertList alerts={visibleAlerts} onDismiss={handleAlertDismiss} />
+              {visibleAlerts.length === 0 ? (
+                <p className="tab-empty">{t("alerts_empty")}</p>
+              ) : (
+                <ServiceAlertsBar
+                  alerts={visibleAlerts}
+                  onDismiss={handleAlertDismiss}
+                />
+              )}
             </main>
           )}
 
@@ -507,12 +542,17 @@ export default function App() {
               onDismiss={handleAlertDismiss}
             />
 
+            {isSharedLink && (
+              <SharedRouteBanner onDismiss={() => setIsSharedLink(false)} />
+            )}
+
             <form className="form paper-grain-bright" onSubmit={handleSubmit}>
               <label>
                 <span>{t("label_from")}</span>
                 <LocationInput
                   value={origin}
                   onChange={setOrigin}
+                  onGeoCoords={setOriginGeoCoords}
                   placeholder={t("placeholder_location")}
                   savedLocations={savedLocations}
                   onSavedLocationsChange={setSavedLocations}
@@ -524,7 +564,7 @@ export default function App() {
                 <button
                   type="button"
                   className="swap-btn"
-                  onClick={() => { setOrigin(destination); setDestination(origin); }}
+                  onClick={() => { setOrigin(destination); setDestination(origin); setOriginGeoCoords(null); }}
                   aria-label={t("swap_directions")}
                   title={t("swap_directions")}
                 >
@@ -599,7 +639,7 @@ export default function App() {
 
                 {isOffRoute && (
                   <div className="special-dispatch special-dispatch--delay" role="alert">
-                    <span className="special-dispatch__kicker">Advisory</span>
+                    <span className="special-dispatch__kicker">{t("alerts_severity_advisory")}</span>
                     <p className="special-dispatch__body">{t("trip_off_route_message")}</p>
                     <div className="special-dispatch__actions">
                       <button className="start-trip-btn" onClick={handleReroute}>
@@ -665,6 +705,8 @@ export default function App() {
                             pinnedStops={pinnedStops}
                             onPinToggle={handlePinToggle}
                             activeAlertRoutes={activeAlertRoutes}
+                            shareOrigin={origin}
+                            shareDestination={destination}
                           />
                         </Fragment>
                       );

@@ -387,10 +387,14 @@ export default function MapView({
 
       // Render order: origin first, destination second — user position (live effect) last.
       if (originLngLat) {
-        originMarkerRef.current = mountMarker(map, OriginMarker, {}, originLngLat);
+        originMarkerRef.current = mountMarker(map, OriginMarker, { fromLabel: t("marker_from") }, originLngLat);
       }
       if (destLngLat) {
-        destMarkerRef.current = mountMarker(map, DestinationMarker, { arrived: false }, destLngLat);
+        destMarkerRef.current = mountMarker(map, DestinationMarker, {
+          arrived: false,
+          toLabel: t("marker_to"),
+          arrivedLabel: t("marker_arrived"),
+        }, destLngLat);
       }
     };
 
@@ -429,7 +433,7 @@ export default function MapView({
           if (dist <= 50) {
             arrivedRef.current = true;
             destMarkerRef.current?.root.render(
-              <DestinationMarker arrived={true} />,
+              <DestinationMarker arrived={true} arrivedLabel={t("marker_arrived")} />,
             );
           }
         }
@@ -444,14 +448,14 @@ export default function MapView({
           liveMarkerRef.current = mountMarker(
             map,
             LivePositionMarker,
-            markerProps,
+            { ...markerProps, youLabel: t("marker_you") },
             [userPosition.lng, userPosition.lat],
           );
           // Center map on first GPS fix.
           map.flyTo({ center: [userPosition.lng, userPosition.lat], zoom: 15 });
         } else {
           liveMarkerRef.current.marker.setLngLat([userPosition.lng, userPosition.lat]);
-          liveMarkerRef.current.root.render(<LivePositionMarker {...markerProps} />);
+          liveMarkerRef.current.root.render(<LivePositionMarker {...markerProps} youLabel={t("marker_you")} />);
           // Keep user centered while map is locked during an active trip.
           if (!unlocked) {
             map.easeTo({ center: [userPosition.lng, userPosition.lat] });
@@ -519,9 +523,9 @@ export default function MapView({
               size="sm"
             />
             <span className="map-train-card__line-text">
-              {primaryTransitLeg.line_code
+              {primaryTransitLeg.line in BUS_DIRECTION_COLORS
                 ? t("map_bus_label", { code: primaryTransitLeg.line_code })
-                : primaryTransitLeg.line?.replace(" Line", "") + " Line"}
+                : t("map_train_label", { color: primaryTransitLeg.line?.replace(" Line", "") })}
             </span>
           </div>
           <div className="map-train-card__desc">

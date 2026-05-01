@@ -25,6 +25,8 @@ export default function LivePositionMarker({
   hasHeading = true,
   reducedMotion = false,
   label,
+  youLabel = "YOU",
+  ariaLabel,
   paperColor = "#f4ead5",
   inkColor = "#1a1510",
   accentColor = "#a8482a",
@@ -42,7 +44,7 @@ export default function LivePositionMarker({
       viewBox={`0 0 ${W} ${H}`}
       className="marker-live-position"
       style={{ overflow: "visible", display: "block" }}
-      aria-label={label ? `You: ${label}` : "Your position"}
+      aria-label={ariaLabel ?? (label ? `You: ${label}` : "Your position")}
       role="img"
     >
       {/* Pulse ring */}
@@ -111,7 +113,7 @@ export default function LivePositionMarker({
             letterSpacing="1.5"
             textAnchor="start"
           >
-            YOU
+            {youLabel}
           </text>
           <text
             x={cx + 22}

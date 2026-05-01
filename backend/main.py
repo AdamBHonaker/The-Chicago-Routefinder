@@ -213,7 +213,7 @@ _FULLNESS_API_VALUES = {
 # Set ALLOWED_ORIGINS in Railway env vars to your Vercel URL, e.g.:
 #   ALLOWED_ORIGINS=https://cta-transit.vercel.app
 _extra_origins = os.getenv("ALLOWED_ORIGINS", "")
-ALLOWED_ORIGINS = ["http://localhost:5173"] + [
+ALLOWED_ORIGINS = ["http://localhost:5173", "http://localhost:5174"] + [
     o.strip() for o in _extra_origins.split(",") if o.strip()
 ]
 
@@ -1702,7 +1702,7 @@ async def alerts_endpoint():
     try:
         async with _get_cta_session().get(
             _CTA_CUSTOMER_ALERTS_URL,
-            params={"outputType": "XML", "accessibility": "N"},
+            params={"outputType": "XML", "accessibility": "false"},
             timeout=aiohttp.ClientTimeout(total=8),
         ) as resp:
             text = await resp.text()

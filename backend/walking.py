@@ -58,19 +58,47 @@ def _cardinal(lat1: float, lon1: float, lat2: float, lon2: float) -> str:
     return dirs[round(deg / 45) % 8]
 
 
-def _street_name(raw_name) -> str:
-    """Accept the raw edge "name" attribute value (not a full attributes dict)."""
+def _clean_name(raw_name) -> str:
+    """Return the street name, or "" if the edge has no name."""
     name = raw_name
     if isinstance(name, list):
         name = name[0] if name else ""
     if not isinstance(name, str):
-        return "unnamed path"
-    name = name.strip()
-    return name if name else "unnamed path"
+        return ""
+    return name.strip()
+
+
+# Maps OSM highway tag (+ optional footway subtag) → display path-type token.
+_HIGHWAY_PATH_TYPE: dict[str, str] = {
+    "crossing":   "crosswalk",
+    "footway":    "footway",
+    "path":       "path",
+    "steps":      "steps",
+    "pedestrian": "pedestrian",
+    "cycleway":   "path",
+    "track":      "path",
+}
+
+# Edges with these highway values are excluded from pedestrian routing.
+_EXCLUDED_HIGHWAY_TYPES: frozenset[str] = frozenset({"service", "alley"})
+
+
+def _highway_path_type(highway, footway="") -> str:
+    """Map OSM highway (+ footway subtag) to a display path-type string."""
+    if isinstance(highway, list):
+        highway = highway[0] if highway else ""
+    if isinstance(footway, list):
+        footway = footway[0] if footway else ""
+    highway = (highway or "").strip()
+    footway = (footway or "").strip()
+    if highway == "crossing" or footway == "crossing":
+        return "crosswalk"
+    return _HIGHWAY_PATH_TYPE.get(highway, "")
 
 
 def _make_step(
     name: str,
+    path_type: str,
     total_length: float,
     edge_count: int,
     start_vertex: int,
@@ -89,6 +117,7 @@ def _make_step(
     block_type = "long" if is_long else "short"
     return {
         "street":         name,
+        "path_type":      path_type,
         "direction":      direction_abbrev,
         "direction_full": _DIRECTION_FULL.get(direction_abbrev, direction_abbrev),
         "blocks":         blocks,
@@ -172,6 +201,23 @@ def _load_graph() -> "ig.Graph | None":
         # Wrapped in try/except so a corrupt pickle (e.g., missing "x"/"y" vertex
         # attributes) sets _graph_load_failed and stops retrying instead of raising
         # KeyError on every routing request (BUG-009).
+        # Remove service roads and alleys before building routing structures.
+        try:
+            edge_attr_names = set(G.es.attributes()) if G.ecount() > 0 else set()
+            if "highway" in edge_attr_names:
+                def _hw_str(raw) -> str:
+                    if isinstance(raw, list): return raw[0] if raw else ""
+                    return (raw or "").strip()
+                exclude_ids = [
+                    e.index for e in G.es
+                    if _hw_str(e.attributes().get("highway")) in _EXCLUDED_HIGHWAY_TYPES
+                ]
+                if exclude_ids:
+                    G.delete_edges(exclude_ids)
+                    print(f"[walking] Removed {len(exclude_ids):,} service/alley edges from routing graph")
+        except Exception as filt_err:
+            print(f"[walking] Edge filtering skipped ({type(filt_err).__name__}: {filt_err})")
+
         try:
             # Single pass over vertices for both coordinate arrays
             coords = np.array([(v["x"], v["y"]) for v in G.vs], dtype=np.float64)
@@ -317,32 +363,44 @@ def _walk_directions_impl(
         if len(vpath) < 2:
             return ()
 
-        # Single-pass grouping of consecutive edges by street name
+        # Single-pass grouping of consecutive edges by (name, path_type).
+        # Named edges group by name; unnamed edges group by OSM highway type
+        # so a crosswalk and a footway are always separate steps.
         steps: list[dict] = []
-        current_name: "str | None" = None
+        current_key:       "tuple | None" = None
+        current_name:      str  = ""
+        current_path_type: str  = ""
         total_length = 0.0
         edge_count   = 0
         start_vertex = 0
         end_vertex   = 0
 
         for eid, u, v in zip(epath, vpath, vpath[1:]):
-            name   = _street_name(G.es[eid].attributes().get("name"))
+            attrs  = G.es[eid].attributes()
+            name   = _clean_name(attrs.get("name"))
+            hw     = attrs.get("highway", "") or ""
+            fw     = attrs.get("footway", "") or ""
+            path_type = _highway_path_type(hw, fw)
+            # Named segments group by name; unnamed group by path_type token.
+            group_key = (name, "") if name else ("", path_type or "__unnamed__")
             length = _edge_lengths[eid]
-            if name == current_name:
+            if group_key == current_key:
                 total_length += length
                 edge_count   += 1
                 end_vertex    = v
             else:
-                if current_name is not None:
-                    steps.append(_make_step(current_name, total_length, edge_count, start_vertex, end_vertex))
-                current_name  = name
-                total_length  = length
-                edge_count    = 1
-                start_vertex  = u
-                end_vertex    = v
+                if current_key is not None:
+                    steps.append(_make_step(current_name, current_path_type, total_length, edge_count, start_vertex, end_vertex))
+                current_key       = group_key
+                current_name      = name
+                current_path_type = path_type
+                total_length      = length
+                edge_count        = 1
+                start_vertex      = u
+                end_vertex        = v
 
-        if current_name is not None:
-            steps.append(_make_step(current_name, total_length, edge_count, start_vertex, end_vertex))
+        if current_key is not None:
+            steps.append(_make_step(current_name, current_path_type, total_length, edge_count, start_vertex, end_vertex))
 
         return tuple(steps)
 
@@ -350,7 +408,7 @@ def _walk_directions_impl(
         total_min = _haversine_walk_minutes(origin_lat, origin_lon, dest_lat, dest_lon)
         fallback_meters = total_min * 60 * WALKING_SPEED_MPS
         fallback_blocks = max(0.5, round(fallback_meters / _LONG_BLOCK_METERS * 2) / 2)
-        return ({"street": "", "direction": "", "direction_full": "", "blocks": fallback_blocks, "block_type": "long", "minutes": total_min, "start_lat": origin_lat, "start_lon": origin_lon},)
+        return ({"street": "", "path_type": "", "direction": "", "direction_full": "", "blocks": fallback_blocks, "block_type": "long", "minutes": total_min, "start_lat": origin_lat, "start_lon": origin_lon},)
 
 
 _WALK_DIRECTIONS_MAX_STEPS = 15

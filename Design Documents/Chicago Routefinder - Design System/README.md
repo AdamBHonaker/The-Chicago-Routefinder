@@ -758,4 +758,5 @@ When Claude Code is asked to design something new in this language, walk through
 |App name / rebrand                        |**Rebrand.** `t("app_title")` → “The Chicago Routefinder” across all locales.                               |
 |Tab bar                                   |**Implement.** Fixed bottom 4-tab bar (Home / Map / Alerts / Saved) replaces the single-column scroll model.|
 |Vol/Issue masthead numbering              |**Keep.** Deterministic hash of `new Date()` for charm.                                                     |
-|Drop-cap minutes overflow on small screens|**Cap at 56px** below 360px viewport width via `@media (max-width: 359px)`.                                 |
+|Drop-cap minutes overflow on small screens|**Cap at 56px** below 360px viewport width via `@media (max-width: 359px)`.
+                                 |

@@ -12,7 +12,7 @@ import {
 import { saveLocation, deleteLocation } from "../favorites.js";
 import LabelSavePanel from "./LabelSavePanel.jsx";
 
-export default function LocationInput({ value, onChange, placeholder, savedLocations, onSavedLocationsChange, showGeoBtn }) {
+export default function LocationInput({ value, onChange, onGeoCoords, placeholder, savedLocations, onSavedLocationsChange, showGeoBtn }) {
   const { t } = useTranslation();
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [savingMode, setSavingMode] = useState(false);
@@ -77,7 +77,9 @@ export default function LocationInput({ value, onChange, placeholder, savedLocat
       async (pos) => {
         const { latitude, longitude } = pos.coords;
         const coords = `${latitude.toFixed(6)},${longitude.toFixed(6)}`;
-        // Set raw coords immediately so the form can submit even if reverse geocoding is slow
+        // Always store the raw coordinates for routing — never re-geocode them.
+        onGeoCoords?.(coords);
+        // Set raw coords in the input immediately so the form can submit if reverse geocoding is slow.
         onChange(coords);
         try {
           const res = await fetch(
@@ -86,6 +88,7 @@ export default function LocationInput({ value, onChange, placeholder, savedLocat
           if (res.ok) {
             const data = await res.json();
             if (data.address && data.address !== coords) {
+              // Update the display label only — routing still uses the raw coords via onGeoCoords.
               onChange(data.address);
             }
           }
@@ -139,6 +142,7 @@ export default function LocationInput({ value, onChange, placeholder, savedLocat
           value={value}
           onChange={(e) => {
             onChange(e.target.value);
+            onGeoCoords?.(null);
             fetchAcSuggestions(e.target.value);
           }}
           onFocus={() => {
@@ -187,7 +191,7 @@ export default function LocationInput({ value, onChange, placeholder, savedLocat
           </button>
         )}
         {acSuggestions.length > 0 && (
-          <ul className="saved-dropdown" role="listbox" aria-label="Location suggestions">
+          <ul className="saved-dropdown" role="listbox" aria-label={t("aria_location_suggestions")}>
             {acSuggestions.map((s, i) => (
               <li
                 key={i}

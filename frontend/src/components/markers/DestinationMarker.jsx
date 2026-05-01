@@ -17,6 +17,9 @@ import React from "react";
  */
 export default function DestinationMarker({
   label,
+  toLabel = "TO",
+  arrivedLabel = "arrived",
+  ariaLabel,
   flagSide = "right",
   paperColor = "#f4ead5",
   inkColor = "#1a1510",
@@ -35,9 +38,11 @@ export default function DestinationMarker({
       viewBox={`0 0 ${W} ${H}`}
       style={{ overflow: "visible", display: "block" }}
       aria-label={
-        arrived
-          ? label ? `Arrived: ${label}` : "Arrived at destination"
-          : label ? `Destination: ${label}` : "Destination"
+        ariaLabel ?? (
+          arrived
+            ? label ? `Arrived: ${label}` : "Arrived at destination"
+            : label ? `Destination: ${label}` : "Destination"
+        )
       }
       role="img"
     >
@@ -73,7 +78,7 @@ export default function DestinationMarker({
           fontStyle="italic"
           textAnchor="middle"
         >
-          arrived
+          {arrivedLabel}
         </text>
       )}
 
@@ -89,7 +94,7 @@ export default function DestinationMarker({
             letterSpacing="1.5"
             textAnchor={flagSide === "right" ? "start" : "end"}
           >
-            TO
+            {toLabel}
           </text>
           <text
             x={flagSide === "right" ? cx + 18 : cx - 18}

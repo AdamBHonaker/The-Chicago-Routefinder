@@ -12,6 +12,8 @@ import React from "react";
  */
 export default function OriginMarker({
   label,
+  fromLabel = "FROM",
+  ariaLabel,
   flagSide = "right",
   paperColor = "#f4ead5",
   inkColor = "#1a1510",
@@ -27,7 +29,7 @@ export default function OriginMarker({
       height={H}
       viewBox={`0 0 ${W} ${H}`}
       style={{ overflow: "visible", display: "block" }}
-      aria-label={label ? `Origin: ${label}` : "Origin"}
+      aria-label={ariaLabel ?? (label ? `Origin: ${label}` : "Origin")}
       role="img"
     >
       {/* Paper backing — strokes must read on any tile fill */}
@@ -57,7 +59,7 @@ export default function OriginMarker({
             letterSpacing="1.5"
             textAnchor={flagSide === "right" ? "start" : "end"}
           >
-            FROM
+            {fromLabel}
           </text>
           {/* Place name */}
           <text

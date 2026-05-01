@@ -773,7 +773,7 @@ def _build_graph() -> tuple[nx.DiGraph, dict[str, dict]]:
                        weight=walk_min, edge_type="walk", route_id="walk", mode="walk")
             intermodal_edge_count += 2
 
-    print(f"[transit_graph] Added {intermodal_edge_count} train↔bus transfer walk edges")
+    print(f"[transit_graph] Added {intermodal_edge_count} train<->bus transfer walk edges")
     print(
         f"[transit_graph] Graph ready: {G.number_of_nodes()} nodes, "
         f"{G.number_of_edges()} edges "
@@ -1363,7 +1363,7 @@ def _path_to_route(
                 to_name=board_xfer_name,
                 minutes=_TRANSFER_MINUTES,
                 path_points=[[blat, blon], [blat, blon]],
-                directions=[{"street": "Change trains", "direction": "", "minutes": _TRANSFER_MINUTES}],
+                directions=[{"is_platform_transfer": True, "street": "", "direction": "", "minutes": _TRANSFER_MINUTES}],
             ))
             walk_total += _TRANSFER_MINUTES
 

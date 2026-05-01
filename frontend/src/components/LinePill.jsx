@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { getRouteColor, BUS_DIRECTION_COLORS } from "../constants.js";
 
 const LINE_ABBREVS = {
@@ -12,6 +13,7 @@ const LINE_ABBREVS = {
 };
 
 export default function LinePill({ line, isBus, lineCode, size = "sm" }) {
+  const { t } = useTranslation();
   const bg = getRouteColor(line);
   const textColor = line === "Yellow Line" ? "#111" : "#fff";
   const isBusRoute = isBus || (line in BUS_DIRECTION_COLORS);
@@ -34,7 +36,7 @@ export default function LinePill({ line, isBus, lineCode, size = "sm" }) {
     <span
       className={`lin-pill lin-pill--${size}`}
       style={{ background: bg, color: textColor, ...fontStyle }}
-      aria-label={isBusRoute ? `Bus ${lineCode}` : line}
+      aria-label={isBusRoute ? t("map_bus_label", { code: lineCode }) : line}
     >
       {label}
     </span>

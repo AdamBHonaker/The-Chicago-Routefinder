@@ -77,6 +77,22 @@ def download_and_save() -> None:
     raw_edges = G.number_of_edges()
     print(f"Network downloaded: {raw_nodes:,} nodes, {raw_edges:,} edges")
 
+    # Remove service roads (driveways, parking aisles, alleys) — pedestrians
+    # should not be routed through them.
+    _WALK_EXCLUDED_HIGHWAYS = {"service", "alley"}
+    def _hw(data) -> str:
+        val = data.get("highway", "")
+        if isinstance(val, list): val = val[0] if val else ""
+        return (val or "").strip()
+
+    svc_edges = [
+        (u, v, k) for u, v, k, data in G.edges(keys=True, data=True)
+        if _hw(data) in _WALK_EXCLUDED_HIGHWAYS
+    ]
+    if svc_edges:
+        G.remove_edges_from(svc_edges)
+        print(f"Removed {len(svc_edges):,} service/alley edges from walk graph")
+
     print("Consolidating intersections (tolerance=10 m) ...")
     G_proj = ox.project_graph(G)
     G_proj = ox.consolidate_intersections(G_proj, tolerance=10, rebuild_graph=True, dead_ends=False)
@@ -119,16 +135,20 @@ def _save_igraph_artifact(G_nx) -> None:
         edges: list[tuple[int, int]] = []
         attr_length:   list[float]             = []
         attr_name:     list[str]               = []
+        attr_highway:  list[str]               = []
+        attr_footway:  list[str]               = []
         attr_geometry: list[list | None]       = []
+
+        def _first_str(val) -> str:
+            if isinstance(val, list): val = val[0] if val else ""
+            return (val or "").strip()
 
         for u, v, data in G_nx.edges(data=True):
             edges.append((node_to_idx[u], node_to_idx[v]))
             attr_length.append(float(data.get("length") or 0.0))
-
-            name = data.get("name", "")
-            if isinstance(name, list):
-                name = name[0] if name else ""
-            attr_name.append((name or "").strip())
+            attr_name.append(_first_str(data.get("name", "")))
+            attr_highway.append(_first_str(data.get("highway", "")))
+            attr_footway.append(_first_str(data.get("footway", "")))
 
             geom = data.get("geometry")
             if geom is not None and hasattr(geom, "coords"):
@@ -152,6 +172,8 @@ def _save_igraph_artifact(G_nx) -> None:
             edge_attrs={
                 "length":   attr_length,
                 "name":     attr_name,
+                "highway":  attr_highway,
+                "footway":  attr_footway,
                 "geometry": attr_geometry,
             },
         )

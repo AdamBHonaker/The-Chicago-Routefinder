@@ -4,9 +4,9 @@ import { useTranslation } from "react-i18next";
 const SEVERITY_ORDER = { Major: 0, Minor: 1, Planned: 2 };
 
 function severityMeta(severity) {
-  if (severity === "Major") return { label: "Major", modifier: "delay" };
-  if (severity === "Minor") return { label: "Minor", modifier: "notice" };
-  return { label: "Advisory", modifier: "minor" };
+  if (severity === "Major") return { labelKey: "alerts_severity_major", modifier: "delay" };
+  if (severity === "Minor") return { labelKey: "alerts_severity_minor", modifier: "notice" };
+  return { labelKey: "alerts_severity_advisory", modifier: "minor" };
 }
 
 export default function ServiceAlertsBar({ alerts, onDismiss }) {
@@ -24,14 +24,14 @@ export default function ServiceAlertsBar({ alerts, onDismiss }) {
   return (
     <div className="alerts-stack">
       {sorted.map((alert) => {
-        const { label, modifier } = severityMeta(alert.severity);
+        const { labelKey, modifier } = severityMeta(alert.severity);
         return (
           <div
             key={alert.alert_id}
             className={`special-dispatch special-dispatch--${modifier}`}
           >
             <div className="special-dispatch__header">
-              <span className="special-dispatch__kicker">{label}</span>
+              <span className="special-dispatch__kicker">{t(labelKey)}</span>
               {(alert.routes?.length ?? 0) > 0 && (
                 <span className="special-dispatch__routes">
                   {alert.routes.join(" · ")}

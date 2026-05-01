@@ -27,17 +27,29 @@ function WalkLegItem({ leg, index, completedSteps, extraClass = "" }) {
 
   const renderStep = (step, si) => {
     const stepDone = completedSteps?.has(`${index}-${si}`);
+    const pathType = step.path_type;
+    const preposition = (pathType === "crosswalk" || pathType === "pedestrian")
+      ? t("step_through")
+      : t("step_along");
     return (
       <li key={si} className={`leg-step${stepDone ? " leg-step--complete" : ""}`}>
         <span className="leg-step-text">
           {stepDone && <span className="leg-step-complete-check">✓</span>}
-          {si === 0 ? t("step_walk") : t("step_head")}
-          {step.direction_full ? ` ${step.direction_full}` : ""}
-          {step.street && step.street !== "unnamed path" && (
-            <>{` ${t("step_along")} `}<span className="leg-step-street">{step.street}</span></>
-          )}
-          {` ${t("step_for")} `}
-          {formatBlocks(step.blocks ?? 1, step.block_type, t)}
+          {step.is_platform_transfer
+            ? t("step_platform_transfer")
+            : <>
+                {si === 0 ? t("step_walk") : t("step_head")}
+                {step.direction_full ? ` ${step.direction_full}` : ""}
+                {step.street
+                  ? <>{` ${t("step_along")} `}<span className="leg-step-street">{step.street}</span></>
+                  : pathType
+                  ? <>{` ${preposition} `}<span className="leg-step-street">{t(`path_type_${pathType}`)}</span></>
+                  : null
+                }
+                {` ${t("step_for")} `}
+                {formatBlocks(step.blocks ?? 1, step.block_type, t)}
+              </>
+          }
         </span>
       </li>
     );
@@ -76,7 +88,7 @@ function WalkLegItem({ leg, index, completedSteps, extraClass = "" }) {
   );
 }
 
-function RouteLegs({ legs, activeLegIndex, completedSteps, pinnedStops, onPinToggle, activeAlertRoutes }) {
+function RouteLegs({ legs, initialWait, activeLegIndex, completedSteps, pinnedStops, onPinToggle, activeAlertRoutes }) {
   const { t } = useTranslation();
   // Key by `${type}:${stop_id}` so bus stop_ids and train mapids never alias.
   const pinnedIds = useMemo(
@@ -109,10 +121,10 @@ function RouteLegs({ legs, activeLegIndex, completedSteps, pinnedStops, onPinTog
           : leg.line?.replace(" Line", "");
         const isTransferLeg = seenTransit;
         seenTransit = true;
-        const xferWait = leg.transfer_wait_minutes;
+        const xferWait = isTransferLeg ? leg.transfer_wait_minutes : initialWait;
         const xferNote =
-          isTransferLeg && xferWait !== undefined && xferWait !== null
-            ? (xferWait === 0 ? "⏱ Due" : `⏱ ${xferWait} min wait`)
+          xferWait !== undefined && xferWait !== null
+            ? (xferWait === 0 ? `⏱ ${t("wait_due")}` : `⏱ ${t("wait_minutes", { minutes: xferWait })}`)
             : null;
 
         const stopId    = leg.from_mapid;
@@ -125,7 +137,7 @@ function RouteLegs({ legs, activeLegIndex, completedSteps, pinnedStops, onPinTog
             {isDone && <span className="leg-complete-check">✓</span>}
             {xferNote && <span className="transfer-wait-note">{xferNote}</span>}
             <LinePill line={leg.line} isBus={isBus} lineCode={leg.line_code} size="sm" />
-            {hasAlert && <span className="leg-alert-badge" title="Service alert active">⚠</span>}
+            {hasAlert && <span className="leg-alert-badge" title={t("aria_service_alert_active")}>⚠</span>}
             <span className="leg-text">
               {leg.from} → {leg.to}
               <span className="leg-duration"> · {leg.minutes} min</span>
@@ -156,13 +168,48 @@ export default memo(function RouteCard({
   tripGeoError, onDismissTripGeoError,
   onVehicle, onToggleVehicle,
   pinnedStops, onPinToggle, activeAlertRoutes,
+  shareOrigin, shareDestination,
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(isFirst);
+  const [shareState, setShareState] = useState("idle");
+
+  async function handleShare(e) {
+    e.stopPropagation();
+    const params = new URLSearchParams({ from: shareOrigin, to: shareDestination });
+    if (index > 0) params.set("route", String(index));
+    const shareUrl = `${window.location.origin}${window.location.pathname}?${params}`;
+
+    const isMobile = navigator.share && /Mobi|Android/i.test(navigator.userAgent);
+    if (isMobile) {
+      try {
+        await navigator.share({ title: t("share_title"), text: t("share_message"), url: shareUrl });
+      } catch (err) {
+        if (err.name !== "AbortError") { /* silently ignore */ }
+      }
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = shareUrl;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    }
+    setShareState("copied");
+    setTimeout(() => setShareState("idle"), 2000);
+  }
   const activeLeg = (tripActive && activeLegIndex !== null) ? route.legs[activeLegIndex] : null;
   const isTransitLeg = activeLeg?.type === 'transit';
+  const isBusActiveLeg = isTransitLeg && activeLeg.line in BUS_DIRECTION_COLORS;
   const transitLabel = isTransitLeg
-    ? (activeLeg.line_code ? `Bus ${activeLeg.line_code}` : (activeLeg.line || ''))
+    ? (isBusActiveLeg ? t("map_bus_label", { code: activeLeg.line_code }) : (activeLeg.line || ''))
     : '';
   const waitNote =
     route.wait_minutes == null ? ""
@@ -203,7 +250,7 @@ export default memo(function RouteCard({
         </div>
         <div className="route-card-right">
           {isFirst && <span className="route-badge">★ {t("badge_best")}</span>}
-          <span className="route-minutes-label" aria-hidden="true">MIN TOTAL</span>
+          <span className="route-minutes-label" aria-hidden="true">{t("label_min_total_short")}</span>
           <span className="route-meta">{xferNote}{waitNote}</span>
           {transitLines.length > 0 && (
             <div className="route-pills-row" aria-hidden="true">
@@ -215,9 +262,22 @@ export default memo(function RouteCard({
         </div>
         <span className="route-chevron" aria-hidden="true">{expanded ? "▿" : "▵"}</span>
       </button>
+      <div className="route-card-actions">
+        <button
+          type="button"
+          className={`share-btn${shareState === "copied" ? " share-btn--copied" : ""}`}
+          onClick={handleShare}
+          aria-label={t("aria_share_route")}
+          title={t("aria_share_route")}
+          aria-live="polite"
+        >
+          {shareState === "copied" ? t("share_copied") : "↗"}
+        </button>
+      </div>
       {expanded && (
         <RouteLegs
           legs={route.legs}
+          initialWait={route.wait_minutes}
           activeLegIndex={isSelected ? activeLegIndex : null}
           completedSteps={isSelected ? completedSteps : null}
           pinnedStops={pinnedStops}
@@ -232,6 +292,7 @@ export default memo(function RouteCard({
               className={`on-vehicle-btn${onVehicle ? ' on-vehicle-btn--active' : ''}`}
               onClick={onToggleVehicle}
               aria-pressed={onVehicle}
+              disabled={onVehicle}
             >
               {onVehicle
                 ? t('on_vehicle_active', { line: transitLabel })
