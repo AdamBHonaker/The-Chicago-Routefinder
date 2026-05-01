@@ -48,6 +48,55 @@ A log of features that have been designed and fully implemented. Entries are mov
 30. Feature K — Restore Street-Network Walking Graph in Production — **Bolt-On**
 31. Feature Heritage — Editorial Almanac Redesign — **Bolt-On**
 32. Feature MapMarkers — Editorial On-Map Symbols — **Bolt-On**
+33. Feature NorthExpansion — North Side 0.25-Mile Walking Radius Expansion — **Structural** (depends on Feature K ✅)
+34. Feature SouthExpansion — South Side 0.25-Mile Walking Radius Expansion — **Structural** (depends on Feature K ✅)
+
+---
+
+# Feature NorthExpansion + SouthExpansion — Walking Radius Expansion (combined regeneration)
+
+**Completed: 2026-05-01** (regenerated together in a single pass)
+
+**Overview:** Expanded the OSMnx pedestrian street graph north and south so that every CTA train station has accurate street-routed walk times within a 0.25-mile pedestrian radius. Previously, all Yellow Line stations, Purple Line stations north of Howard, and every Red/Green/Orange terminal south of ~18th St fell outside the OSM bbox and used Haversine straight-line walk estimates with collapsed turn-by-turn directions.
+
+Both features were regenerated together (per the scoping decisions in the original plans) so the graph was rebuilt once rather than twice. The combined regeneration uses the union of the two new boundaries — the wider NorthExpansion west edge (`-87.7570`) was kept because it covers both the Skokie/Evanston Yellow + Purple corridor and the Orange Line Midway corridor.
+
+**Stations newly covered by accurate walk routing:**
+
+| Line | Stations |
+|---|---|
+| Yellow | Howard, Oakton-Skokie, Dempster-Skokie |
+| Purple (north of Howard) | South Blvd, Main, Dempster, Davis, Foster, Noyes, Central, Linden |
+| Red (south) | Cermak-Chinatown, Sox-35th, 47th, Garfield, 63rd, 69th, 79th, 87th, 95th/Dan Ryan |
+| Green (south) | 43rd, Indiana, 47th, King Drive, Cottage Grove, Oakwood/63rd, Garfield, 51st |
+| Orange | Halsted, Ashland, 35th/Archer, Western, Kedzie, Pulaski, Midway |
+
+**Final bbox (replacing the original Howard → 20th St box):**
+
+| Constant | Old | New |
+|---|---|---|
+| `STREET_GRAPH_NORTH` | `42.0190` | `42.0830` |
+| `STREET_GRAPH_SOUTH` | `41.8560` | `41.7180` |
+| `STREET_GRAPH_WEST`  | `-87.7260` | `-87.7570` |
+| `STREET_GRAPH_EAST`  | `-87.5200` | unchanged |
+
+**Storage impact (actual, post-regeneration):**
+
+| File | Before | After |
+|---|---|---|
+| `street_graph_igraph.pkl` | ~16 MB | ~39 MB |
+| `street_graph.graphml` | (Git LFS pointer) | regenerated and re-uploaded to the Feature K release host |
+
+**Files changed:**
+- `backend/utils.py` — `STREET_GRAPH_NORTH` / `STREET_GRAPH_SOUTH` / `STREET_GRAPH_WEST` updated; comment block above the constants rewritten to describe the post-expansion coverage.
+- `backend/street_graph.graphml` — regenerated locally via `python fetch_street_graph.py --force` and re-uploaded to the Feature K release host.
+- `backend/street_graph_igraph.pkl` — regenerated alongside the graphml.
+- `backend/Dockerfile` (`STREET_GRAPH_URL`) — pointed at the new release tag.
+
+**Key decisions:**
+- Combined single-pass regeneration rather than two separate rebuilds — avoided two LFS uploads and two Railway redeploys.
+- Kept the wider NorthExpansion west edge (`-87.7570`) over SouthExpansion's narrower `-87.7450` so the combined bbox covers both Skokie/Evanston and the Orange Line Midway corridor with a single value.
+- igraph resident memory roughly doubled (still well within Railway plan limits at ~80–100 MB).
 
 ---
 

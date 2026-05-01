@@ -13,9 +13,11 @@ The download queries the OpenStreetMap Overpass API — it takes 3–10 minutes
 depending on your connection. After the first run the server loads from the
 local cache file in under a second.
 
-Geographic scope: Howard St (north) to 20th St (south), lakefront (east) to
-Pulaski Rd (west). Covers the current CTA service area with accurate
+Geographic scope: Linden/Dempster-Skokie (north) to 95th/Dan Ryan (south),
+lakefront (east) to the Dempster-Skokie/Midway corridor (west). Covers a
+0.25-mile pedestrian radius around every CTA train station with accurate
 street-network walk times. Points outside fall back to Haversine estimates.
+Bounds are defined in `utils.STREET_GRAPH_BBOX_OSMNX` — adjust there.
 
 NOTE: This file is committed to the repo via Git LFS (backend/street_graph.graphml).
 When Railway (or another CI environment) checks out the repo without pulling LFS
@@ -34,7 +36,7 @@ GRAPH_PATH  = Path(__file__).parent / "street_graph.graphml"
 IGRAPH_PATH = Path(__file__).parent / "street_graph_igraph.pkl"
 
 # OSMnx 2.x format: (left/west, bottom/south, right/east, top/north)
-# Coverage: Howard St (north) → 20th St (south) | Lakefront (east) → Pulaski Rd (west)
+# Coverage: Linden/Dempster-Skokie (north) → 95th/Dan Ryan (south) | Lakefront (east) → Dempster-Skokie/Midway corridor (west)
 # Bounds are defined in utils.STREET_GRAPH_BBOX_OSMNX; expand there when Railway memory allows.
 BBOX = STREET_GRAPH_BBOX_OSMNX
 

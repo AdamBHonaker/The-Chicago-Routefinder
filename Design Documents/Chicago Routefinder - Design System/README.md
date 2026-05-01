@@ -268,6 +268,7 @@ A subtle one-line band above results (or in the masthead area).
 
 - Padding 8/22, `var(--hairline)` top + bottom
 - Mono temperature + serif italic condition (“47° · partly cloudy, gusts from the lake”) + caps “weather” right-aligned in `var(--mute)`
+- When the National Weather Service "apparent temperature" differs from the air temperature by a meaningful amount, append an inline serif-italic `/ feels N°` after the main temperature (mute color, smaller weight). Suppress when feels-like equals air temperature.
 
 ### LoadingSkeleton (`<LoadingSkeleton>`)
 

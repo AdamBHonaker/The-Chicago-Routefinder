@@ -271,9 +271,9 @@ All five features shipped. NWS weather context, crowdedness estimates, and weath
 ## Known Pending Items
 
 - **CTA API limit:** 100,000 req/day (confirmed from Train Tracker docs). Plan caching strategy around 100k.
-- **Known bugs:** See [`BUGS_TO_BE_FIXED.md`](BUGS_TO_BE_FIXED.md) for open bugs (0 🔴 high; 1 🟡 medium; 3 🟢 low — BUG-007 transit photos, BUG-008 stale DAU counts, BUG-009 crowdedness bell-curve disabled, BUG-011 last-departure mismatch). Resolved bugs are logged in [`RESOLVED_HISTORY.md`](RESOLVED_HISTORY.md). When a bug is fixed, delete it from `BUGS_TO_BE_FIXED.md` and add an entry to `RESOLVED_HISTORY.md`.
+- **Known bugs:** See [`BUGS_TO_BE_FIXED.md`](BUGS_TO_BE_FIXED.md) for open bugs (0 🔴 high; 0 🟡 medium; 1 🟢 low — BUG-007 transit photos). Resolved bugs are logged in [`RESOLVED_HISTORY.md`](RESOLVED_HISTORY.md). When a bug is fixed, delete it from `BUGS_TO_BE_FIXED.md` and add an entry to `RESOLVED_HISTORY.md`.
 - **Technical debt:** See [`Technical_Debt.md`](Technical_Debt.md) — 0 items open as of 2026-04-28. Resolved debt is logged in `RESOLVED_HISTORY.md`. When debt is paid off, delete it from `Technical_Debt.md` and add an entry to `RESOLVED_HISTORY.md`.
-- **Future enhancements:** See [`FEATURE_IMPLEMENTATION_PLANS.md`](FEATURE_IMPLEMENTATION_PLANS.md) for chunked build plans. Pending/in-progress features: Feature Heritage (The Chicago Routefinder redesign — Step 1 complete), Feature NorthExpansion, Feature SouthExpansion, Feature Monetization.
+- **Future enhancements:** See [`FEATURE_IMPLEMENTATION_PLANS.md`](FEATURE_IMPLEMENTATION_PLANS.md) for chunked build plans. Pending features: Feature Monetization, Feature TabTransition, Feature ReLock, Feature ArrivedToast, Feature TapRecentre, Feature RouteProgress, Feature HeadingUp. Recently completed (see [`FEATURES_IMPLEMENTED_HISTORY.md`](FEATURES_IMPLEMENTED_HISTORY.md)): Feature Heritage (all 11 steps), Feature MapMarkers, Feature NorthExpansion + SouthExpansion (combined regeneration).
 - **API keys:** All four keys obtained and configured: CTA Train Tracker, CTA Bus Tracker, Anthropic, and Google Maps.
 
 ---
@@ -336,7 +336,7 @@ CTA-Transit-PWA/
 ├── Efficiency_Improvements.md          ← Open efficiency improvements only; delete entry here when implemented
 ├── RESOLVED_HISTORY.md                 ← Combined log: Bugs Fixed + Technical Debt Paid Off + Efficiency Improvements Implemented
 ├── FEATURES_IMPLEMENTED_HISTORY.md    ← All implemented features with full chunk-by-chunk detail
-├── FEATURE_IMPLEMENTATION_PLANS.md     ← Pending features only: NorthExpansion, SouthExpansion, Heritage, Monetization
+├── FEATURE_IMPLEMENTATION_PLANS.md     ← Pending features only: Monetization, TabTransition, ReLock, ArrivedToast, TapRecentre, RouteProgress, HeadingUp
 ├── Design Documents/                   ← HTML mockups + design feedback (option 2 preferred)
 ├── Human Documentation/
 │   ├── Saved Prompts.md                ← Reusable prompts for recurring workflows
@@ -429,7 +429,7 @@ CTA-Transit-PWA/
 │   ├── geocode_cache.journal           ← Append-only JSONL delta between snapshots (gitignored)
 │   ├── geocode_counter.json            ← Monthly Google Maps API call counter (gitignored)
 │   ├── gtfs_data/                      ← Downloaded GTFS files (gitignored, re-downloaded on deploy via fetch_gtfs.py)
-│   ├── street_graph.graphml            ← Pre-built OSMnx street graph committed via Git LFS (bbox: Howard–20th St);
+│   ├── street_graph.graphml            ← Pre-built OSMnx street graph committed via Git LFS (bbox: Linden/Dempster-Skokie → 95th/Dan Ryan, lakefront → Midway corridor);
 │   │                                      also hosted as GitHub Release asset street-graph-v1 (81.8 MB).
 │   │                                      Downloaded at Docker build time via GITHUB_TOKEN curl step.
 │   │                                      Runtime: igraph pkl first, graphml as fallback, Haversine if both absent.
@@ -533,15 +533,15 @@ Run from `frontend/` with: `npm test`
 **Phase 6 and Phase 6.5 are fully complete.** The app is live on Railway (backend) and Vercel (frontend). All Weather & Crowdedness features shipped 2026-04-27.
 
 **Next steps (in order):**
-1. **In Railway → Service → Settings → Build → Build Arguments**, add `GITHUB_TOKEN=<PAT with Contents:Read>` then trigger a redeploy — this activates Feature K (street-network walking graph in production).
-2. **Feature Heritage (The Chicago Routefinder redesign) — In Progress.** Step 1 (tokens + fonts) complete 2026-04-28. Continue steps 2–10 per `FEATURE_IMPLEMENTATION_PLANS.md` → Feature Heritage.
-3. Source ≥10 transit photos for the map loading panel (see `HUMAN_TODO.md`)
-4. Run remaining UI checks: confirm 40/60 panel ratio on desktop, 300px/350px min-heights on mobile
-5. (Optional) Add a custom domain in Vercel dashboard → Settings → Domains
-6. **Next feature work after Heritage:** Feature NorthExpansion or Feature SouthExpansion (both depend on Feature K street graph). See `FEATURE_IMPLEMENTATION_PLANS.md`.
-7. Phase 7: Monetization (House Ads first) — implement `AdSlot` component after Heritage redesign is complete and app is stable; defer third-party ad networks until user base is established. See "Monetization Strategy — Full Decision Record" section above.
+1. **Feature Heritage — Complete.** All 11 steps shipped 2026-04-28; post-launch fixes H-1/H-2/H-3 applied. See `FEATURES_IMPLEMENTED_HISTORY.md` for the canonical record.
+2. **Feature MapMarkers — Complete.** Editorial on-map symbols shipped 2026-04-30.
+3. **Feature NorthExpansion + SouthExpansion — Complete.** Walking graph regenerated together 2026-05-01 covering Linden/Dempster-Skokie → 95th/Dan Ryan, lakefront → Midway corridor.
+4. Source ≥10 transit photos for the map loading panel (see `HUMAN_TODO.md`).
+5. Run remaining UI checks: confirm 40/60 panel ratio on desktop, 300px/350px min-heights on mobile.
+6. (Optional) Add a custom domain in Vercel dashboard → Settings → Domains.
+7. Phase 7: Monetization (House Ads first) — implement `AdSlot` component; defer third-party ad networks until user base is established. See "Monetization Strategy — Full Decision Record" section above.
 
-**Bug status:** 0 🔴 high + 1 🟡 medium + 3 🟢 low bugs open (BUG-007 transit photos, BUG-008 stale DAU counts, BUG-009 crowdedness bell-curve disabled, BUG-011 last-departure mismatch) — see `BUGS_TO_BE_FIXED.md`.
+**Bug status:** 0 🔴 high + 0 🟡 medium + 1 🟢 low bug open (BUG-007 transit photos) — see `BUGS_TO_BE_FIXED.md`.
 
 **Technical debt status:** 0 items open (all resolved as of 2026-04-28) — see `Technical_Debt.md` and `RESOLVED_HISTORY.md`.
 

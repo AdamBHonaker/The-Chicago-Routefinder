@@ -41,14 +41,25 @@ A user enters their origin and destination. The app:
 
 ### Required environment variables
 
-**Backend** (`backend/.env`):
+**Backend** (`backend/.env`) — required:
 - `ANTHROPIC_API_KEY` — Anthropic API key for Claude
 - `CTA_TRAIN_API_KEY` — CTA Train Tracker API key
 - `CTA_BUS_API_KEY` — CTA Bus Tracker API key
 - `GOOGLE_MAPS_API_KEY` — Google Maps Geocoding API key
 
+**Backend** — optional (production tuning):
+- `ALLOWED_ORIGINS` — Comma-separated CORS allowlist (production-critical; defaults to `*` in dev)
+- `BYOK_ENABLED` — `true`/`false` toggle for the Bring-Your-Own-Key feature (defaults disabled)
+- `RATE_LIMIT_ENABLED` — `true`/`false` toggle for the per-IP `/recommend` limiter (defaults disabled)
+- `RATE_LIMIT_RPM`, `RATE_LIMIT_RPH` — Rate-limit thresholds (defaults: 10 req/min, 50 req/hour)
+- `CLAUDE_SIMPLE_MODEL` — Override for the Haiku-class model (default `claude-haiku-4-5-20251001`)
+- `CLAUDE_COMPLEX_MODEL` — Override for the Sonnet-class model (default `claude-sonnet-4-6`)
+- `DAU_ADMIN_TOKEN` — Bearer token protecting `GET /admin/dau`
+- `CTA_TRAIN_API_URL`, `CTA_BUS_API_URL` — Override CTA API base URLs (used by `active_routes.py`)
+- `STREET_GRAPH_URL` — Release-asset URL the Dockerfile fetches `street_graph.graphml` from at build time
+
 **Frontend** (`frontend/.env.local`):
-- `VITE_BACKEND_URL` — Backend URL (e.g. `http://localhost:8000` for local dev)
+- `VITE_BACKEND_URL` — Backend URL (e.g. `http://localhost:8000` for local dev; must include `https://` in production)
 
 ### Quick start
 
@@ -65,6 +76,21 @@ npm install
 npm run dev
 ```
 
+## Backend API surface
+
+The FastAPI server (`backend/main.py`) exposes:
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /recommend` | Main routing endpoint — origin/destination + transit mode → ranked route options + optional Claude recommendation |
+| `GET /health` | Liveness probe |
+| `GET /autocomplete?q=` | Location autocomplete (stations, neighborhoods, bus stops) |
+| `GET /reverse-geocode?lat=&lon=` | GPS coordinate → human-readable address (Google Maps) |
+| `GET /alerts` | CTA service alerts feed |
+| `GET /weather` | NWS current conditions + alerts for the user's coordinates |
+| `GET /pinned-arrivals` | Live arrivals for the home-screen pinned stops board |
+| `GET /admin/dau` | Daily-unique-user counts (protected by `DAU_ADMIN_TOKEN` — internal/operator only) |
+
 ## Utility scripts
 
 Standalone scripts in `backend/` that run independently of the server:
@@ -72,8 +98,15 @@ Standalone scripts in `backend/` that run independently of the server:
 | Script | Purpose |
 |--------|---------|
 | `fetch_gtfs.py` | Download/update CTA GTFS static data to `backend/gtfs_data/` |
-| `fetch_street_graph.py` | Download and cache the OSMnx Chicago street graph |
+| `fetch_street_graph.py` | Download and cache the OSMnx Chicago pedestrian street graph (Linden/Dempster-Skokie → 95th/Dan Ryan, lakefront → Midway corridor). Run with `--force` to regenerate over an existing cache. |
+| `fetch_station_exits.py` | Refresh `backend/station_exits.json` (per-station exit metadata used by Feature A train-station exit guidance). |
 | `active_routes.py` | **Print all active CTA bus routes and train lines right now.** Uses Bus Tracker `/getroutes` (returns only in-service routes) and Train Tracker `/ttpositions` (active = has live train positions). Useful for debugging, data exploration, or verifying API keys. Run with `python active_routes.py` from the `backend/` directory — requires `CTA_TRAIN_API_KEY` and `CTA_BUS_API_KEY` in `backend/.env`. |
+
+## Operational notes
+
+- **Google Maps geocoding cap.** `backend/gtfs_loader.py` enforces a temporary monthly safety cap of 9,500 calls/month against the Google Maps Geocoding API to stay inside the free tier. The cap is opt-out tuning; remove or raise it via `HUMAN_TODO.md` once billing is wired up.
+- **Rate limiting.** OFF by default. Set `RATE_LIMIT_ENABLED=true` (with optional `RATE_LIMIT_RPM` / `RATE_LIMIT_RPH` overrides) before opening up `/recommend` to public traffic.
+- **Street graph hosting.** `backend/street_graph.graphml` is committed via Git LFS *and* hosted as a GitHub Release asset (downloaded at Docker build time). The runtime loads `street_graph_igraph.pkl` first and falls back to the graphml; if neither is present, walk routing falls back to Haversine estimates.
 
 ## Project documentation
 
