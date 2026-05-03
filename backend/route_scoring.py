@@ -91,6 +91,9 @@ def adjust_weights_for_weather(
 
     clamped = [max(0.0, v) for v in weights.values()]
     total = sum(clamped)
+    if total <= 0:
+        # All weights zeroed out by extreme deltas — fall back to base.
+        return dict(base_weights)
     return {k: round(v / total, 4) for k, v in zip(weights.keys(), clamped)}
 
 

@@ -1,5 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { getRouteColor, BUS_DIRECTION_COLORS } from "../constants.js";
+import { lineTextColor } from "../lineColors.js";
 
 const LINE_ABBREVS = {
   "Red Line":    "RD",
@@ -15,8 +16,10 @@ const LINE_ABBREVS = {
 export default function LinePill({ line, isBus, lineCode, size = "sm" }) {
   const { t } = useTranslation();
   const bg = getRouteColor(line);
-  const textColor = line === "Yellow Line" ? "#111" : "#fff";
   const isBusRoute = isBus || (line in BUS_DIRECTION_COLORS);
+  // Buses fall back to white text on their direction-colored background; only
+  // the rail Yellow Line takes dark ink (canonical D2 readability rule).
+  const textColor = isBusRoute ? "#fff" : lineTextColor(line);
 
   let label;
   if (isBusRoute) {

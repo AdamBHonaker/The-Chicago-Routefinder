@@ -24,6 +24,12 @@ def main():
     except urllib.error.HTTPError as e:
         print(f"Error {e.code}: {e.reason}")
         sys.exit(1)
+    except urllib.error.URLError as e:
+        print(f"Network error: {e.reason}")
+        sys.exit(1)
+    except json.JSONDecodeError as e:
+        print(f"Invalid JSON response: {e}")
+        sys.exit(1)
 
     if not data:
         print("No data yet.")

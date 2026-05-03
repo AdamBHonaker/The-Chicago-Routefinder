@@ -22,6 +22,11 @@ i18n
       caches: ["localStorage"],
       lookupLocalStorage: "cta_language",
     },
+    // escapeValue: false is safe ONLY because translation strings come from
+    // static .json files committed to this repo (loaded via the http-backend
+    // from /locales) — the values are trusted, not user-controlled. If you
+    // ever switch to a remote/dynamic translation source, re-enable escaping
+    // (or sanitize on the way in) to prevent stored XSS.
     interpolation: { escapeValue: false },
   });
 

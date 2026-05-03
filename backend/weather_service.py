@@ -23,6 +23,13 @@ from pydantic import BaseModel
 
 _nws_contact_email = os.getenv("NWS_CONTACT_EMAIL")
 if not _nws_contact_email:
+    # Fail-closed in production: NWS rate-limits / blocks anonymous User-Agents,
+    # so silently using a dummy address risks all weather calls 403'ing in prod.
+    if os.getenv("APP_ENV") == "production":
+        raise RuntimeError(
+            "NWS_CONTACT_EMAIL must be set in production. NWS API policy requires "
+            "a real contact email in the User-Agent."
+        )
     logging.getLogger(__name__).warning(
         "NWS_CONTACT_EMAIL is not set. NWS API policy requires a contact email in the "
         "User-Agent. Set this environment variable to a real address before deploying."

@@ -41,6 +41,24 @@ Thumbs.db
 # PDF documentation (large, available externally)
 *.pdf
 
+# Private working folder — strategy/planning notes not for the public repo
+Implementation Plans/
+
+# Design artifacts — mockups and prototypes, all shipped; not useful to repo consumers
+Design Documents/
+
+# Personal workflow notes — local to this machine, not for the public repo
+Human Documentation/
+
+# Archived history logs — personal reference only
+docs/archive/
+
 # Overpass/OSM API cache — re-built at runtime
+# (covers both backend/cache/ and a top-level cache/ created when the script is
+# run from the project root)
+cache/
 backend/cache/
 backend/.overpass_cache.json
+
+# Editor / IDE local settings
+.vscode/

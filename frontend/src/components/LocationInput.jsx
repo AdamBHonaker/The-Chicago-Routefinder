@@ -23,6 +23,7 @@ export default function LocationInput({ value, onChange, onGeoCoords, placeholde
   const [acSuggestions, setAcSuggestions] = useState([]);
   const [acActiveIndex, setAcActiveIndex] = useState(-1);
   const acAbortRef = useRef(null);
+  const geoAbortRef = useRef(null);
 
   const isSaved = savedLocations.some((loc) => loc.value === value);
   const showStar = value.trim().length > 0;
@@ -30,6 +31,7 @@ export default function LocationInput({ value, onChange, onGeoCoords, placeholde
   useEffect(() => () => {
     Object.values(timersRef.current).forEach(clearTimeout);
     if (acAbortRef.current) acAbortRef.current.abort();
+    if (geoAbortRef.current) geoAbortRef.current.abort();
   }, []);
 
   function fetchAcSuggestions(query) {
@@ -73,8 +75,12 @@ export default function LocationInput({ value, onChange, onGeoCoords, placeholde
       return;
     }
     setGeoState("loading");
+    if (geoAbortRef.current) geoAbortRef.current.abort();
+    const ctrl = new AbortController();
+    geoAbortRef.current = ctrl;
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
+        if (ctrl.signal.aborted) return;
         const { latitude, longitude } = pos.coords;
         const coords = `${latitude.toFixed(6)},${longitude.toFixed(6)}`;
         // Always store the raw coordinates for routing — never re-geocode them.
@@ -83,7 +89,8 @@ export default function LocationInput({ value, onChange, onGeoCoords, placeholde
         onChange(coords);
         try {
           const res = await fetch(
-            `${BACKEND_URL}/reverse-geocode?lat=${latitude.toFixed(6)}&lon=${longitude.toFixed(6)}`
+            `${BACKEND_URL}/reverse-geocode?lat=${latitude.toFixed(6)}&lon=${longitude.toFixed(6)}`,
+            { signal: ctrl.signal }
           );
           if (res.ok) {
             const data = await res.json();
@@ -95,7 +102,7 @@ export default function LocationInput({ value, onChange, onGeoCoords, placeholde
         } catch {
           // silently keep the raw coordinate fallback already set above
         }
-        setGeoState("idle");
+        if (!ctrl.signal.aborted) setGeoState("idle");
       },
       (err) => {
         const isDenied = err.code === err.PERMISSION_DENIED;
@@ -138,6 +145,16 @@ export default function LocationInput({ value, onChange, onGeoCoords, placeholde
           type="search"
           inputMode="search"
           enterKeyHint="go"
+          // role="combobox" reflects what this input actually is: a text field
+          // that owns a popup listbox of autocomplete + saved-location options.
+          // Screen readers announce the suggestion count and let users navigate
+          // them with arrow keys (handled in onKeyDown below).
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded={
+            acSuggestions.length > 0 ||
+            (dropdownOpen && savedLocations.length > 0)
+          }
           placeholder={placeholder}
           value={value}
           onChange={(e) => {
@@ -146,6 +163,7 @@ export default function LocationInput({ value, onChange, onGeoCoords, placeholde
             fetchAcSuggestions(e.target.value);
           }}
           onFocus={() => {
+            if (timersRef.current.blur) clearTimeout(timersRef.current.blur);
             if (value.trim().length >= 2) {
               fetchAcSuggestions(value);
             } else if (savedLocations.length > 0) {
@@ -153,6 +171,7 @@ export default function LocationInput({ value, onChange, onGeoCoords, placeholde
             }
           }}
           onBlur={() => {
+            if (timersRef.current.blur) clearTimeout(timersRef.current.blur);
             timersRef.current.blur = setTimeout(() => {
               setDropdownOpen(false);
               setAcSuggestions([]);
@@ -210,8 +229,11 @@ export default function LocationInput({ value, onChange, onGeoCoords, placeholde
         )}
         {dropdownOpen && savedLocations.length > 0 && acSuggestions.length === 0 && (
           <ul className="saved-dropdown" role="listbox">
-            {savedLocations.slice(0, 5).map((loc) => (
+            {savedLocations.slice(0, 5).map((loc, i) => (
               <li key={loc.id} className="saved-dropdown-item" role="option">
+                {/* Editorial section marker (§N) — D2 spec replaces home/work/star
+                    icons with italic-serif numerals indexed from 1. Decorative. */}
+                <span className="saved-marker" aria-hidden="true">{`§${i + 1}`}</span>
                 <span
                   className="saved-dropdown-label"
                   onMouseDown={(e) => { e.preventDefault(); onChange(loc.value); setDropdownOpen(false); }}

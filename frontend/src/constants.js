@@ -46,15 +46,20 @@ export const OFF_ROUTE_THRESHOLD_METERS = 400;
 // ---------------------------------------------------------------------------
 export const RETRY_DELAYS_MS = [1000, 2000, 4000];
 
+// Backend sends line names with a " Line" suffix; canonical hex values live in
+// src/lineColors.js (mirrors the design system's data.jsx). This map adapts the
+// API-style key to the same hex values.
+import { LINE_COLORS as D2_LINE_COLORS } from "./lineColors.js";
+
 export const LINE_COLORS = {
-  "Red Line":    "#c60c30",
-  "Blue Line":   "#00a1de",
-  "Brown Line":  "#62361b",
-  "Green Line":  "#009b3a",
-  "Orange Line": "#f9461c",
-  "Purple Line": "#522398",
-  "Pink Line":   "#e27ea6",
-  "Yellow Line": "#f9e300",
+  "Red Line":    D2_LINE_COLORS.Red,
+  "Blue Line":   D2_LINE_COLORS.Blue,
+  "Brown Line":  D2_LINE_COLORS.Brown,
+  "Green Line":  D2_LINE_COLORS.Green,
+  "Orange Line": D2_LINE_COLORS.Orange,
+  "Purple Line": D2_LINE_COLORS.Purple,
+  "Pink Line":   D2_LINE_COLORS.Pink,
+  "Yellow Line": D2_LINE_COLORS.Yellow,
 };
 
 export const BUS_DIRECTION_COLORS = {
@@ -119,6 +124,12 @@ export const WALK_STEP_PROXIMITY_M        = 30;
 // Must match the CSS transition duration on `.transit-photo--fading` in App.css.
 // ---------------------------------------------------------------------------
 export const PHOTO_FADE_MS = 1000;
+
+// ---------------------------------------------------------------------------
+// Share button reset delay — how long the "Copied" state shows before
+// reverting to the share icon in RouteCard.
+// ---------------------------------------------------------------------------
+export const SHARE_STATE_RESET_MS = 2000;
 
 // ---------------------------------------------------------------------------
 // Masthead epoch year (TD-109). The newspaper-style "VOL." number on the

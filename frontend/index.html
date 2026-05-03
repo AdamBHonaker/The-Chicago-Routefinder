@@ -5,8 +5,37 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>The Chicago Routefinder</title>
 
-    <!-- PWA -->
-    <meta name="theme-color" content="#f2ece0" />
+    <!--
+      Content-Security-Policy — currently in REPORT-ONLY mode so any third-party
+      asset (tile vendor, font CDN) we missed shows up as a console violation
+      without breaking the page. Once a clean run through the main flows shows
+      zero violations, swap "Content-Security-Policy-Report-Only" for
+      "Content-Security-Policy" to enforce.
+
+      Origins allowlisted:
+        - tiles.openfreemap.org    → MapLibre style + tiles
+        - fonts.googleapis.com     → Inter / Fraunces / JetBrains Mono CSS
+        - fonts.gstatic.com        → woff2 font files
+        - *.up.railway.app         → backend API (production)
+        - http://localhost:8000    → backend API (dev)
+    -->
+    <meta http-equiv="Content-Security-Policy-Report-Only" content="
+      default-src 'self';
+      script-src 'self';
+      style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+      font-src 'self' https://fonts.gstatic.com;
+      img-src 'self' data: blob: https://tiles.openfreemap.org;
+      connect-src 'self' https://*.up.railway.app http://localhost:8000 https://tiles.openfreemap.org;
+      worker-src 'self' blob:;
+      manifest-src 'self';
+      frame-ancestors 'none';
+      base-uri 'self';
+      form-action 'self';
+    " />
+
+    <!-- PWA — theme-color is the OS chrome (status bar / tab bar) tint when -->
+    <!-- the app is installed; matches manifest theme_color for consistency.   -->
+    <meta name="theme-color" content="#171310" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
@@ -14,9 +43,18 @@
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
 
     <!-- Social / SEO -->
-    <meta name="description" content="AI-powered real-time CTA route recommendations. Stop thinking about how to get there. Just go." />
+    <meta name="description" content="A working guide to the trains, buses, and schedules of the city." />
 
-    <!-- Fonts -->
+    <!--
+      Fonts — loaded from Google Fonts. SRI (`integrity` attribute) is NOT
+      applied here because Google Fonts serves user-agent-tailored CSS at this
+      URL (different @font-face URLs per browser), so a static SRI hash would
+      break loads on most devices. Risk if fonts.googleapis.com is hijacked:
+      attacker-controlled CSS, no script execution. The CSP meta tag above
+      still scopes `style-src` to fonts.googleapis.com and nothing else.
+      Long-term mitigation: self-host the Inter / Fraunces / JetBrains Mono
+      subsets we actually use, then add SRI.
+    -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Fraunces:ital,opsz,wght@0,9..144,400..900;1,9..144,400..900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" />

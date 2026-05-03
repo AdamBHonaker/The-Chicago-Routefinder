@@ -2,74 +2,16 @@
 
 ## Scoping Prompt
 
-Your task is to complete scoping work needed for [This Enhancement]. This should be documented as a new feature in FEATURE_IMPLEMENTATION_PLANS.md. Scoping work should be only as detailed as needed. For complex features, split the work into seperate chunks.
+Your task is to complete scoping work needed for [X]. Document this as a new feature in docs/FEATURE_PLANS.md. Match the depth of existing entries — for complex features, split the work into separate chunks.
 
---
+---
 
 ## Scoping Prompt from other LLM Research
 
-Your task is to complete scoping work needed for the attached document. I created the attached document thinking about ideas and options with other LLMS, and I want to bring those into this context. First you'll need to review the document and identify each different feature / change for scoping, then scope them out and document where appropriate. After completing scoping work for the feature, it should be deleted from the attached document. Specifically, focus on information between lines [ ] and [ ]. You can ignore other lines at this time.
+Your task is to complete scoping work for the attached document, which captures ideas I developed with other LLMs and want to bring into this context. Review the document, identify each distinct feature or change, and scope each one out in docs/FEATURE_PLANS.md. After scoping a feature, delete it from the attached document. Focus only on lines [START]–[END]; ignore the rest for now.
 
---
+---
 
-## Feature Code Development Prompt
+## Feature / Efficiency / Tech Debt / Bug Fix Development
 
-You are a master code writer and documentation updater. Your task is to develop and implement the code for Feature E in FEATURE_IMPLEMENTATION_PLANS.md, and after writing this code, you should update the following files as needed:
-
-- cta_app_handoff_prompt.md
-- FEATURE_IMPLEMENTATION_PLANS.md
-- FEATURES_IMPLEMENTED_HISTORY.md
-
---
-
-## Efficiency Improvement Development Prompt
-
-You are a master code writer and documentation updater. Your task is to write the code needed to improve code efficiency based on the suggestion in [OPT-XXX] within Efficiency_Improvements.md. After writing this code, you should update the following documentation as needed:
-
-- cta_app_handoff_prompt.md
-- Efficiency_Improvements.md
-- RESOLVED_HISTORY.md
-
-After completing, recheck the requirements and confirm you feel confident the code is truly more efficient, and that no new bugs have been introduced.
-
---
-
-## Technical Debt Payoff Prompt
-
-You are a master code writer and documentation updater. Your task is to write the code needed to pay off the technical debt items I identify here: [TD-XXX] in Technical_Debt.md. After writing this code, you should update the following documentation as needed:
-
-- cta_app_handoff_prompt.md
-- Technical_Debt.md
-- RESOLVED_HISTORY.md
-
-After completing, recheck the requirements and confirm you feel confident the technical debt is fully paid off.
-
---
-
-## Bug Fix Development Prompt
-
-You are a master code writer and documentation updater who loves to fix bugs. Your task is to write the code needed to fix this bug in BUGS_TO_BE_FIXED.md: [BUG-XXX]  .After writing this code, update the following documentation as needed:
-
-- cta_app_handoff_prompt.md
-- BUGS_TO_BE_FIXED.md
-- RESOLVED_HISTORY.md
-
-After completing, recheck the requirements and confirm the bug is truly fixed.
-
---
-
-## Bug Fix / Feature Development Prompt with Claude Chat generated handoff document
-
-You are a master code writer and documentation updater. Your task is to develop and implement the code described in the selected file, and after writing this code, you should update the following files as needed:
-
-- cta_app_handoff_prompt.md
-- FEATURE_IMPLEMENTATION_PLANS.md
-- FEATURES_IMPLEMENTED_HISTORY.md
-
-I have already generated a code prompt using Claude Chat which you can find here - @/c:/Users/Adam & Serena/OneDrive/Documents/GitHub/CTA-Transit-PWA/FIX_bus_bypass_rank_routes.md.  This bug is described in the BUGS_TO_BE_FIXED.md document as well. Use what is useful from the attached file, but feel free to make changes to fit this code into the main codebase as you deem best.
-
-After completing, recheck the requirements and confirm you feel confident the bug is truly fixed.
-
-Once you are confident the bug is truly fixed, confirm if we can we delete the attached file, or does anything from it need to be kept?
-
--
+Use the `resolve-item` skill (`/resolve-item <ITEM-ID>`) — e.g. `/resolve-item BUG-042`, `/resolve-item OPT-007`, `/resolve-item TD-019`, `/resolve-item FEAT-031`. The skill handles implementation, doc updates, and verification.

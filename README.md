@@ -32,7 +32,7 @@ A user enters their origin and destination. The app:
 | Layer | Technologies |
 |-------|-------------|
 | **Frontend** | React (PWA), MapLibre GL JS v4, OpenFreeMap Liberty tiles, Vite, i18next (22 languages) |
-| **Backend** | Python, FastAPI, NetworkX, OSMnx, scikit-learn, aiohttp |
+| **Backend** | Python, FastAPI, NetworkX (transit graph), igraph (walking graph), OSMnx, scikit-learn, aiohttp |
 | **AI** | Claude (`claude-sonnet-4-6` / `claude-haiku-4-5-20251001`) via Anthropic Python SDK |
 | **Data** | CTA GTFS (static schedules), CTA Bus & Train Tracker APIs (real-time), CTA Alerts API, CTA Route Status API, NWS Weather API, Google Maps Geocoding API |
 | **Hosting** | Railway (backend) + Vercel (frontend) |
@@ -87,31 +87,32 @@ The FastAPI server (`backend/main.py`) exposes:
 | `GET /autocomplete?q=` | Location autocomplete (stations, neighborhoods, bus stops) |
 | `GET /reverse-geocode?lat=&lon=` | GPS coordinate → human-readable address (Google Maps) |
 | `GET /alerts` | CTA service alerts feed |
-| `GET /weather` | NWS current conditions + alerts for the user's coordinates |
-| `GET /pinned-arrivals` | Live arrivals for the home-screen pinned stops board |
+| `GET /stop-arrivals` | Live arrivals for the home-screen pinned stops board |
 | `GET /admin/dau` | Daily-unique-user counts (protected by `DAU_ADMIN_TOKEN` — internal/operator only) |
 
 ## Utility scripts
 
-Standalone scripts in `backend/` that run independently of the server:
+Standalone scripts that run independently of the server:
 
 | Script | Purpose |
 |--------|---------|
-| `fetch_gtfs.py` | Download/update CTA GTFS static data to `backend/gtfs_data/` |
-| `fetch_street_graph.py` | Download and cache the OSMnx Chicago pedestrian street graph (Linden/Dempster-Skokie → 95th/Dan Ryan, lakefront → Midway corridor). Run with `--force` to regenerate over an existing cache. |
-| `fetch_station_exits.py` | Refresh `backend/station_exits.json` (per-station exit metadata used by Feature A train-station exit guidance). |
-| `active_routes.py` | **Print all active CTA bus routes and train lines right now.** Uses Bus Tracker `/getroutes` (returns only in-service routes) and Train Tracker `/ttpositions` (active = has live train positions). Useful for debugging, data exploration, or verifying API keys. Run with `python active_routes.py` from the `backend/` directory — requires `CTA_TRAIN_API_KEY` and `CTA_BUS_API_KEY` in `backend/.env`. |
+| `backend/fetch_gtfs.py` | Download/update CTA GTFS static data to `backend/gtfs_data/` |
+| `backend/fetch_street_graph.py` | Download and cache the OSMnx Chicago pedestrian street graph (Linden/Dempster-Skokie → 95th/Dan Ryan, lakefront → Midway corridor). Run with `--force` to regenerate over an existing cache. |
+| `backend/fetch_station_exits.py` | Refresh `backend/station_exits.json` (per-station exit metadata used by Feature A train-station exit guidance). |
+| `backend/active_routes.py` | **Print all active CTA bus routes and train lines right now.** Uses Bus Tracker `/getroutes` (returns only in-service routes) and Train Tracker `/ttpositions` (active = has live train positions). Useful for debugging, data exploration, or verifying API keys. Requires `CTA_TRAIN_API_KEY` and `CTA_BUS_API_KEY` in `backend/.env`. |
+| `backend/scripts/check_dau.py` | **Fetch daily unique visitor counts from the production backend.** Usage: `python backend/scripts/check_dau.py <DAU_ADMIN_TOKEN>` |
 
 ## Operational notes
 
-- **Google Maps geocoding cap.** `backend/gtfs_loader.py` enforces a temporary monthly safety cap of 9,500 calls/month against the Google Maps Geocoding API to stay inside the free tier. The cap is opt-out tuning; remove or raise it via `HUMAN_TODO.md` once billing is wired up.
+- **Google Maps geocoding cap.** `backend/gtfs_loader.py` enforces a temporary monthly safety cap of 9,500 calls/month against the Google Maps Geocoding API to stay inside the free tier. The cap is opt-out tuning; remove or raise it via `docs/TODO.md` once billing is wired up.
 - **Rate limiting.** OFF by default. Set `RATE_LIMIT_ENABLED=true` (with optional `RATE_LIMIT_RPM` / `RATE_LIMIT_RPH` overrides) before opening up `/recommend` to public traffic.
 - **Street graph hosting.** `backend/street_graph.graphml` is committed via Git LFS *and* hosted as a GitHub Release asset (downloaded at Docker build time). The runtime loads `street_graph_igraph.pkl` first and falls back to the graphml; if neither is present, walk routing falls back to Haversine estimates.
 
 ## Project documentation
 
-- [cta_app_handoff_prompt.md](cta_app_handoff_prompt.md) — Full project brief, architecture, decisions, and phase history
-- [docs/archive/MAP_IMPLEMENTATION_PLAN.md](docs/archive/MAP_IMPLEMENTATION_PLAN.md) — Map feature design decisions and implementation plan
-- [FEATURE_IMPLEMENTATION_PLANS.md](FEATURE_IMPLEMENTATION_PLANS.md) — Chunked implementation plans for upcoming features and post-launch enhancement ideas
-- [BUGS_TO_BE_FIXED.md](BUGS_TO_BE_FIXED.md) — Open bugs (0 🔴 high, 0 🟡 medium, 1 🟢 low); [RESOLVED_HISTORY.md](RESOLVED_HISTORY.md) — Log of all resolved bugs, paid-off technical debt, and implemented efficiency improvements
-- [HUMAN_TODO.md](HUMAN_TODO.md) — Tasks requiring human action (accounts, API keys, deployment steps)
+- [docs/PROJECT_CONTEXT.md](docs/PROJECT_CONTEXT.md) — Full project brief, architecture, decisions, and phase history
+- [docs/FEATURE_PLANS.md](docs/FEATURE_PLANS.md) — Chunked implementation plans for upcoming features and post-launch enhancement ideas
+- [docs/BUGS.md](docs/BUGS.md) — Open bugs (0 🔴 high, 0 🟡 medium, 1 🟢 low)
+- [docs/TODO.md](docs/TODO.md) — Tasks requiring human action (accounts, API keys, deployment steps)
+- [docs/TECH_DEBT.md](docs/TECH_DEBT.md) — Known technical debt items
+- [docs/EFFICIENCY.md](docs/EFFICIENCY.md) — Optimization notes and efficiency improvements

@@ -275,6 +275,163 @@ function D2MapPlate() {
   );
 }
 
+// ── Map markers plate (origin · destination · live position) ─────────────
+function D2MapMarkers() {
+  return (
+    <div className="d2-grain d2-scroll" style={{
+      height: "100%", padding: 24, fontFamily: D2.sans, color: D2.ink, overflow: "auto",
+    }}>
+      <D2Caps>Specimen · E</D2Caps>
+      <h2 style={{ fontFamily: D2.serif, fontSize: 28, fontWeight: 700, letterSpacing: -0.6, margin: "4px 0 8px" }}>
+        <span style={{ fontStyle: "italic", fontWeight: 400 }}>Three</span> Map Marks
+      </h2>
+      <div className="d2-rule-thick" />
+      <div style={{ fontFamily: D2.serif, fontStyle: "italic", fontSize: 13, color: D2.ink2, marginTop: 10, lineHeight: 1.5 }}>
+        Three orthogonal silhouettes — square, ring, compass — so origin, destination,
+        and the rider's live position can never be mistaken for one another.
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 18, marginTop: 18 }}>
+
+        {/* §  ORIGIN — silcrow inside square ink frame */}
+        <div>
+          <D2Caps>I — From</D2Caps>
+          <div className="d2-rule" style={{ marginTop: 4, marginBottom: 14 }} />
+          <div style={{
+            background: D2.bg, height: 130, position: "relative", border: `1px solid ${D2.mute2}`,
+            display: "flex", alignItems: "center", justifyContent: "center",
+          }}>
+            <svg width="120" height="120" viewBox="-30 -30 60 60">
+              <defs>
+                <pattern id="grid-fr" width="6" height="6" patternUnits="userSpaceOnUse">
+                  <path d="M 6 0 L 0 0 0 6" fill="none" stroke={D2.mute2} strokeWidth="0.4"/>
+                </pattern>
+              </defs>
+              <rect x="-30" y="-30" width="60" height="60" fill="url(#grid-fr)" />
+              {/* paper backing */}
+              <rect x="-11" y="-11" width="22" height="22" fill={D2.bg} />
+              {/* outer ink frame */}
+              <rect x="-11" y="-11" width="22" height="22" fill="none" stroke={D2.ink} strokeWidth="2" />
+              {/* inset hairline */}
+              <rect x="-8" y="-8" width="16" height="16" fill="none" stroke={D2.ink} strokeWidth="0.75" />
+              {/* italic silcrow */}
+              <text x="0" y="5.5" fontSize="16" fontWeight="700" fill={D2.ink}
+                fontFamily={D2.serif} fontStyle="italic" textAnchor="middle">§</text>
+            </svg>
+          </div>
+          <div style={{ fontFamily: D2.serif, fontStyle: "italic", fontSize: 12, color: D2.ink2, lineHeight: 1.5, marginTop: 8 }}>
+            Italic silcrow inside a double-ruled square. Reads as a <i>place from which</i> —
+            fixed, lettered, archived in the index.
+          </div>
+          <div style={{ fontFamily: D2.mono, fontSize: 10, color: D2.mute, marginTop: 6 }}>
+            22 × 22 px · ink 2px · inset 0.75px · paper bg
+          </div>
+        </div>
+
+        {/* ✦  DESTINATION — crosshair target */}
+        <div>
+          <D2Caps>II — To</D2Caps>
+          <div className="d2-rule" style={{ marginTop: 4, marginBottom: 14 }} />
+          <div style={{
+            background: D2.bg, height: 130, position: "relative", border: `1px solid ${D2.mute2}`,
+            display: "flex", alignItems: "center", justifyContent: "center",
+          }}>
+            <svg width="120" height="120" viewBox="-30 -30 60 60">
+              <rect x="-30" y="-30" width="60" height="60" fill="url(#grid-fr)" />
+              <circle r="13" fill={D2.bg} />
+              <circle r="12" fill="none" stroke={D2.ink} strokeWidth="2" />
+              <circle r="9" fill="none" stroke={D2.ink} strokeWidth="0.75" />
+              <line x1="-12" y1="0" x2="-5.5" y2="0" stroke={D2.ink} strokeWidth="1.25" />
+              <line x1="5.5" y1="0" x2="12" y2="0" stroke={D2.ink} strokeWidth="1.25" />
+              <line x1="0" y1="-12" x2="0" y2="-5.5" stroke={D2.ink} strokeWidth="1.25" />
+              <line x1="0" y1="5.5" x2="0" y2="12" stroke={D2.ink} strokeWidth="1.25" />
+              <circle r="3" fill={D2.ink} />
+            </svg>
+          </div>
+          <div style={{ fontFamily: D2.serif, fontStyle: "italic", fontSize: 12, color: D2.ink2, lineHeight: 1.5, marginTop: 8 }}>
+            Surveyor's target — concentric ring with crosshair and bullseye.
+            Reads as a <i>precise spot to which</i> — measured, exact.
+          </div>
+          <div style={{ fontFamily: D2.mono, fontSize: 10, color: D2.mute, marginTop: 6 }}>
+            ⌀ 24 px · ring 2px · hairline 0.75px · centre 6 px
+          </div>
+        </div>
+
+        {/* ➤  LIVE POSITION — compass needle in flickering rust ring */}
+        <div>
+          <D2Caps>III — You</D2Caps>
+          <div className="d2-rule" style={{ marginTop: 4, marginBottom: 14 }} />
+          <div style={{
+            background: D2.bg, height: 130, position: "relative", border: `1px solid ${D2.mute2}`,
+            display: "flex", alignItems: "center", justifyContent: "center",
+          }}>
+            <svg width="120" height="120" viewBox="-30 -30 60 60">
+              <rect x="-30" y="-30" width="60" height="60" fill="url(#grid-fr)" />
+              {/* outer flicker ring */}
+              <circle r="14" fill="none" stroke={D2.accent} strokeWidth="1" opacity="0.45">
+                <animate attributeName="r" values="14;18;14" dur="2.4s" repeatCount="indefinite" />
+                <animate attributeName="opacity" values="0.45;0;0.45" dur="2.4s" repeatCount="indefinite" />
+              </circle>
+              {/* compass card */}
+              <circle r="11" fill={D2.bg} stroke={D2.accent} strokeWidth="1.5" />
+              {/* tick marks at N,S,E,W */}
+              <line x1="0" y1="-11" x2="0" y2="-8" stroke={D2.accent} strokeWidth="1" />
+              <line x1="0" y1="11" x2="0" y2="8" stroke={D2.accent} strokeWidth="1" />
+              <line x1="-11" y1="0" x2="-8" y2="0" stroke={D2.accent} strokeWidth="1" />
+              <line x1="11" y1="0" x2="8" y2="0" stroke={D2.accent} strokeWidth="1" />
+              {/* compass needle pointing to bearing — north-east-ish */}
+              <g transform="rotate(35)">
+                <path d="M 0,-8 L 3,2 L 0,0 L -3,2 Z" fill={D2.accent} />
+                <path d="M 0,8 L 2,2 L 0,0 L -2,2 Z" fill={D2.ink} opacity="0.4" />
+              </g>
+              {/* center pin */}
+              <circle r="1.4" fill={D2.ink} />
+            </svg>
+          </div>
+          <div style={{ fontFamily: D2.serif, fontStyle: "italic", fontSize: 12, color: D2.ink2, lineHeight: 1.5, marginTop: 8 }}>
+            Compass needle inside a flickering rust ring. Reads as the
+            <i> rider underway</i> — directional, mobile, watched-over.
+          </div>
+          <div style={{ fontFamily: D2.mono, fontSize: 10, color: D2.mute, marginTop: 6 }}>
+            ⌀ 22 px · needle ↑ heading · pulse 2.4s · accent rust
+          </div>
+        </div>
+
+      </div>
+
+      {/* Anatomy notes */}
+      <D2Caps style={{ marginTop: 22 }}>Anatomy &amp; rules</D2Caps>
+      <div className="d2-rule" style={{ marginTop: 4 }} />
+      <ul style={{
+        fontFamily: D2.serif, fontStyle: "italic", fontSize: 13, color: D2.ink2,
+        margin: "10px 0 0 0", padding: 0, listStyle: "none",
+      }}>
+        <li style={{ padding: "6px 0", borderBottom: `1px solid ${D2.mute2}` }}>
+          <b style={{ fontStyle: "normal", color: D2.ink }}>Paper backing.</b> Every mark sits on a paper-coloured pad
+          so its strokes read against any map fill — cream, lake blue, river green.
+        </li>
+        <li style={{ padding: "6px 0", borderBottom: `1px solid ${D2.mute2}` }}>
+          <b style={{ fontStyle: "normal", color: D2.ink }}>Caps kicker, serif name.</b> Optional flag pairs caps
+          <span style={{ fontFamily: D2.sans, fontSize: 10, fontWeight: 800, letterSpacing: 1.5, margin: "0 4px" }}>FROM</span>
+          <span style={{ fontFamily: D2.sans, fontSize: 10, fontWeight: 800, letterSpacing: 1.5, margin: "0 4px" }}>TO</span>
+          <span style={{ fontFamily: D2.sans, fontSize: 10, fontWeight: 800, letterSpacing: 1.5, margin: "0 4px" }}>YOU</span>
+          with the place name set in italic Fraunces 11/500.
+        </li>
+        <li style={{ padding: "6px 0", borderBottom: `1px solid ${D2.mute2}` }}>
+          <b style={{ fontStyle: "normal", color: D2.ink }}>Rust is reserved.</b> Only the live-position ring uses
+          <span style={{ color: D2.accent, fontWeight: 700, fontStyle: "normal" }}> rust</span>. Origin and
+          destination stay in pure ink — they aren't consequences, they're coordinates.
+        </li>
+        <li style={{ padding: "6px 0" }}>
+          <b style={{ fontStyle: "normal", color: D2.ink }}>Reduced motion.</b> The rust pulse is suppressed under
+          <span style={{ fontFamily: D2.mono, fontSize: 11, color: D2.ink, fontStyle: "normal" }}> prefers-reduced-motion</span>;
+          the ring stays at full 14 px opacity 0.45.
+        </li>
+      </ul>
+    </div>
+  );
+}
+
 Object.assign(window, {
-  D2Swatch, D2Type, D2Colors, D2Components, D2Principles, D2MapPlate,
+  D2Swatch, D2Type, D2Colors, D2Components, D2Principles, D2MapPlate, D2MapMarkers,
 });

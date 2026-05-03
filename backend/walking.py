@@ -8,6 +8,7 @@ to parsing street_graph.graphml via igraph directly.
 Walking speed assumption: 3 mph (1.34 m/s) — a comfortable pedestrian pace.
 """
 
+import hashlib
 import math
 import pickle
 import threading
@@ -23,6 +24,29 @@ import config as _cfg
 
 GRAPH_PATH  = Path(__file__).parent / "street_graph.graphml"
 IGRAPH_PATH = Path(__file__).parent / "street_graph_igraph.pkl"
+# Sidecar produced at Docker build time (see backend/Dockerfile) containing the
+# SHA-256 of IGRAPH_PATH at the moment it was downloaded from GitHub Releases.
+# Verified before pickle.load() so any post-build tampering with the file is
+# caught before an unsafe deserialization runs.
+IGRAPH_SHA256_PATH = IGRAPH_PATH.with_suffix(IGRAPH_PATH.suffix + ".sha256")
+
+
+def _verify_igraph_sha256() -> bool:
+    """Return True if IGRAPH_PATH matches the build-time hash, or if no
+    manifest exists (e.g. local dev without Docker build). Returns False only
+    when the manifest exists and disagrees — in that case the file has been
+    tampered with after build and must not be unpickled."""
+    if not IGRAPH_SHA256_PATH.exists():
+        return True
+    try:
+        expected = IGRAPH_SHA256_PATH.read_text().strip().split()[0].lower()
+    except Exception:
+        return True  # unreadable manifest — fall through to load (and other errors)
+    h = hashlib.sha256()
+    with open(IGRAPH_PATH, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest().lower() == expected
 
 # Sourced from config.py — edit there to tune walking behaviour.
 WALKING_SPEED_MPS     = _cfg.WALKING_SPEED_MPS        # metres per second ≈ 1.34
@@ -170,15 +194,23 @@ def _load_graph() -> "ig.Graph | None":
 
         # 1. Try pre-built igraph pickle (OPT-008c artifact — fast load, no parsing)
         if IGRAPH_PATH.exists():
-            print(f"[walking] Loading igraph artifact from {IGRAPH_PATH} ...")
-            try:
-                with open(IGRAPH_PATH, "rb") as f:
-                    data = pickle.load(f)
-                G = data["graph"]
-                print(f"[walking] igraph loaded: {G.vcount():,} vertices, {G.ecount():,} edges")
-            except Exception as e:
-                print(f"[walking] igraph pickle failed ({type(e).__name__}: {e}) — trying graphml fallback")
+            if not _verify_igraph_sha256():
+                print(
+                    f"[walking] SECURITY: {IGRAPH_PATH.name} hash does NOT match the "
+                    f"build-time manifest. Refusing to deserialize a potentially "
+                    f"tampered pickle. Falling back to the graphml parser."
+                )
                 G = None
+            else:
+                print(f"[walking] Loading igraph artifact from {IGRAPH_PATH} ...")
+                try:
+                    with open(IGRAPH_PATH, "rb") as f:
+                        data = pickle.load(f)
+                    G = data["graph"]
+                    print(f"[walking] igraph loaded: {G.vcount():,} vertices, {G.ecount():,} edges")
+                except Exception as e:
+                    print(f"[walking] igraph pickle failed ({type(e).__name__}: {e}) — trying graphml fallback")
+                    G = None
 
         # 2. Fallback: parse graphml directly with igraph
         if G is None:
@@ -217,6 +249,29 @@ def _load_graph() -> "ig.Graph | None":
                     print(f"[walking] Removed {len(exclude_ids):,} service/alley edges from routing graph")
         except Exception as filt_err:
             print(f"[walking] Edge filtering skipped ({type(filt_err).__name__}: {filt_err})")
+
+        # Convert to undirected so routing always finds a path between any two
+        # vertices in the same connected component. The pickle stores the graph
+        # as directed (one igraph edge per OSMnx MultiDiGraph edge); after
+        # service/alley filtering, asymmetric directional tagging in OSM can
+        # leave directed dead-ends inside the weak LCC, causing Dijkstra to
+        # return no path even when vertices are weakly connected. Pedestrians
+        # walk both ways on every edge, so an undirected graph matches reality
+        # and guarantees weak == strong components.
+        if G.is_directed():
+            try:
+                pre_e = G.ecount()
+                combine = {"length": "min"}
+                # Preserve other attributes by taking the first instance — the
+                # two opposing directed edges share name/highway/footway, and
+                # geometry direction is auto-corrected in _walk_path_impl.
+                for attr in ("name", "highway", "footway", "geometry"):
+                    if attr in G.es.attributes():
+                        combine[attr] = "first"
+                G.to_undirected(mode="collapse", combine_edges=combine)
+                print(f"[walking] Converted to undirected: {pre_e:,} → {G.ecount():,} edges")
+            except Exception as und_err:
+                print(f"[walking] to_undirected skipped ({type(und_err).__name__}: {und_err}) — directed routing in use")
 
         try:
             # Single pass over vertices for both coordinate arrays

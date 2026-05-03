@@ -1,4 +1,9 @@
-FROM python:3.11-slim
+# Pinned to a specific patch — `python:3.11-slim` is a moving tag that can
+# silently jump patch versions on rebuild, breaking reproducibility and making
+# CVE auditing harder. To pin further, append a digest discovered via
+# `docker pull python:3.11.11-slim && docker inspect --format='{{index .RepoDigests 0}}' python:3.11.11-slim`
+# e.g. `FROM python:3.11.11-slim@sha256:<digest>`.
+FROM python:3.11.11-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -19,6 +24,24 @@ COPY . .
 # Pass token via Railway: Service → Build Arguments → GITHUB_TOKEN=<PAT Contents:Read>
 # Asset ID is resolved dynamically from the release tag so it never goes stale.
 # CACHEBUST: set to a new value in Railway Build Arguments to force cache invalidation.
+#
+# SECURITY NOTE (Batch 3 of security plan, 2026-05-02):
+#   ARG bakes the token value into image layer metadata, where it is visible to
+#   anyone who can run `docker history <image>` against a pulled image. The
+#   safer pattern is BuildKit `--mount=type=secret`, but a previous attempt
+#   (commit a844c89, reverted in f4172b6) failed on Railway because the
+#   platform did not surface a `--secret` flag at the time.
+#
+#   Mitigations in place until BuildKit is wired up on Railway:
+#     1. Use a fine-grained PAT scoped to "Contents: Read" on this single repo
+#        only — never a classic PAT or one with org-wide access.
+#     2. Rotate the PAT after any image push to a public registry, since the
+#        token is recoverable from `docker history` of the pushed image.
+#     3. Don't push these images outside Railway's private registry.
+#
+#   When Railway adds `--secret` support, swap to:
+#     RUN --mount=type=secret,id=github_token \
+#         GITHUB_TOKEN=$(cat /run/secrets/github_token) python3 - <<'PYEOF' ...
 ARG CACHEBUST=1
 ARG GITHUB_TOKEN
 RUN python3 - <<'PYEOF'
@@ -59,6 +82,23 @@ print(f"{fname}: {size:,} bytes")
 if size < 1_048_576:
     print(f"ERROR: only {size} bytes — likely a truncated download.")
     sys.exit(1)
+
+# Bake a SHA-256 manifest of the downloaded pkl into the image. walking.py
+# verifies this hash at runtime before calling pickle.load(), so any post-build
+# tampering with the pkl (e.g. an attacker writing into a running container,
+# filesystem corruption) raises long before unsafe deserialization.
+# NOTE: this does NOT prove the release itself is trustworthy — for that, an
+# out-of-band trusted hash would need to live in the repo and be checked here
+# before bake-in. Tracked as a follow-up; the current bake-in still gates the
+# unsafe pickle.load() behind an integrity check.
+import hashlib
+h = hashlib.sha256()
+with open(fname, "rb") as f:
+    for chunk in iter(lambda: f.read(1 << 20), b""):
+        h.update(chunk)
+with open(fname + ".sha256", "w") as f:
+    f.write(h.hexdigest())
+print(f"{fname}.sha256: {h.hexdigest()}")
 PYEOF
 
 CMD ["sh", "-c", "python fetch_gtfs.py && uvicorn main:app --host 0.0.0.0 --port $PORT --no-access-log --log-level warning"]

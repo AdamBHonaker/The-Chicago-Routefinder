@@ -150,27 +150,55 @@ function SchematicMap({
       <line x1={YOU.x} y1={YOU.y} x2={stations.LoganSq.x} y2={stations.LoganSq.y}
         stroke={p.ink} strokeWidth="2" strokeDasharray="3 4" strokeOpacity="0.8" />
 
-      {/* Origin pin */}
-      <g>
-        <circle cx={YOU.x} cy={YOU.y} r="9" fill={C.Blue} opacity="0.25" />
-        <circle cx={YOU.x} cy={YOU.y} r="5" fill={C.Blue} stroke={p.station} strokeWidth="2" />
+      {/* ── Origin marker — "Departure" §
+            Editorial mark: italic § (section/silcrow) inside a square ink frame.
+            Reads as "the place from which" — not pinned, not mobile.            */}
+      <g transform={`translate(${YOU.x} ${YOU.y})`}>
+        {/* paper backing so the rule reads on any map fill */}
+        <rect x="-11" y="-11" width="22" height="22" fill={p.station} />
+        {/* outer ink frame */}
+        <rect x="-11" y="-11" width="22" height="22" fill="none" stroke={p.ink} strokeWidth="2" />
+        {/* inset hairline (the editorial "double rule" frame) */}
+        <rect x="-8" y="-8" width="16" height="16" fill="none" stroke={p.ink} strokeWidth="0.75" />
+        {/* italic silcrow */}
+        <text x="0" y="5.5" fontSize="16" fontWeight="700" fill={p.ink}
+          fontFamily="Fraunces, Georgia, serif" fontStyle="italic" textAnchor="middle">§</text>
         {showLabels && (
-          <text x={YOU.x - 4} y={YOU.y - 14} fill={p.ink} fontSize="11" fontWeight="600"
-            fontFamily="-apple-system,system-ui" textAnchor="end">You</text>
+          <>
+            {/* tiny flag label: caps kicker FROM, serif name below */}
+            <text x="-15" y="-15" fill={p.mute} fontSize="7.5" fontWeight="800"
+              fontFamily="Inter, system-ui" letterSpacing="1.5" textAnchor="end">FROM</text>
+            <text x="-15" y="-4" fill={p.ink} fontSize="11" fontWeight="500"
+              fontFamily="Fraunces, Georgia, serif" fontStyle="italic" textAnchor="end">Logan Sq.</text>
+          </>
         )}
       </g>
 
-      {/* Destination marker: star */}
+      {/* ── Destination marker — "Arrival" ✦
+            Editorial mark: target — concentric ink ring + crosshair + small fill.
+            Reads as "the precise spot to which" — surveyed, fixed.            */}
       <g transform={`translate(${ART_INSTITUTE.x} ${ART_INSTITUTE.y})`}>
-        <circle r="11" fill={p.ink} />
-        <path d="M0,-6 L1.8,-2 L6,-1.5 L2.8,1.2 L3.7,5.4 L0,3.2 L-3.7,5.4 L-2.8,1.2 L-6,-1.5 L-1.8,-2 Z"
-          fill={p.station} />
+        {/* paper backing */}
+        <circle r="13" fill={p.station} />
+        {/* outer ink ring */}
+        <circle r="12" fill="none" stroke={p.ink} strokeWidth="2" />
+        {/* inset hairline */}
+        <circle r="9" fill="none" stroke={p.ink} strokeWidth="0.75" />
+        {/* crosshair */}
+        <line x1="-12" y1="0" x2="-5.5" y2="0" stroke={p.ink} strokeWidth="1.25" />
+        <line x1="5.5" y1="0" x2="12" y2="0" stroke={p.ink} strokeWidth="1.25" />
+        <line x1="0" y1="-12" x2="0" y2="-5.5" stroke={p.ink} strokeWidth="1.25" />
+        <line x1="0" y1="5.5" x2="0" y2="12" stroke={p.ink} strokeWidth="1.25" />
+        {/* center bullseye */}
+        <circle r="3" fill={p.ink} />
       </g>
       {showLabels && (
-        <text x={ART_INSTITUTE.x + 16} y={ART_INSTITUTE.y + 4}
-          fill={p.ink} fontSize="11" fontWeight="700" fontFamily="-apple-system,system-ui">
-          Art Institute
-        </text>
+        <g transform={`translate(${ART_INSTITUTE.x + 16} ${ART_INSTITUTE.y})`}>
+          <text fill={p.mute} y="-7" fontSize="7.5" fontWeight="800"
+            fontFamily="Inter, system-ui" letterSpacing="1.5">TO</text>
+          <text fill={p.ink} y="6" fontSize="11" fontWeight="700"
+            fontFamily="Fraunces, Georgia, serif">Art Institute</text>
+        </g>
       )}
 
       {/* Key station labels on active route */}
@@ -195,13 +223,43 @@ function SchematicMap({
         </>
       )}
 
-      {/* Legend */}
+      {/* Legend — matches the new editorial markers */}
       {showLegend && !compact && (
-        <g transform="translate(20, 380)">
-          <rect width="180" height="30" rx="4" fill={p.station} fillOpacity="0.85" stroke={p.mute} strokeOpacity="0.3" />
-          <circle cx="14" cy="15" r="4" fill={C.Blue} />
-          <text x="24" y="19" fill={p.ink} fontSize="10" fontWeight="600"
-            fontFamily="-apple-system,system-ui">Blue Line · toward Loop</text>
+        <g transform="translate(20, 360)">
+          <rect width="220" height="50" fill={p.station} fillOpacity="0.92" stroke={p.ink} strokeWidth="0.75" />
+          {/* hairline frame */}
+          <rect x="3" y="3" width="214" height="44" fill="none" stroke={p.ink} strokeWidth="0.4" />
+
+          {/* § origin */}
+          <g transform="translate(16, 18)">
+            <rect x="-7" y="-7" width="14" height="14" fill="none" stroke={p.ink} strokeWidth="1.4" />
+            <text x="0" y="3.5" fontSize="10" fontWeight="700" fill={p.ink}
+              fontFamily="Fraunces, Georgia, serif" fontStyle="italic" textAnchor="middle">§</text>
+          </g>
+          <text x="32" y="22" fill={p.ink} fontSize="9.5" fontWeight="700"
+            fontFamily="Inter, system-ui" letterSpacing="1.5">FROM</text>
+
+          {/* ✦ destination */}
+          <g transform="translate(16, 38)">
+            <circle r="7.5" fill="none" stroke={p.ink} strokeWidth="1.4" />
+            <line x1="-7.5" y1="0" x2="-3.5" y2="0" stroke={p.ink} strokeWidth="1" />
+            <line x1="3.5" y1="0" x2="7.5" y2="0" stroke={p.ink} strokeWidth="1" />
+            <line x1="0" y1="-7.5" x2="0" y2="-3.5" stroke={p.ink} strokeWidth="1" />
+            <line x1="0" y1="3.5" x2="0" y2="7.5" stroke={p.ink} strokeWidth="1" />
+            <circle r="2" fill={p.ink} />
+          </g>
+          <text x="32" y="42" fill={p.ink} fontSize="9.5" fontWeight="700"
+            fontFamily="Inter, system-ui" letterSpacing="1.5">TO</text>
+
+          {/* Active line indicator */}
+          <line x1="120" y1="22" x2="160" y2="22" stroke={C.Blue} strokeWidth="3" />
+          <text x="166" y="25" fill={p.ink} fontSize="9" fontWeight="700"
+            fontFamily="Inter, system-ui" letterSpacing="1">BL TO LOOP</text>
+
+          {/* Walking indicator */}
+          <line x1="120" y1="40" x2="160" y2="40" stroke={p.ink} strokeWidth="1.5" strokeDasharray="2 3" />
+          <text x="166" y="43" fill={p.mute} fontSize="9" fontWeight="700"
+            fontFamily="Inter, system-ui" letterSpacing="1">WALK</text>
         </g>
       )}
     </svg>

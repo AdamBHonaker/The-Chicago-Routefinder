@@ -8,13 +8,18 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: "autoUpdate",
-      includeAssets: ["icon-192.png", "icon-512.png", "apple-touch-icon.png"],
+      includeAssets: [
+        "icon-192.png",
+        "icon-512.png",
+        "icon-512-maskable.png",
+        "apple-touch-icon.png",
+      ],
       manifest: {
-        name: "CTA Transit",
-        short_name: "CTA Transit",
-        description: "AI-powered real-time CTA route recommendations for Chicago riders.",
-        theme_color: "#1a5bad",
-        background_color: "#0a0a0a",
+        name: "The Chicago Routefinder",
+        short_name: "Routefinder",
+        description: "A working guide to the trains, buses, and schedules of the city.",
+        theme_color: "#171310",
+        background_color: "#f2ece0",
         display: "standalone",
         orientation: "portrait",
         scope: "/",
@@ -32,7 +37,7 @@ export default defineConfig({
             purpose: "any",
           },
           {
-            src: "icon-512.png",
+            src: "icon-512-maskable.png",
             sizes: "512x512",
             type: "image/png",
             purpose: "maskable",
@@ -52,16 +57,22 @@ export default defineConfig({
         ],
         runtimeCaching: [
           {
-            // Match /recommend and /health regardless of hostname (covers both
-            // localhost dev and the production Railway URL).
-            // NetworkFirst: serve cached result when network is unavailable
-            // (common in CTA underground stations). 1-hour TTL, 50 entries.
-            urlPattern: /\/(recommend|health)(\?.*)?$/i,
+            // Never cache /recommend: responses contain user origin/destination
+            // and (when BYOK is enabled) reflect a request body containing the
+            // user's Anthropic API key. Caching that data — especially across
+            // shared devices — is a privacy and credential-leakage risk.
+            urlPattern: /\/recommend(\?.*)?$/i,
+            handler: "NetworkOnly",
+          },
+          {
+            // /health is non-sensitive; keep cached so the app shell can show
+            // an offline indicator quickly when the network is unavailable.
+            urlPattern: /\/health(\?.*)?$/i,
             handler: "NetworkFirst",
             options: {
               cacheName: "api-cache",
               expiration: {
-                maxEntries: 25,
+                maxEntries: 5,
                 maxAgeSeconds: 3600,
               },
             },
@@ -79,6 +90,31 @@ export default defineConfig({
       },
     }),
   ],
+  build: {
+    // Don't ship source maps to production — they expose unminified source +
+    // file structure to anyone opening DevTools.
+    sourcemap: false,
+    rollupOptions: {
+      output: {
+        // Split heavy vendors into their own chunks so the browser can
+        // parallelize downloads, and so a deploy that only changes app code
+        // doesn't invalidate the (large + rarely-changing) vendor caches.
+        // maplibre-gl is intentionally NOT listed here: it's already
+        // dynamically imported from MapView.jsx via React.lazy in App.jsx,
+        // so Rollup gives it its own chunk automatically.
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return undefined;
+          if (id.includes("react-dom") || /[\\/]react[\\/]/.test(id) || id.includes("scheduler")) {
+            return "react-vendor";
+          }
+          if (id.includes("i18next") || id.includes("react-i18next")) {
+            return "i18n-vendor";
+          }
+          return undefined;
+        },
+      },
+    },
+  },
   server: {
     port: 5173,
   },

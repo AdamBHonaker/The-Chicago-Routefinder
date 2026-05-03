@@ -335,12 +335,14 @@ class TestBuildPrompt:
         assert "furigana" in prompt
 
     def test_significant_alerts_included(self):
+        # CTA SeverityScore is on a 0–100 scale; build_prompt's "significant"
+        # threshold is 40 (matching the ≥40 / ≥70 tiers in the alerts handler).
         alerts = [
             {
                 "alert_id": "1",
                 "headline": "Red Line delays",
                 "impact": "Delays",
-                "severity_score": 7,
+                "severity_score": 50,
                 "is_major": False,
                 "event_end": None,
                 "affected_routes": ["Red"],
@@ -359,7 +361,7 @@ class TestBuildPrompt:
                 "alert_id": "1",
                 "headline": "Elevator outage",
                 "impact": "Accessibility",
-                "severity_score": 2,
+                "severity_score": 20,
                 "is_major": False,
                 "event_end": None,
                 "affected_routes": [],
@@ -454,28 +456,10 @@ class TestRouteRequestValidators:
         with pytest.raises(Exception):
             RouteRequest(origin="a", destination="b", bus_fullness="Packed")
 
-    def test_anthropic_key_none_accepted(self):
-        r = RouteRequest(origin="a", destination="b", anthropic_api_key=None)
-        assert r.anthropic_api_key is None
-
-    def test_anthropic_key_valid_prefix_accepted(self):
-        r = RouteRequest(origin="a", destination="b",
-                         anthropic_api_key="sk-ant-api03-abc123")
-        assert r.anthropic_api_key == "sk-ant-api03-abc123"
-
-    def test_anthropic_key_whitespace_stripped(self):
-        r = RouteRequest(origin="a", destination="b",
-                         anthropic_api_key="  sk-ant-abc  ")
-        assert r.anthropic_api_key == "sk-ant-abc"
-
-    def test_anthropic_key_empty_string_becomes_none(self):
-        r = RouteRequest(origin="a", destination="b", anthropic_api_key="   ")
-        assert r.anthropic_api_key is None
-
-    def test_anthropic_key_wrong_prefix_raises(self):
-        with pytest.raises(Exception):
-            RouteRequest(origin="a", destination="b",
-                         anthropic_api_key="sk-openai-abc123")
+    # BYOK key tests removed: the anthropic_api_key field no longer lives on
+    # RouteRequest — it now arrives via the Authorization: Bearer header and is
+    # validated inside the /recommend handler. Format-rejection coverage lives
+    # in _validate_api_keys (test_endpoints.py exercises the full path).
 
     def test_ai_disabled_by_default(self):
         r = RouteRequest(origin="a", destination="b")

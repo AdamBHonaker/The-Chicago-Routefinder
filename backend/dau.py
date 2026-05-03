@@ -33,11 +33,13 @@ DAU_FILE.parent.mkdir(parents=True, exist_ok=True)
 # Combined with today's Chicago date string before use as the HMAC key.
 _DAILY_SALT = os.getenv("DAILY_SALT", "default-insecure-salt")
 
+# Fail-closed in production: a predictable salt makes IP hashes correlatable
+# across days, breaking the privacy guarantee in the module docstring.
 if _DAILY_SALT == "default-insecure-salt" and os.getenv("APP_ENV") == "production":
-    logging.getLogger(__name__).warning(
-        "DAILY_SALT env var is not set in production. "
-        "IP hashes are using a predictable constant — set DAILY_SALT in Railway env vars "
-        "to restore the cross-day privacy guarantee."
+    raise RuntimeError(
+        "DAILY_SALT env var must be set in production. "
+        "Without it, IP hashes use a predictable constant and DAU counters "
+        "lose their cross-day privacy guarantee."
     )
 
 

@@ -1,13 +1,16 @@
 import asyncio
 import collections
+import logging
 import os
+import secrets
+import threading
 import time
-import traceback
 import xml.etree.ElementTree as ET
 from contextlib import asynccontextmanager
 from datetime import datetime
 
 import aiohttp
+from cachetools import TTLCache
 
 from fastapi import FastAPI, HTTPException, Request, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,7 +28,7 @@ import dau
 
 from gtfs_loader import (
     resolve_location, geocode_google, reverse_geocode_google, NEIGHBORHOOD_COORDS,
-    fuzzy_match_neighborhood, _normalize_street_abbr, _load_stops,
+    fuzzy_match_neighborhood, _normalize_street_abbr, _load_stops, coords_for_location,
 )
 from cta_client import get_train_arrivals, get_bus_arrivals, get_alerts, get_route_statuses, TRAIN_LINE_TO_ALERT_ID, LINE_NAMES, init_session as _init_cta_session, close_session as _close_cta_session, _get_session as _get_cta_session
 from transit_graph import (
@@ -47,6 +50,8 @@ from crowdedness import (
 )
 from utils import CHICAGO_TZ as _CHICAGO_TZ
 
+logger = logging.getLogger(__name__)
+
 # API keys and model names read once at startup — these never change at runtime.
 _CTA_TRAIN_KEY        = os.getenv("CTA_TRAIN_API_KEY", "")
 _CTA_BUS_KEY          = os.getenv("CTA_BUS_API_KEY", "")
@@ -63,12 +68,9 @@ weather_service = WeatherService()
 # ---------------------------------------------------------------------------
 # Response cache
 # ---------------------------------------------------------------------------
-# key → (expires_at: float via time.monotonic(), response: dict)
-# OrderedDict preserves insertion order so eviction of the oldest entry is O(1)
-# via popitem(last=False) rather than O(n) via min() over all entries.
-_response_cache: collections.OrderedDict[str, tuple[float, dict]] = collections.OrderedDict()
 _CACHE_TTL_SECONDS = 120      # seconds
 _CACHE_MAX_SIZE    = 500      # entries
+_response_cache: TTLCache = TTLCache(maxsize=_CACHE_MAX_SIZE, ttl=_CACHE_TTL_SECONDS)
 
 # Cache hit/miss counters — logged every _CACHE_LOG_INTERVAL requests for tuning.
 _cache_hits:   int = 0
@@ -83,7 +85,7 @@ _SAME_LOCATION_THRESHOLD_DEG2: float = 0.001 ** 2   # degrees²
 # /stop-arrivals cache (Feature Pinned Stops + Feature Last Train)
 # ---------------------------------------------------------------------------
 _STOP_ARRIVALS_TTL = 30   # seconds
-_stop_arrivals_cache: collections.OrderedDict[str, tuple[float, dict]] = collections.OrderedDict()
+_stop_arrivals_cache: TTLCache = TTLCache(maxsize=200, ttl=_STOP_ARRIVALS_TTL)
 
 
 def _cache_key(origin: str, destination: str, transit_mode: str, bus_fullness: str,
@@ -114,8 +116,15 @@ def _cache_key(origin: str, destination: str, transit_mode: str, bus_fullness: s
 # Both limits must pass on every request — the stricter one wins.
 # BYOK requests count against per-IP limits just like shared-quota requests.
 _RATE_LIMIT_ENABLED = os.getenv("RATE_LIMIT_ENABLED", "false").lower() == "true"
-_RATE_LIMIT_RPM     = int(os.getenv("RATE_LIMIT_RPM", "10"))   # max requests per minute per IP
-_RATE_LIMIT_RPH     = int(os.getenv("RATE_LIMIT_RPH", "50"))   # max requests per hour per IP
+_RATE_LIMIT_RPM     = int(os.getenv("RATE_LIMIT_RPM", "10"))   # max /recommend requests per minute per IP
+_RATE_LIMIT_RPH     = int(os.getenv("RATE_LIMIT_RPH", "50"))   # max /recommend requests per hour per IP
+# Per-IP rolling-24h cap on /recommend so a single attacker can't drain the
+# Anthropic budget overnight. Independent of RPM/RPH; the stricter limit wins.
+_RATE_LIMIT_DAILY   = int(os.getenv("RATE_LIMIT_DAILY", "50"))
+# Geocode-bucket caps cover /autocomplete + /reverse-geocode. UI typing is
+# bursty so RPM is set higher than /recommend; per-hour caps the long tail.
+_GEOCODE_RPM        = int(os.getenv("GEOCODE_RPM", "60"))
+_GEOCODE_RPH        = int(os.getenv("GEOCODE_RPH", "600"))
 
 # Shared lock protecting both _rate_store and _response_cache.
 # asyncio.Lock() is correct here (not threading.Lock) because recommend() is an
@@ -126,8 +135,16 @@ _RATE_LIMIT_RPH     = int(os.getenv("RATE_LIMIT_RPH", "50"))   # max requests pe
 # both the duplicate-computation stampede and the eviction double-pop.
 _store_lock = asyncio.Lock()
 
-# ip → deque of monotonic timestamps for this IP's recent requests
-_rate_store: dict[str, collections.deque] = {}
+# ip → deque of monotonic timestamps. Each rate-limit "bucket" gets its own dict
+# so /recommend caps don't share state with autocomplete bursts.
+_rate_store:          dict[str, collections.deque] = {}   # /recommend RPM/RPH
+_daily_quota_store:   dict[str, collections.deque] = {}   # /recommend rolling 24h
+_geocode_rate_store:  dict[str, collections.deque] = {}   # /autocomplete + /reverse-geocode
+
+# Geocode endpoints have sync handlers (they're called from FastAPI's threadpool),
+# so a threading.Lock — not asyncio.Lock — is needed when their rate-limit
+# checks race with each other across threads.
+_geocode_lock = threading.Lock()
 
 
 def _client_ip(http_request: Request) -> str:
@@ -148,30 +165,46 @@ def _client_ip(http_request: Request) -> str:
     return http_request.client.host if http_request.client else "unknown"
 
 
-def _check_rate_limit(ip: str) -> bool:
+def _check_rate_limit(
+    ip: str,
+    *,
+    store: dict[str, collections.deque] | None = None,
+    rpm: int | None = None,
+    rph: int | None = None,
+    window_seconds: int = 3600,
+) -> bool:
     """
     Return True (request allowed) or False (rate-limited).
     Always returns True when _RATE_LIMIT_ENABLED is False.
 
-    Sliding-window approach: per-minute AND per-hour caps must both pass.
-    Callers must hold _store_lock before calling this function.
+    Sliding-window: per-minute AND per-`window_seconds` caps must both pass.
+    Default args target the /recommend bucket; pass `store`/`rpm`/`rph` to
+    enforce a separate bucket (e.g. geocode endpoints).
+
+    Callers must hold the lock that guards the chosen `store`.
     """
     if not _RATE_LIMIT_ENABLED:
         return True
+    if store is None:
+        store = _rate_store
+    if rpm is None:
+        rpm = _RATE_LIMIT_RPM
+    if rph is None:
+        rph = _RATE_LIMIT_RPH
     now = time.monotonic()
-    window = _rate_store.setdefault(ip, collections.deque())
-    # Evict timestamps older than one hour to bound memory growth
-    while window and now - window[0] > 3600:
+    window = store.setdefault(ip, collections.deque())
+    # Evict timestamps older than the window to bound memory growth
+    while window and now - window[0] > window_seconds:
         window.popleft()
-    # Prune the dict key when the deque empties — prevents _rate_store from
+    # Prune the dict key when the deque empties — prevents the store from
     # accumulating a key per unique IP forever on a long-running server.
     # BUG-030: actually delete the key so it is removed from the dict; the
     # next call from this IP will reinitialise via setdefault above.
     if not window:
-        del _rate_store[ip]
-        return True
-    # Per-hour check
-    if len(window) >= _RATE_LIMIT_RPH:
+        del store[ip]
+        window = store.setdefault(ip, collections.deque())
+    # Per-window check
+    if len(window) >= rph:
         return False
     # Per-minute check — iterate from the right (newest entries) and stop as
     # soon as we exceed the 60-second window. Because the deque is insertion-
@@ -184,10 +217,38 @@ def _check_rate_limit(ip: str) -> bool:
             recent += 1
         else:
             break
-    if recent >= _RATE_LIMIT_RPM:
+    if recent >= rpm:
         return False
     window.append(now)
     return True
+
+
+def _check_daily_quota(ip: str) -> bool:
+    """Per-IP rolling-24h cap on /recommend. Caller must hold _store_lock."""
+    if not _RATE_LIMIT_ENABLED:
+        return True
+    now = time.monotonic()
+    window = _daily_quota_store.setdefault(ip, collections.deque())
+    while window and now - window[0] > 86400:
+        window.popleft()
+    if not window:
+        del _daily_quota_store[ip]
+        window = _daily_quota_store.setdefault(ip, collections.deque())
+    if len(window) >= _RATE_LIMIT_DAILY:
+        return False
+    window.append(now)
+    return True
+
+
+def _check_geocode_rate_limit(ip: str) -> bool:
+    """Rate-limit for /autocomplete + /reverse-geocode. Acquires its own lock."""
+    with _geocode_lock:
+        return _check_rate_limit(
+            ip,
+            store=_geocode_rate_store,
+            rpm=_GEOCODE_RPM,
+            rph=_GEOCODE_RPH,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -213,9 +274,19 @@ _FULLNESS_API_VALUES = {
 # Set ALLOWED_ORIGINS in Railway env vars to your Vercel URL, e.g.:
 #   ALLOWED_ORIGINS=https://cta-transit.vercel.app
 _extra_origins = os.getenv("ALLOWED_ORIGINS", "")
-ALLOWED_ORIGINS = ["http://localhost:5173", "http://localhost:5174"] + [
-    o.strip() for o in _extra_origins.split(",") if o.strip()
-]
+_extra_origin_list = [o.strip() for o in _extra_origins.split(",") if o.strip()]
+# Fail-closed in production: if ALLOWED_ORIGINS is unset, refuse to start so a
+# misconfigured deployment never falls back to the localhost-only allowlist.
+if os.getenv("APP_ENV") == "production" and not _extra_origin_list:
+    raise RuntimeError(
+        "ALLOWED_ORIGINS env var must be set in production "
+        "(e.g. ALLOWED_ORIGINS=https://your-frontend.vercel.app)."
+    )
+ALLOWED_ORIGINS = ["http://localhost:5173", "http://localhost:5174"] + _extra_origin_list
+
+# Hard cap on POST body size. /recommend bodies are <1 KB in normal use; 16 KB
+# leaves generous headroom while preventing OOM/DoS via giant payloads.
+_MAX_REQUEST_BYTES = 16 * 1024
 
 
 # ---------------------------------------------------------------------------
@@ -296,11 +367,56 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+
+@app.middleware("http")
+async def _enforce_request_size(request: Request, call_next):
+    """Reject oversized requests before any handler/body parsing runs."""
+    cl = request.headers.get("content-length")
+    if cl is not None:
+        try:
+            if int(cl) > _MAX_REQUEST_BYTES:
+                from fastapi.responses import JSONResponse
+                return JSONResponse(
+                    status_code=413,
+                    content={"detail": "Request body too large"},
+                )
+        except ValueError:
+            pass
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def _add_security_headers(request: Request, call_next):
+    """Attach defense-in-depth security headers to every response."""
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = (
+        "geolocation=(self), camera=(), microphone=(), payment=()"
+    )
+    # HSTS only when the request actually arrived over HTTPS — sending it on
+    # plain HTTP is a no-op per spec but it's tidier to omit.
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    if proto == "https":
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=31536000; includeSubDomains"
+        )
+    # /recommend echoes user origin/destination + (when BYOK is on) is shaped
+    # by an Authorization header. Don't let any layer cache it. Pairs with
+    # frontend/vite.config.js where the service worker is set to NetworkOnly
+    # for this path.
+    if request.url.path == "/recommend":
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_methods=["POST", "GET", "OPTIONS"],
-    allow_headers=["*"],
+    allow_methods=["POST", "GET"],
+    allow_headers=["Content-Type", "Accept", "Accept-Language", "Authorization"],
+    max_age=3600,
 )
 
 
@@ -309,20 +425,21 @@ _VALID_BUS_FULLNESS   = {"All", "Empty", "Half-Full", "Full"}
 
 
 class RouteRequest(BaseModel):
-    origin: str
-    destination: str
+    origin: str = Field(..., min_length=1, max_length=200)
+    destination: str = Field(..., min_length=1, max_length=200)
     transit_mode: str = "All"   # "All" | "Train" | "Bus" | "Walk"
     bus_fullness: str = "All"   # "All" | "Empty" | "Half-Full" | "Full"
-    # BYOK — only honoured when BYOK_ENABLED=true in backend/.env.
-    # When BYOK is disabled, this field is accepted but silently ignored so the
-    # frontend does not need to know whether BYOK is active on the server.
-    anthropic_api_key: str | None = None
+    # NOTE: BYOK keys used to live on this model as `anthropic_api_key`. They
+    # now arrive via the Authorization: Bearer header instead, so the body
+    # never carries credentials. Pydantic ignores unknown fields by default,
+    # so older clients that still include the field won't 422 — the value is
+    # just dropped on the floor.
     # AI toggle — when False (default), the Claude call is skipped entirely.
     # response.recommendation will be null. Future paywall gate lives here.
     ai_enabled: bool = False
     # BCP-47 language code (e.g. "es", "ar", "ja"). When non-null and not "en",
     # build_prompt() appends a language instruction so Claude responds in that language.
-    language: str | None = None
+    language: str | None = Field(default=None, max_length=20)
     # Walking pace multiplier. 1.0 = standard (~15 min/mile). Applied as:
     #   adjusted_minutes = baseline_minutes / walk_speed
     # Slow: 0.75 (33% longer), Standard: 1.0 (no-op), Brisk: 1.25 (20% shorter).
@@ -342,60 +459,10 @@ class RouteRequest(BaseModel):
             raise ValueError(f"bus_fullness must be one of {sorted(_VALID_BUS_FULLNESS)}")
         return v
 
-    @field_validator("anthropic_api_key")
-    @classmethod
-    def validate_anthropic_key(cls, v: str | None) -> str | None:
-        # Only strip/nullify here — format validation happens in _validate_api_keys
-        # after the BYOK_ENABLED guard, so invalid strings are silently ignored
-        # when BYOK is disabled rather than returning HTTP 422.
-        if v is not None:
-            v = v.strip()
-            if not v:
-                return None
-        return v
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _coords_for_location(
-    query: str,
-    stations: list[dict] | None = None,
-) -> tuple[float, float] | None:
-    """
-    Return (lat, lon) for a location query using the same 3-step resolution
-    as resolve_location(): exact dict match → fuzzy match (0.95) → Nominatim.
-    If all three fail and nearby stations were already resolved, returns their
-    centroid as a last resort so the routing engine always has coordinates.
-    """
-    q = query.lower().strip()
-    q = _normalize_street_abbr(q)
-
-    # 1. Exact match
-    coords = NEIGHBORHOOD_COORDS.get(q)
-    if coords:
-        return coords
-
-    # 2. Fuzzy match — delegate to shared helper in gtfs_loader so the
-    #    threshold (0.95) and stop-word list stay in sync with resolve_location.
-    coords, _ = fuzzy_match_neighborhood(q)
-    if coords:
-        return coords
-
-    # 3. Google Maps geocoding (result is cached after resolve_location already called it)
-    coords = geocode_google(q)
-    if coords:
-        return coords
-
-    # 4. Centroid of already-resolved nearby stations as last resort
-    if stations:
-        lats = [s["lat"] for s in stations]
-        lons = [s["lon"] for s in stations]
-        return (sum(lats) / len(lats), sum(lons) / len(lons))
-
-    return None
-
 
 def _build_arrival_lookup(
     train_arrivals: list[dict],
@@ -624,15 +691,17 @@ def _format_transfer_arrivals(arrivals: list[dict]) -> str:
 def _is_simple_query(ranked_routes: list[tuple]) -> bool:
     """
     A query is 'simple' if there is exactly one ranked route and that route
-    contains at most one TransitLeg (walk-only or direct ride, no transfer).
-    Walk legs are not counted. Simple queries are routed to Haiku for cost
-    savings; all others use Sonnet.
+    contains exactly one TransitLeg (a direct ride, no transfer). Walk-only
+    routes — zero TransitLegs — are NOT simple: they need the larger model
+    because there's no transit structure to reason about and the response is
+    pure prose-direction summarisation. Simple queries route to Haiku for
+    cost savings; all others use Sonnet.
     """
     if len(ranked_routes) != 1:
         return False
     _, _, route = ranked_routes[0]
     transit_legs = [leg for leg in route.legs if isinstance(leg, TransitLeg)]
-    return len(transit_legs) <= 1
+    return len(transit_legs) == 1
 
 
 def _alert_ids_from_routes(ranked_routes: list[tuple]) -> list[str]:
@@ -663,7 +732,7 @@ def _validate_api_keys(request: RouteRequest, byok_key: str | None) -> None:
     if not train_key and request.transit_mode != "Walk":
         raise HTTPException(status_code=500, detail="CTA_TRAIN_API_KEY not configured in backend/.env")
     if byok_key and not byok_key.startswith("sk-ant-"):
-        raise HTTPException(status_code=422, detail="anthropic_api_key does not look like a valid Anthropic API key")
+        raise HTTPException(status_code=422, detail="Invalid API key")
     if request.ai_enabled and not byok_key and (not anthropic_key or anthropic_key == "your_api_key_here"):
         raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not configured in backend/.env")
     if request.transit_mode in ("Bus", "All") and not bus_key:
@@ -706,8 +775,8 @@ async def _resolve_locations(
         )
 
     origin_coords, dest_coords = await asyncio.gather(
-        loop.run_in_executor(None, _coords_for_location, request.origin, origin_stations),
-        loop.run_in_executor(None, _coords_for_location, request.destination, dest_stations),
+        loop.run_in_executor(None, coords_for_location, request.origin, origin_stations),
+        loop.run_in_executor(None, coords_for_location, request.destination, dest_stations),
     )
 
     if origin_coords and dest_coords:
@@ -994,9 +1063,12 @@ async def _call_claude(
         if not text_block:
             raise ValueError("No text block in Claude response")
         return text_block.text, ("haiku" if simple else "sonnet")
-    except Exception as exc:
-        print(f"[recommend] Claude API error: {exc}")
-        raise HTTPException(status_code=502, detail=f"Claude API error: {exc}")
+    except Exception:
+        # Log the full exception server-side; return a generic message so the
+        # client never sees raw SDK error text (which can include request IDs,
+        # internal URLs, or other infrastructure detail).
+        logger.exception("Claude API error")
+        raise HTTPException(status_code=502, detail="AI recommendation unavailable")
 
 
 def _format_response(
@@ -1100,7 +1172,7 @@ async def _safe_weather(
             origin_coords[0], origin_coords[1]
         )
     except Exception:
-        traceback.print_exc()
+        logger.exception("Failed to fetch weather context")
         return None
 
 
@@ -1320,13 +1392,14 @@ def _format_routes(ranked: list[tuple]) -> str:
 def _format_bus_arrivals(bus_arrivals: list[dict]) -> str:
     lines = []
     for a in bus_arrivals[:6]:
-        due = "Due" if a["arrives_in_minutes"] == 0 else f"{a['arrives_in_minutes']} min"
-        delay = " (DELAYED)" if a["is_delayed"] else ""
+        minutes = a.get("arrives_in_minutes", 0)
+        due = "Due" if minutes == 0 else f"{minutes} min"
+        delay = " (DELAYED)" if a.get("is_delayed") else ""
         load = a.get("psgld", "")
         load_note = f" [{load.replace('_', ' ').title()}]" if load else ""
         lines.append(
-            f"  * Route {a['route']} toward {a['destination']} — {due}{delay}{load_note}"
-            f" | {a['stop_name']}"
+            f"  * Route {a.get('route', '?')} toward {a.get('destination', 'Unknown')} — {due}{delay}{load_note}"
+            f" | {a.get('stop_name', 'Unknown stop')}"
         )
     return "\n".join(lines)
 
@@ -1544,10 +1617,9 @@ async def stop_arrivals(stops: list[str] = Query(default=[])):
         raise HTTPException(status_code=400, detail="Maximum 10 stops per request")
 
     cache_key = ",".join(sorted(stops))
-    now_mono = time.monotonic()
     cached = _stop_arrivals_cache.get(cache_key)
-    if cached and now_mono < cached[0]:
-        return cached[1]
+    if cached is not None:
+        return cached
 
     train_stop_ids: list[str] = []
     bus_stop_ids:   list[str] = []
@@ -1622,25 +1694,37 @@ async def stop_arrivals(stops: list[str] = Query(default=[])):
             arrivals.setdefault(f"train:{sid}", {"arrivals": []})["last_departure_minutes"] = mins
 
     result = {"arrivals": arrivals}
-
-    _stop_arrivals_cache[cache_key] = (now_mono + _STOP_ARRIVALS_TTL, result)
-    if len(_stop_arrivals_cache) > 200:
-        _stop_arrivals_cache.popitem(last=False)
-
+    _stop_arrivals_cache[cache_key] = result
     return result
 
 
 @app.get("/admin/dau")
-async def admin_dau(authorization: str | None = Header(default=None)):
+async def admin_dau(
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
     token = os.getenv("DAU_ADMIN_TOKEN", "")
-    expected = f"Bearer {token}" if token else None
-    if not expected or authorization != expected:
+    # Defense-in-depth: refuse plaintext HTTP in production. Railway terminates
+    # TLS upstream, so a request reaching us with x-forwarded-proto != https
+    # indicates either a misconfiguration or a direct internal call.
+    if os.getenv("APP_ENV") == "production":
+        proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+        if proto != "https":
+            raise HTTPException(status_code=403, detail="Forbidden")
+    if not token or not authorization:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    expected = f"Bearer {token}"
+    # Constant-time comparison to defeat timing oracles on the admin token.
+    if not secrets.compare_digest(authorization, expected):
         raise HTTPException(status_code=403, detail="Forbidden")
     return await dau.get_counts()
 
 
 @app.get("/autocomplete")
-async def autocomplete(q: str = Query("", min_length=0)):
+async def autocomplete(
+    http_request: Request,
+    q: str = Query("", min_length=0, max_length=200),
+):
     """
     Return up to 8 location suggestions matching query q (min 2 chars).
     Priority order: train stations → neighborhoods/landmarks → bus stop names.
@@ -1649,6 +1733,8 @@ async def autocomplete(q: str = Query("", min_length=0)):
     query = q.strip().lower()
     if len(query) < 2:
         return {"suggestions": []}
+    if not _check_geocode_rate_limit(_client_ip(http_request)):
+        raise HTTPException(status_code=429, detail="Too many requests")
 
     # O(1) prefix lookup: use 3-char key for queries ≥ 3 chars, else 2-char key.
     key = query[:3] if len(query) >= 3 else query
@@ -1678,7 +1764,7 @@ async def autocomplete(q: str = Query("", min_length=0)):
 # /alerts cache — 5-minute TTL, single static key "alerts"
 # ---------------------------------------------------------------------------
 _ALERTS_CACHE_TTL = 300  # 5 minutes
-_alerts_cache: collections.OrderedDict[str, tuple[float, dict]] = collections.OrderedDict()
+_alerts_cache: TTLCache = TTLCache(maxsize=10, ttl=_ALERTS_CACHE_TTL)
 _CTA_CUSTOMER_ALERTS_URL = "https://www.transitchicago.com/api/1.0/alerts.aspx"
 _ALERTS_SEVERITY_ORDER = {"Major": 0, "Minor": 1, "Planned": 2}
 
@@ -1694,10 +1780,9 @@ async def alerts_endpoint():
     Returns empty list on CTA API failure; never raises.
     """
     cache_key = "alerts"
-    now_mono = time.monotonic()
     cached = _alerts_cache.get(cache_key)
-    if cached and now_mono < cached[0]:
-        return cached[1]
+    if cached is not None:
+        return cached
 
     try:
         async with _get_cta_session().get(
@@ -1742,13 +1827,10 @@ async def alerts_endpoint():
         parsed.sort(key=lambda a: _ALERTS_SEVERITY_ORDER.get(a["severity"], 3))
         result: dict = {"alerts": parsed}
     except Exception:
-        traceback.print_exc()
+        logger.exception("Failed to fetch alerts")
         result = {"alerts": []}
 
-    _alerts_cache[cache_key] = (now_mono + _ALERTS_CACHE_TTL, result)
-    if len(_alerts_cache) > 10:
-        _alerts_cache.popitem(last=False)
-
+    _alerts_cache[cache_key] = result
     return result
 
 
@@ -1756,30 +1838,43 @@ async def alerts_endpoint():
 # Route statuses cache — 60-second TTL
 # ---------------------------------------------------------------------------
 _ROUTE_STATUSES_CACHE_TTL = 60
-_route_statuses_cache: collections.OrderedDict[str, tuple[float, list]] = collections.OrderedDict()
+_route_statuses_cache: TTLCache = TTLCache(maxsize=10, ttl=_ROUTE_STATUSES_CACHE_TTL)
 
 
 async def _get_route_statuses_cached() -> list[dict]:
     cache_key = "route_statuses"
-    now_mono = time.monotonic()
     cached = _route_statuses_cache.get(cache_key)
-    if cached and now_mono < cached[0]:
-        return cached[1]
+    if cached is not None:
+        return cached
     result = await get_route_statuses()
-    _route_statuses_cache[cache_key] = (now_mono + _ROUTE_STATUSES_CACHE_TTL, result)
-    if len(_route_statuses_cache) > 10:
-        _route_statuses_cache.popitem(last=False)
+    _route_statuses_cache[cache_key] = result
     return result
 
 
 @app.post("/recommend")
-async def recommend(request: RouteRequest, http_request: Request):
+async def recommend(
+    request: RouteRequest,
+    http_request: Request,
+    authorization: str | None = Header(default=None),
+):
     ip = _client_ip(http_request)
+
+    # BYOK key arrives via Authorization: Bearer <sk-ant-...>. Parsed here so it
+    # never enters the request body (which is logged/cached by intermediaries).
+    # Cap at 256 chars defensively — Anthropic keys are ~108 chars today; a far
+    # longer string is either an attack or a malformed paste, and we don't want
+    # to even pass it to compare/format checks.
+    byok_key: str | None = None
+    if _BYOK_ENABLED and authorization:
+        scheme, _, token = authorization.partition(" ")
+        if scheme.lower() == "bearer":
+            token = token.strip()
+            if token and len(token) <= 256:
+                byok_key = token
 
     # If BYOK is enabled and the user supplied a valid key, create a throwaway
     # client scoped to this request. A new AsyncAnthropic() is cheap — it holds
     # no persistent connection.
-    byok_key = request.anthropic_api_key if _BYOK_ENABLED else None
     claude_client = (
         anthropic.AsyncAnthropic(api_key=byok_key) if byok_key else _claude_client
     )
@@ -1803,21 +1898,25 @@ async def recommend(request: RouteRequest, http_request: Request):
                 status_code=429,
                 detail="Too many requests. Please wait a minute before trying again.",
             )
+        # Rolling-24h cap defends the Anthropic budget against an attacker who
+        # paces requests slowly enough to slip past the per-minute/per-hour caps.
+        if not _check_daily_quota(ip):
+            raise HTTPException(
+                status_code=429,
+                detail="Daily request limit reached. Try again tomorrow.",
+            )
         _cache_requests_total += 1
         cached = _response_cache.get(key)
-        if cached:
-            if time.monotonic() < cached[0]:
-                _response_cache.move_to_end(key)  # promote to MRU position (LRU eviction)
-                _cache_hits += 1
-                if _cache_requests_total % _CACHE_LOG_INTERVAL == 0:
-                    print(
-                        f"[cache] {_cache_requests_total} requests | "
-                        f"hits={_cache_hits} misses={_cache_misses} "
-                        f"hit_rate={_cache_hits/_cache_requests_total:.1%} "
-                        f"size={len(_response_cache)}"
-                    )
-                return {**cached[1], "cache_hit": True}
-            _response_cache.pop(key, None)  # evict stale entry
+        if cached is not None:
+            _cache_hits += 1
+            if _cache_requests_total % _CACHE_LOG_INTERVAL == 0:
+                print(
+                    f"[cache] {_cache_requests_total} requests | "
+                    f"hits={_cache_hits} misses={_cache_misses} "
+                    f"hit_rate={_cache_hits/_cache_requests_total:.1%} "
+                    f"size={len(_response_cache)}"
+                )
+            return {**cached, "cache_hit": True}
         _cache_misses += 1
         if _cache_requests_total % _CACHE_LOG_INTERVAL == 0:
             print(
@@ -1832,8 +1931,8 @@ async def recommend(request: RouteRequest, http_request: Request):
     # Walk mode — skip all CTA API calls; resolve coordinates and route via walking graph only.
     if request.transit_mode == "Walk":
         origin_coords, dest_coords = await asyncio.gather(
-            loop.run_in_executor(None, _coords_for_location, request.origin, None),
-            loop.run_in_executor(None, _coords_for_location, request.destination, None),
+            loop.run_in_executor(None, coords_for_location, request.origin, None),
+            loop.run_in_executor(None, coords_for_location, request.destination, None),
         )
         if not origin_coords:
             raise HTTPException(status_code=400, detail=f"Could not geocode '{request.origin}'.")
@@ -1892,10 +1991,7 @@ async def recommend(request: RouteRequest, http_request: Request):
             weather=walk_weather,
         )
         async with _store_lock:
-            _response_cache[key] = (time.monotonic() + _CACHE_TTL_SECONDS, response)
-            _response_cache.move_to_end(key)
-            if len(_response_cache) > _CACHE_MAX_SIZE:
-                _response_cache.popitem(last=False)
+            _response_cache[key] = response
         return response
 
     (
@@ -1959,24 +2055,25 @@ async def recommend(request: RouteRequest, http_request: Request):
         weather=weather,
     )
 
-    # Assign then move_to_end so existing keys shift to the "newest" position
-    # without a separate membership test. Lock prevents concurrent writes from
-    # both evicting an item (double-pop) when the cache is exactly at capacity.
     async with _store_lock:
-        _response_cache[key] = (time.monotonic() + _CACHE_TTL_SECONDS, response)
-        _response_cache.move_to_end(key)
-        if len(_response_cache) > _CACHE_MAX_SIZE:
-            _response_cache.popitem(last=False)  # O(1) — drops the oldest insertion
+        _response_cache[key] = response
 
     return response
 
 
 @app.get("/reverse-geocode")
-def reverse_geocode_endpoint(lat: float, lon: float):
+async def reverse_geocode_endpoint(
+    http_request: Request,
+    lat: float = Query(..., ge=-90, le=90),
+    lon: float = Query(..., ge=-180, le=180),
+):
     """
     Convert GPS coordinates to a human-readable address string.
     Used by the frontend after geolocation to display a place name instead of raw coordinates.
     Falls back to "lat,lon" if the Google Maps API is unavailable.
     """
-    address = reverse_geocode_google(lat, lon)
+    if not _check_geocode_rate_limit(_client_ip(http_request)):
+        raise HTTPException(status_code=429, detail="Too many requests")
+    loop = asyncio.get_running_loop()
+    address = await loop.run_in_executor(None, reverse_geocode_google, lat, lon)
     return {"address": address or f"{lat:.6f},{lon:.6f}"}

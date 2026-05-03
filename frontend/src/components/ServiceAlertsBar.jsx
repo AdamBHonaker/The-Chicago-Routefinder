@@ -3,10 +3,13 @@ import { useTranslation } from "react-i18next";
 
 const SEVERITY_ORDER = { Major: 0, Minor: 1, Planned: 2 };
 
+// D2 spec: Major = rust kicker (consequence), Minor = mute kicker (gray ink),
+// Planned/Advisory = navy kicker (notice). Modifier names mirror severity for
+// clarity; CSS in App.css maps each to the correct kicker color.
 function severityMeta(severity) {
-  if (severity === "Major") return { labelKey: "alerts_severity_major", modifier: "delay" };
-  if (severity === "Minor") return { labelKey: "alerts_severity_minor", modifier: "notice" };
-  return { labelKey: "alerts_severity_advisory", modifier: "minor" };
+  if (severity === "Major") return { labelKey: "alerts_severity_major",    modifier: "major" };
+  if (severity === "Minor") return { labelKey: "alerts_severity_minor",    modifier: "minor" };
+  return                          { labelKey: "alerts_severity_advisory", modifier: "advisory" };
 }
 
 export default function ServiceAlertsBar({ alerts, onDismiss }) {

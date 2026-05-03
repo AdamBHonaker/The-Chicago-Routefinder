@@ -4,9 +4,22 @@
  * Demonstrates the @testing-library/react setup. Future component tests should
  * follow the same pattern: render → query by accessible role/text → assert.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import LinePill from "../components/LinePill.jsx";
+
+// LinePill calls `t("map_bus_label", { code })` for the bus aria-label.
+// Without a mock the bare key is returned instead of the interpolated string.
+// Replicate i18next's `{{var}}` substitution so tests can assert on the real
+// rendered label.
+vi.mock("react-i18next", () => ({
+  useTranslation: () => ({
+    t: (key, vars) => {
+      if (key === "map_bus_label" && vars?.code != null) return `Bus ${vars.code}`;
+      return key;
+    },
+  }),
+}));
 
 describe("LinePill", () => {
   it("renders the abbreviated train line code", () => {

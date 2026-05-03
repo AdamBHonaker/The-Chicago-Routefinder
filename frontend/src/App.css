@@ -21,27 +21,49 @@
   --lake:         #cedde2;
   --river:        #cbd4c5;
 
+  /* Explicit rule color (used by all border-style rule tokens below) */
+  --rule-color:   #1a1510;
+
+  /* CTA line colors — mirrors LINE_COLORS in src/lineColors.js (canonical) */
+  --line-red:     #c60c30;
+  --line-blue:    #00a1de;
+  --line-brown:   #62361b;
+  --line-green:   #009b3a;
+  --line-orange:  #f9461c;
+  --line-purple:  #522398;
+  --line-pink:    #e27ea6;
+  --line-yellow:  #f9e300;
+
   /* Type */
   --serif:  "Fraunces", "GT Sectra", "Playfair Display", Georgia, serif;
   --sans:   "Inter", -apple-system, system-ui, sans-serif;
   --mono:   "JetBrains Mono", "IBM Plex Mono", ui-monospace, monospace;
 
-  /* Type scale */
-  --fs-display:    48px;   --lh-display:    0.95;
-  --fs-headline:   28px;   --lh-headline:   1.05;
+  /* Type scale (D2 spec) */
+  --fs-display:    48px;   --lh-display:    0.95;   --ls-display:  -0.8px;
+  --fs-headline:   28px;   --lh-headline:   1.05;   --ls-headline: -0.6px;
   --fs-subhead:    20px;   --lh-subhead:    1.25;
   --fs-body:       15px;   --lh-body:       1.55;
-  --fs-body-sm:    13px;   --lh-body-sm:    1.5;
-  --fs-caps:       10px;   --lh-caps:       1.2;   --ls-caps: 2px;
-  --fs-mono:       12px;   --lh-mono:       1.3;
-  --fs-numeral-sm: 52px;
-  --fs-numeral-md: 72px;
-  --fs-numeral-lg: 96px;
+  --fs-body-sm:    14px;   --lh-body-sm:    1.5;
+  --fs-caps:       10px;   --lh-caps:       1.2;    --ls-caps: 2px;
+  --fs-mono:       13px;   --lh-mono:       1.3;
+  /* Drop-cap duration sizes (D2 spec) — italic Fraunces 700, lh 0.82 */
+  --drop-cap-desktop: 52px;   /* route-card, desktop column */
+  --drop-cap-mobile:  72px;   /* route-card, mobile/hero */
+  --drop-cap-hero:    96px;   /* live-trip countdown */
 
-  /* Rules */
-  --rule:        1px solid var(--ink);
-  --rule-thick:  2px solid var(--ink);
-  --rule-double: 5px double var(--ink);
+  /* Type weights (D2 spec) */
+  --fw-display-italic: 500;
+  --fw-display:        700;
+  --fw-headline:       700;
+  --fw-body:           400;
+  --fw-caps:           700;
+  --fw-mono:           500;
+
+  /* Rules — D2 system: hairline (mute-fog), rule (1px ink), rule-thick (2px ink), rule-double (5px) */
+  --rule:        1px solid var(--rule-color);
+  --rule-thick:  2px solid var(--rule-color);
+  --rule-double: 5px double var(--rule-color);
   --hairline:    1px solid var(--mute-fog);
   --dashed:      1px dashed var(--mute-fog);
 
@@ -65,26 +87,125 @@
   --dur-quick:  120ms;
   --dur-base:   220ms;
   --dur-slow:   320ms;
+
+  /* Opacity scale */
+  --opacity-hover: 0.82;  /* hover / active states */
+  --opacity-soft:  0.55;  /* subtle dimming */
+  --opacity-mute:  0.45;  /* disabled / inactive */
+
+  /* Z-index scale */
+  --z-base:        1;    /* local stacking / establish context */
+  --z-map-overlay: 5;    /* map info panels (legend, train card) */
+  --z-map-ctrl:    10;   /* map controls and photo layer */
+  --z-dropdown:    100;  /* autocomplete dropdown */
+  --z-nav:         200;  /* fixed tab bar */
+  --z-modal:       500;  /* modal overlay */
+}
+
+/* ── Editorial utilities (D2 system) ─────────────────────────────────────── */
+/* Naming mirrors the design system glossary so new code can compose specimen
+ * patterns without bespoke styles. These are additive — existing components
+ * keep their own bespoke caps/heading styles to avoid wide-blast refactors. */
+
+/* Caps label — small uppercase Inter for section headers, kickers, captions. */
+.caps {
+  font-family: var(--sans);
+  font-size: var(--fs-caps);
+  font-weight: var(--fw-caps);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--mute);
+  line-height: var(--lh-caps);
+}
+
+/* Two-tone headline: italic-serif opener + roman-serif continuation,
+ * 28px headline size with -0.6 tracking. Pair with .rule-thick below. */
+.headline {
+  font-family: var(--serif);
+  font-size: var(--fs-headline);
+  font-weight: var(--fw-headline);
+  letter-spacing: var(--ls-headline);
+  line-height: 1.2;
+  margin: 6px 0 12px;
+  color: var(--ink);
+}
+.headline__italic {
+  font-style: italic;
+  font-weight: 400;
+}
+
+/* TwoToneHeading wrapper — caps + headline + rule grouped without margin
+ * collapse surprises. Hosts can override via the className prop. */
+.two-tone-heading { display: block; }
+.two-tone-heading .caps { margin-bottom: 2px; }
+.two-tone-heading .headline { margin: 0 0 var(--sp-3); }
+.two-tone-heading .rule-thick { margin-bottom: var(--sp-4); }
+
+/* Two-tone variant of the settings sheet header: left-align the heading,
+ * keep the close button pinned at the inline-end edge. */
+.settings-sheet-header--two-tone {
+  justify-content: flex-start;
+  align-items: flex-start;
+  text-align: start;
+}
+.settings-sheet-header--two-tone > .two-tone-heading { flex: 1; }
+
+/* Two-tone variant of the pinned-stops header: replace the flex space-between
+ * row + bottom hairline with a stacked heading (which already supplies its
+ * own rule-thick) and the controls on a second row. */
+.psb-header--two-tone {
+  flex-direction: column;
+  align-items: stretch;
+  border-bottom: none;
+  position: relative;
+}
+.psb-header--two-tone .psb-header-right {
+  position: absolute;
+  inset-inline-end: var(--sp-6);
+  top: var(--sp-4);
+}
+
+.tab-alerts-view__heading { padding: 0 var(--sp-6); }
+
+/* Rule weights — four canonical treatments per the design system.
+ * Use as standalone <div> separators (not as borders on adjacent elements). */
+.rule-hair   { height: 1px; background: var(--mute-fog); }
+.rule        { height: 1px; background: var(--rule-color); }
+.rule-thick  { height: 2px; background: var(--rule-color); }
+.rule-double {
+  height: 5px;
+  border-top:    1px solid var(--rule-color);
+  border-bottom: 1px solid var(--rule-color);
+}
+.rule-dashed { border-top: 1px dashed var(--mute-fog); height: 0; }
+
+/* Tabular numerals — apply to any numeric column whose values change in
+ * place (ETAs, drop-cap minutes, schedule columns) to prevent jitter. */
+.tnum,
+.psb-arrival-due,
+.weather-strip__temp,
+.route-minutes,
+.drop-cap--hero {
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── Paper grain ────────────────────────────────────────────────────────── */
 
+/* Two-layer radial stipple — the base paper grain. Single-layer grain is off-spec. */
 .paper-grain {
   background-color: var(--paper);
   background-image:
-    radial-gradient(rgba(23,19,16,0.035) 1px, transparent 1px),
-    radial-gradient(rgba(23,19,16,0.025) 1px, transparent 1px);
+    radial-gradient(rgba(26,21,16,0.035) 1px, transparent 1px),
+    radial-gradient(rgba(26,21,16,0.025) 1px, transparent 1px);
   background-size: 3px 3px, 7px 7px;
   background-position: 0 0, 1px 2px;
 }
 
+/* Bright (featured panel) grain — single-layer 4px stipple per D2 spec. */
 .paper-grain-bright {
   background-color: var(--paper-bright);
-  background-image:
-    radial-gradient(rgba(23,19,16,0.045) 1px, transparent 1px),
-    radial-gradient(rgba(23,19,16,0.030) 1px, transparent 1px);
-  background-size: 3px 3px, 7px 7px;
-  background-position: 0 0, 1px 2px;
+  background-image: radial-gradient(rgba(26,21,16,0.03) 1px, transparent 1px);
+  background-size: 4px 4px;
 }
 
 /* ── Focus rings (a11y) ─────────────────────────────────────────────────── */
@@ -205,8 +326,8 @@ summary:focus-visible {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
-  padding: 18px 0;
+  gap: 18px;
+  padding: 20px 0;
   height: 100%;
 }
 
@@ -214,9 +335,9 @@ summary:focus-visible {
   writing-mode: vertical-rl;
   transform: rotate(180deg);
   font-family: var(--serif);
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
-  letter-spacing: 2px;
+  letter-spacing: var(--ls-caps);
   text-transform: uppercase;
   color: var(--ink);
   margin-block-start: 8px;
@@ -270,12 +391,48 @@ summary:focus-visible {
 /* On Home/Alerts/Saved: hide map. On Map: hide cards and expand map to fill. */
 
 @media (min-width: 801px) {
+  /* Base visible state — entering panels animate in from translateX(8px) */
+  .panel-cards,
+  .panel-map {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    transform: translateX(0);
+    transition:
+      opacity var(--dur-base) var(--ease-out),
+      transform var(--dur-base) var(--ease-out),
+      visibility 0s linear 0s;
+  }
+
+  /* Hidden panel state — fades + slides out, then removed from a11y tree */
+  [data-active-tab="map"] .panel-cards,
   [data-active-tab="home"] .panel-map,
   [data-active-tab="alerts"] .panel-map,
-  [data-active-tab="saved"] .panel-map { display: none; }
+  [data-active-tab="saved"] .panel-map {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transform: translateX(8px);
+    transition:
+      opacity var(--dur-base) var(--ease-out),
+      transform var(--dur-base) var(--ease-out),
+      visibility 0s linear var(--dur-base);
+  }
 
-  [data-active-tab="map"] .panel-cards { display: none; }
-  [data-active-tab="map"] .layout--split { grid-template-columns: 60px 1fr; }
+  /* Grid collapse — visibility:hidden keeps elements in layout so the column
+     must be explicitly removed to prevent the hidden panel eating grid space */
+  [data-active-tab="map"] .layout--split,
+  [data-active-tab="alerts"] .layout--split,
+  [data-active-tab="saved"] .layout--split {
+    grid-template-columns: 60px 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel-cards,
+  .panel-map {
+    transition: none;
+  }
 }
 
 /* ── Mobile breakpoint ───────────────────────────────────────────────────── */
@@ -319,62 +476,53 @@ summary:focus-visible {
   [data-active-tab="alerts"] .panel-map,
   [data-active-tab="saved"] .panel-map { display: none; }
 
-  /* Tab bar */
+  /* Tab bar — D2 spec: serif word labels (no icons), 2px ink top border on
+   * paper, active tab is roman 13/700 ink with a 2px ink underline that
+   * overlaps the top border (margin-bottom: -2px). Inactive tabs are italic
+   * 13/400 mute. */
   .tab-bar {
-    display: flex;
-    flex-direction: row;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
     position: fixed;
     bottom: 0;
     inset-inline: 0;
-    height: 56px;
-    background: var(--paper-folio);
+    background: var(--paper);
     border-top: var(--rule-thick);
-    z-index: 200;
-    padding-bottom: env(safe-area-inset-bottom);
+    z-index: var(--z-nav);
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
   }
 
   .tab-bar__tab {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 2px;
     background: transparent;
     border: none;
     cursor: pointer;
-    padding: var(--sp-2) var(--sp-1);
-    position: relative;
+    padding: 10px 6px 4px;
+    text-align: center;
     min-height: 44px;
-    color: var(--ink);
+    font-family: var(--serif);
+    font-size: 13px;
+    font-style: italic;
+    font-weight: 400;
+    color: var(--mute);
+    line-height: 1.2;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;  /* underline overlaps the bar's top border */
     transition: background var(--dur-quick) var(--ease-out);
   }
 
   .tab-bar__tab:hover {
-    background: var(--paper);
+    background: var(--paper-folio);
   }
 
-  .tab-bar__icon {
-    font-size: 18px;
-    line-height: 1;
+  .tab-bar__tab--active {
+    font-style: normal;
+    font-weight: 700;
+    color: var(--ink);
+    border-bottom-color: var(--ink);
   }
 
   .tab-bar__label {
-    font-family: var(--serif);
-    font-size: 11px;
-    font-style: italic;
-    color: var(--mute);
-    line-height: 1;
-  }
-
-  .tab-bar__tab--active .tab-bar__label {
-    font-style: normal;
-    font-weight: 600;
-    color: var(--ink);
-    text-decoration: underline;
-    text-decoration-color: var(--rust);
-    text-underline-offset: 2px;
-    text-decoration-thickness: 1.5px;
+    display: block;
   }
 }
 
@@ -430,19 +578,24 @@ summary:focus-visible {
   margin-bottom: var(--sp-2);
 }
 
+/* Two-line stacked wordmark (D2 spec). Line 1 italic 500, line 2 roman 700,
+ * trailing period in rust. Same 38px treatment on mobile and desktop home
+ * masthead. The --lg variant (64px) is for the cover hero and 404 page. */
 .masthead-title {
   font-family: var(--serif);
-  font-size: clamp(24px, 9vw, 38px);
-  line-height: 1.05;
-  white-space: nowrap;
+  font-size: 38px;
+  letter-spacing: -1.2px;
+  line-height: 0.95;
   margin: 0;
 }
 
-@media (max-width: 480px) {
-  .masthead-title {
-    white-space: normal;
-    line-height: 1;
-  }
+.masthead-title--lg {
+  font-size: 64px;
+}
+
+.masthead-title-italic,
+.masthead-title-roman {
+  display: block;
 }
 
 .masthead-title-italic {
@@ -453,6 +606,7 @@ summary:focus-visible {
 .masthead-title-roman {
   font-weight: 700;
   font-style: normal;
+  margin-top: 2px;
 }
 
 .masthead-period {
@@ -619,7 +773,7 @@ summary:focus-visible {
 }
 
 .form > button[type="submit"]:hover:not(:disabled) {
-  opacity: 0.82;
+  opacity: var(--opacity-hover);
 }
 
 .form > button[type="submit"]:active:not(:disabled) {
@@ -627,7 +781,7 @@ summary:focus-visible {
 }
 
 .form > button[type="submit"]:disabled {
-  opacity: 0.45;
+  opacity: var(--opacity-mute);
   cursor: not-allowed;
 }
 
@@ -708,7 +862,7 @@ summary:focus-visible {
 }
 
 .alert-item--major { border-color: var(--rust); }
-.alert-item--minor { border-color: var(--navy); }
+.alert-item--minor { border-color: var(--mute); }
 
 .alert-headline {
   font-family: var(--serif);
@@ -793,13 +947,13 @@ summary:focus-visible {
 
 @media (prefers-reduced-motion: reduce) {
   .plot-rule::before { animation: none; transform: translateX(0); }
-  .skeleton-ghost-line { animation: none; opacity: 0.55; }
+  .skeleton-ghost-line { animation: none; opacity: var(--opacity-soft); }
 }
 
 .skeleton-ghost-line {
   height: 9px;
   background: var(--mute-fog);
-  opacity: 0.55;
+  opacity: var(--opacity-soft);
   animation: skeleton-pulse 1.4s ease-in-out infinite;
 }
 .skeleton-ghost-line--long   { width: 100%; }
@@ -821,9 +975,9 @@ summary:focus-visible {
   flex-shrink: 0;
 }
 
-.lin-pill--sm { height: 20px; min-width: 22px; font-size: 9px;  padding: 0 2px; overflow: hidden; }
-.lin-pill--md { height: 26px; min-width: 26px; font-size: 11px; padding: 0 3px; overflow: hidden; }
-.lin-pill--lg { height: 34px; min-width: 34px; font-size: 13px; padding: 0 8px; }
+.lin-pill--sm { height: 20px; min-width: 22px; font-size: 9px;  padding: 0 6px;  overflow: hidden; }
+.lin-pill--md { height: 26px; min-width: 26px; font-size: 11px; padding: 0 8px;  overflow: hidden; }
+.lin-pill--lg { height: 34px; min-width: 34px; font-size: 13px; padding: 0 10px; }
 
 /* ── Signal lamp ─────────────────────────────────────────────────────────── */
 
@@ -848,7 +1002,8 @@ summary:focus-visible {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .signal-lamp { animation: none; }
+  /* Pause the flicker but keep the lamp visible — Principle IV: lamps, not sirens. */
+  .signal-lamp { animation: none; opacity: 1; }
 }
 
 .signal-lamp-row {
@@ -873,19 +1028,23 @@ summary:focus-visible {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .leg-active::after { animation: none; }
+  .leg-active .itinerary-dot { animation: none; }
 }
 
 /* ── Special dispatch ─────────────────────────────────────────────────────── */
 
+/* Printed-broadside frame: 3px double outer border + 1px inner rectangle
+ * offset 4px in. Both rules use the explicit rule color (--rule-color = #1a1510).
+ * Severity (--major / --minor / --advisory) only changes the kicker color;
+ * the frame is identical on all three so the editorial weight stays consistent. */
 .special-dispatch {
   position: relative;
-  border: 3px double var(--ink);
+  border: 3px double var(--rule-color);
   padding: 12px 14px;
   background-color: var(--paper-bright);
   background-image:
-    radial-gradient(rgba(23,19,16,0.035) 1px, transparent 1px),
-    radial-gradient(rgba(23,19,16,0.025) 1px, transparent 1px);
+    radial-gradient(rgba(26,21,16,0.035) 1px, transparent 1px),
+    radial-gradient(rgba(26,21,16,0.025) 1px, transparent 1px);
   background-size: 3px 3px, 7px 7px;
   background-position: 0 0, 1px 2px;
 }
@@ -894,7 +1053,7 @@ summary:focus-visible {
   content: "";
   position: absolute;
   inset: 4px;
-  border: 1px solid rgba(23,19,16,0.18);
+  border: 1px solid rgba(26,21,16,0.18);
   pointer-events: none;
 }
 
@@ -920,9 +1079,14 @@ summary:focus-visible {
   margin-bottom: 4px;
 }
 
-.special-dispatch--delay  .special-dispatch__kicker { color: var(--rust); }
-.special-dispatch--notice .special-dispatch__kicker { color: var(--navy); }
-.special-dispatch--minor  .special-dispatch__kicker { color: var(--mute); }
+/* Severity → kicker color (D2 spec):
+ *   major    = rust (consequence, delay)
+ *   minor    = mute (gray ink, low-impact)
+ *   advisory = navy (planned/notice)
+ * The frame itself is identical on all three; only the kicker color changes. */
+.special-dispatch--major    .special-dispatch__kicker { color: var(--rust); }
+.special-dispatch--minor    .special-dispatch__kicker { color: var(--mute); }
+.special-dispatch--advisory .special-dispatch__kicker { color: var(--navy); }
 
 .special-dispatch__routes {
   font-family: var(--mono);
@@ -975,6 +1139,30 @@ summary:focus-visible {
   align-items: center;
   margin-top: 10px;
   flex-wrap: wrap;
+}
+
+/* Arrived toast — fixed top-centre overlay, visible on any tab */
+@keyframes arrived-toast-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.special-dispatch--arrived {
+  position: fixed;
+  top: var(--sp-4);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9000;
+  min-width: 220px;
+  max-width: min(420px, calc(100vw - 2 * var(--sp-4)));
+  cursor: pointer;
+  animation: arrived-toast-in var(--dur-base) var(--ease-out) both;
+}
+
+.special-dispatch--arrived .special-dispatch__kicker { color: var(--rust); }
+
+@media (prefers-reduced-motion: reduce) {
+  .special-dispatch--arrived { animation: none; }
 }
 
 /* ── Results ─────────────────────────────────────────────────────────────── */
@@ -1061,9 +1249,14 @@ summary:focus-visible {
   flex-shrink: 0;
 }
 
+/* Drop-cap minute hero. Mobile = 72px / -3 letter-spacing / lh 0.82.
+ * Desktop column = 52px / -2 / lh 0.85 (D2 spec, applied via the desktop
+ * media query below). Live-trip 96px hero uses .drop-cap--hero.
+ * Breakpoint convention: <= 800px is mobile (matches the side-rail / tab-bar
+ * split at L272/L283); 801px+ is desktop. */
 .route-minutes {
   font-family: var(--serif);
-  font-size: 72px;
+  font-size: var(--drop-cap-mobile);
   font-weight: 700;
   font-style: italic;
   letter-spacing: -3px;
@@ -1076,6 +1269,22 @@ summary:focus-visible {
   .route-minutes { font-size: 56px; }
 }
 
+@media (min-width: 801px) {
+  .route-card .route-minutes {
+    font-size: var(--drop-cap-desktop);
+    letter-spacing: -2px;
+    line-height: 0.85;
+  }
+}
+
+/* Live-trip hero countdown (96px / -5). Apply by composing on a route-minutes
+ * span: <span className="route-minutes drop-cap--hero">. */
+.drop-cap--hero {
+  font-size: var(--drop-cap-hero);
+  letter-spacing: -5px;
+  line-height: 0.82;
+}
+
 .route-card-right {
   flex: 1;
   display: flex;
@@ -1084,6 +1293,9 @@ summary:focus-visible {
   padding-top: 4px;
 }
 
+/* "★ Recommended Path" kicker on the recommended route. Heavier (800) than
+ * the 700-weight standard caps labels, sits above the drop-cap with 6px clear.
+ * Glyph is U+2605 BLACK STAR — emitted directly in RouteCard.jsx. */
 .route-badge {
   font-family: var(--sans);
   font-size: 9px;
@@ -1094,8 +1306,13 @@ summary:focus-visible {
   background: none;
   padding: 0;
   border-radius: 0;
-  margin-bottom: 2px;
+  margin-bottom: 6px;
   display: block;
+}
+
+/* Desktop tightens the gap (D2 spec: 4px on the desktop column). */
+@media (min-width: 801px) {
+  .route-card .route-badge { margin-bottom: 4px; }
 }
 
 .route-minutes-label {
@@ -1144,23 +1361,60 @@ summary:focus-visible {
   border-top: var(--hairline);
 }
 
+/* ── Itinerary 3-column spine layout (Feature ItinerarySpine) ─────────────
+ * D2 canonical leg row: [minutes mono | 1px ink spine + 7×7 square dot | content].
+ * Spine cell has no padding so the ink rule runs continuously between legs;
+ * minutes/content cells pad vertically to give breathing room.
+ */
 .leg {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
+  display: grid;
+  grid-template-columns: 40px 1px 1fr;
+  column-gap: 12px;
   font-size: var(--fs-body-sm);
   color: var(--ink-soft);
   line-height: 1.45;
-  padding: 10px 0;
   border-bottom: var(--hairline);
 }
 
 .leg:last-child { border-bottom: none; }
 
-.leg-icon {
-  font-size: 14px;
-  flex-shrink: 0;
-  margin-top: 1px;
+.leg-minutes {
+  font-family: var(--mono);
+  font-size: var(--fs-mono);
+  color: var(--mute);
+  text-align: end;
+  padding: 12px 0 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.leg-spine {
+  position: relative;
+  background: var(--rule-color);
+  align-self: stretch;
+}
+
+/* Dot sits on the spine, centered horizontally on the 1px rule, vertically
+ * aligned with the first text baseline of the content column. */
+.leg-spine .itinerary-dot {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.leg-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 0;
+  min-width: 0;
+}
+
+.leg-transit-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .leg-text {
@@ -1168,19 +1422,11 @@ summary:focus-visible {
   color: var(--ink-soft);
 }
 
-.leg-duration {
-  font-family: var(--mono);
-  font-size: var(--fs-mono);
-  color: var(--mute);
-}
-
 .transfer-wait-note {
   display: block;
   font-family: var(--mono);
   font-size: var(--fs-mono);
   color: var(--mute);
-  width: 100%;
-  margin-bottom: 4px;
 }
 
 .leg-walk-body {
@@ -1190,6 +1436,7 @@ summary:focus-visible {
   font-family: var(--serif);
   font-style: italic;
   color: var(--mute);
+  min-width: 0;
 }
 
 .leg-exit-label {
@@ -1247,26 +1494,31 @@ summary:focus-visible {
   color: var(--ink-soft);
 }
 
-/* ── Feature Trip — active/complete leg highlighting ─────────────────────── */
-
-.leg-active {
-  border-inline-start: 2px solid var(--rust);
-  padding-inline-start: 8px;
-  margin-inline-start: -10px;
-  position: relative;
+/* ── Itinerary leg dot (canonical D2 spine marker) ──────────────────────────
+ * 7×7 square, 1.5px ink border, no border-radius. Walk legs use a paper
+ * background; transit legs override `background` inline with the line color.
+ * Sits centered on the 1px ink spine in the middle column of `.leg`.
+ */
+.itinerary-dot {
+  width: 7px;
+  height: 7px;
+  background: var(--paper);
+  border: 1.5px solid var(--rule-color);
+  border-radius: 0;
+  flex-shrink: 0;
 }
 
-/* Radar-pulse dot centered on the 2px left border */
-.leg-active::after {
-  content: "";
-  position: absolute;
-  inset-inline-start: -4px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
+/* ── Feature Trip — active/complete leg highlighting ───────────────────────
+ * The active treatment now lives on the spine + dot rather than a left
+ * border on the leg row, so it composes cleanly with the 3-column grid.
+ */
+
+.leg-active .leg-spine {
   background: var(--rust);
+}
+
+.leg-active .itinerary-dot {
+  border-color: var(--rust);
   animation: radar-pulse 2s ease-out infinite;
 }
 
@@ -1275,8 +1527,12 @@ summary:focus-visible {
   font-weight: 600;
 }
 
+.leg-active .leg-minutes {
+  color: var(--rust);
+}
+
 .leg-complete {
-  opacity: 0.45;
+  opacity: var(--opacity-mute);
 }
 
 .leg-complete .leg-text {
@@ -1293,7 +1549,7 @@ summary:focus-visible {
 }
 
 .leg-step--complete {
-  opacity: 0.45;
+  opacity: var(--opacity-mute);
 }
 
 .leg-step-complete-check {
@@ -1353,7 +1609,7 @@ summary:focus-visible {
 }
 
 .start-trip-btn:hover {
-  opacity: 0.82;
+  opacity: var(--opacity-hover);
 }
 
 .stop-trip-btn {
@@ -1393,7 +1649,7 @@ summary:focus-visible {
 .map-view {
   position: absolute;
   inset: 0;
-  z-index: 1;
+  z-index: var(--z-base);
 }
 
 .map-container {
@@ -1406,11 +1662,12 @@ summary:focus-visible {
   height: 100%;
 }
 
-.map-unlock-btn {
+.map-unlock-btn,
+.map-relock-btn {
   position: absolute;
   top: 10px;
   left: 10px;
-  z-index: 10;
+  z-index: var(--z-map-ctrl);
   background: rgba(255,251,239,0.95);
   color: var(--ink);
   border: 1px solid var(--ink);
@@ -1424,7 +1681,8 @@ summary:focus-visible {
   transition: background var(--dur-quick) var(--ease-out);
 }
 
-.map-unlock-btn:hover {
+.map-unlock-btn:hover,
+.map-relock-btn:hover {
   background: var(--paper-bright);
 }
 
@@ -1434,7 +1692,7 @@ summary:focus-visible {
   position: absolute;
   bottom: 14px;
   left: 14px;
-  z-index: 5;
+  z-index: var(--z-map-overlay);
   background: rgba(255,251,239,0.95);
   border: 1px solid var(--ink);
   padding: 8px 12px;
@@ -1461,7 +1719,7 @@ summary:focus-visible {
   position: absolute;
   top: 14px;
   right: 14px;
-  z-index: 5;
+  z-index: var(--z-map-overlay);
   background: rgba(255,251,239,0.95);
   border: 1px solid var(--ink);
   padding: 10px 12px;
@@ -1508,7 +1766,7 @@ summary:focus-visible {
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  z-index: 10;
+  z-index: var(--z-map-ctrl);
   background: rgba(255,251,239,0.95);
   border: 1px solid var(--ink);
   border-radius: 0;
@@ -1521,6 +1779,47 @@ summary:focus-visible {
   max-width: 80%;
 }
 
+/* ── Heading-up compass toggle ───────────────────────────────────────────── */
+
+.map-heading-btn {
+  position: absolute;
+  bottom: 14px;
+  right: 14px;
+  z-index: var(--z-map-overlay);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255,251,239,0.95);
+  color: var(--ink);
+  border: 1px solid var(--ink);
+  border-radius: 0;
+  padding: 6px 10px;
+  font-family: var(--serif);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--dur-quick) var(--ease-out);
+}
+
+.map-heading-btn:hover {
+  background: var(--paper-bright);
+}
+
+.map-heading-btn--active {
+  border-color: var(--rust);
+  color: var(--rust);
+}
+
+.map-heading-btn__rose {
+  flex-shrink: 0;
+  transition: transform 200ms var(--ease-out);
+}
+
+.map-heading-btn__label {
+  white-space: nowrap;
+  font-style: italic;
+}
+
 /* ── Transit photo loading state ─────────────────────────────────────────── */
 
 .transit-photo {
@@ -1528,7 +1827,7 @@ summary:focus-visible {
   inset: 0;
   display: flex;
   flex-direction: column;
-  z-index: 10;
+  z-index: var(--z-map-ctrl);
   opacity: 1;
   transition: opacity 1s ease;
   pointer-events: auto;
@@ -1587,11 +1886,9 @@ summary:focus-visible {
   flex-direction: row-reverse;
 }
 
-[dir="rtl"] .leg {
-  flex-direction: row-reverse;
-  text-align: right;
-}
-
+/* .leg uses CSS grid with logical column order; `direction: rtl` inherited
+ * from [dir="rtl"] flips the visual column order automatically. text-align: end
+ * on .leg-minutes follows suit. */
 [dir="rtl"] .leg-walk-body {
   align-items: flex-end;
 }
@@ -1622,7 +1919,7 @@ summary:focus-visible {
 .settings-modal {
   position: fixed;
   inset: 0;
-  z-index: 500;
+  z-index: var(--z-modal);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1645,7 +1942,7 @@ summary:focus-visible {
 
 .settings-sheet {
   position: relative;
-  z-index: 1;
+  z-index: var(--z-base);
   width: 100%;
   max-width: 480px;
   max-height: 90dvh;
@@ -1674,15 +1971,6 @@ summary:focus-visible {
   justify-content: center;
   position: relative;
   padding-bottom: var(--sp-4);
-}
-
-.settings-sheet-title {
-  font-family: var(--sans);
-  font-size: var(--fs-caps);
-  font-weight: 700;
-  letter-spacing: var(--ls-caps);
-  text-transform: uppercase;
-  color: var(--ink);
 }
 
 .settings-sheet-close {
@@ -1875,8 +2163,8 @@ summary:focus-visible {
   cursor: pointer;
   transition: opacity var(--dur-quick) var(--ease-out);
 }
-.settings-byok-save:hover:not(:disabled) { opacity: 0.82; }
-.settings-byok-save:disabled { opacity: 0.45; cursor: not-allowed; }
+.settings-byok-save:hover:not(:disabled) { opacity: var(--opacity-hover); }
+.settings-byok-save:disabled { opacity: var(--opacity-mute); cursor: not-allowed; }
 
 .settings-byok-clear {
   background: transparent;
@@ -1910,7 +2198,7 @@ summary:focus-visible {
   cursor: pointer;
   transition: opacity var(--dur-quick) var(--ease-out);
 }
-.settings-done-btn:hover { opacity: 0.82; }
+.settings-done-btn:hover { opacity: var(--opacity-hover); }
 
 /* ── Favorites — Location field star + dropdown ─────────────────────────── */
 
@@ -1930,7 +2218,7 @@ summary:focus-visible {
   color: var(--mute-fog);
   padding: 0.2rem;
   line-height: 1;
-  z-index: 1;
+  z-index: var(--z-base);
   transition: color var(--dur-quick) var(--ease-out);
 }
 .star-btn:hover { color: var(--rust); }
@@ -2038,7 +2326,7 @@ summary:focus-visible {
   cursor: pointer;
   white-space: nowrap;
 }
-.label-save-btn:hover { opacity: 0.82; }
+.label-save-btn:hover { opacity: var(--opacity-hover); }
 
 .label-cancel-btn {
   background: transparent;
@@ -2072,7 +2360,7 @@ summary:focus-visible {
   list-style: none;
   margin: 0;
   padding: 0;
-  z-index: 100;
+  z-index: var(--z-dropdown);
   max-height: 220px;
   overflow-y: auto;
 }
@@ -2087,6 +2375,17 @@ summary:focus-visible {
 }
 .saved-dropdown-item:last-child { border-bottom: none; }
 .saved-dropdown-item:hover { background: var(--paper-folio); }
+
+/* Editorial section marker for saved places (§N). Italic Fraunces, mute color. */
+.saved-marker {
+  font-family: var(--serif);
+  font-style: italic;
+  color: var(--mute);
+  font-size: 11px;
+  width: 18px;
+  flex-shrink: 0;
+  user-select: none;
+}
 
 .saved-dropdown-label {
   flex: 1;
@@ -2190,7 +2489,7 @@ summary:focus-visible {
   white-space: nowrap;
   transition: opacity var(--dur-quick) var(--ease-out);
 }
-.route-label-save-btn:hover { opacity: 0.82; }
+.route-label-save-btn:hover { opacity: var(--opacity-hover); }
 
 .route-label-cancel-btn {
   background: transparent;
@@ -2284,7 +2583,7 @@ summary:focus-visible {
   font-size: 0.85rem;
   line-height: 1;
   margin-inline-start: auto;
-  opacity: 0.45;
+  opacity: var(--opacity-mute);
   padding: 0 0.1rem;
   transition: opacity 0.15s;
 }
@@ -2304,16 +2603,6 @@ summary:focus-visible {
   justify-content: space-between;
   padding: var(--sp-4) var(--sp-6);
   border-bottom: var(--hairline);
-}
-
-.psb-title {
-  font-family: var(--sans);
-  font-size: var(--fs-caps);
-  font-weight: 700;
-  letter-spacing: var(--ls-caps);
-  text-transform: uppercase;
-  color: var(--mute);
-  line-height: var(--lh-caps);
 }
 
 .psb-header-right {
@@ -2458,7 +2747,17 @@ summary:focus-visible {
   margin-inline-start: var(--sp-2);
 }
 
-/* ── Feature Weather — WeatherStrip ──────────────────────────────────────── */
+/* ── Weather strip ────────────────────────────────────────────────────────
+ * NOT in D2 design system v1; proposed for v2.
+ * Composition follows D2 vocabulary:
+ *   - paper background, hairline rules top/bottom
+ *   - mono temperature (--fs-mono, tabular-nums)
+ *   - italic serif condition copy
+ *   - sans caps label (--fs-caps, --ls-caps)
+ *   - rust alert sub-line on severe weather
+ * Maintainer: keep in lockstep with D2 tokens. Do not introduce one-off
+ * colors or fonts here without updating the design system in lockstep.
+ */
 
 .weather-strip {
   display: flex;
@@ -2575,4 +2874,15 @@ summary:focus-visible {
   .marker-live-position animate {
     animation-play-state: paused !important;
   }
+}
+
+/* Feature TapRecentre — 44×44 transparent hit area around the 36×36 LivePositionMarker SVG.
+   Extends 4 px past the SVG on each side so the marker is tappable without a precise hit. */
+.marker-live-position-wrapper {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
 }

@@ -9,11 +9,11 @@ You need **two terminal windows open at the same time**: one for the backend (Py
 ### Backend
 1. Make sure Python 3.12 is installed.
 2. From the `backend/` folder, install dependencies:
-   ```
+   ```bash
    pip install -r requirements.txt
    ```
 3. Make sure `backend/.env` exists with your API keys:
-   ```
+   ```ini
    CTA_TRAIN_API_KEY=your_key_here
    CTA_BUS_API_KEY=your_key_here
    ANTHROPIC_API_KEY=your_key_here
@@ -24,14 +24,14 @@ You need **two terminal windows open at the same time**: one for the backend (Py
 ### Frontend
 1. Make sure Node.js is installed.
 2. From the `frontend/` folder, install dependencies (only needed once, or after pulling new changes):
-   ```
+   ```bash
    npm install
    ```
 
 ### Data files (first-time or after re-downloading)
 The GTFS data is large and gitignored — it lives only on your local machine. If it is missing, run this **from the `backend/` folder** before starting the server:
 
-```
+```bash
 python fetch_gtfs.py
 ```
 
@@ -45,7 +45,7 @@ python fetch_gtfs.py
 
 Open a terminal, navigate to the `backend/` folder, and run:
 
-```
+```bash
 cd "C:\Users\Adam & Serena\OneDrive\Documents\GitHub\CTA-Transit-PWA\backend"
 python -m uvicorn main:app --reload
 ```
@@ -63,7 +63,7 @@ python -m uvicorn main:app --reload
 
 Open a **second** terminal, navigate to the `frontend/` folder, and run:
 
-```
+```bash
 cd "C:\Users\Adam & Serena\OneDrive\Documents\GitHub\CTA-Transit-PWA\frontend"
 npm run dev
 ```
@@ -84,8 +84,8 @@ npm run dev
 
 | Terminal | Command | URL |
 |----------|---------|-----|
-| Backend (Python) | `python -m uvicorn main:app --reload` | http://localhost:8000 |
-| Frontend (Node) | `npm run dev` | http://localhost:5173 |
+| Backend (Python) | `python -m uvicorn main:app --reload` | <http://localhost:8000> |
+| Frontend (Node) | `npm run dev` | <http://localhost:5173> |
 
 ---
 
@@ -99,7 +99,7 @@ Press `Ctrl + C` in each terminal window to stop the server running in that wind
 
 If CTA publishes a new GTFS feed or you want fresh schedule data, stop the backend and run:
 
-```
+```bash
 cd "C:\Users\Adam & Serena\OneDrive\Documents\GitHub\CTA-Transit-PWA\backend"
 python fetch_gtfs.py
 ```

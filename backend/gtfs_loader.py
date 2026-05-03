@@ -69,6 +69,18 @@ _GEOCODE_JOURNAL_PATH = Path(__file__).parent / "geocode_cache.journal"
 # Used for age-based eviction — entries older than GEOCODE_CACHE_MAX_AGE_DAYS are removed.
 _GEOCODE_AGES_PATH = Path(__file__).parent / "geocode_cache_ages.json"
 
+
+def _restrict_perms(path: Path) -> None:
+    """Restrict file mode to 0600 (owner-only). Geocode caches contain user
+    search history; even on a single-tenant host this keeps the data out of
+    other-user reach if the host is later shared. No-op on Windows where
+    os.chmod only toggles the read-only flag."""
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        # Best-effort: a chmod failure shouldn't crash the whole save path.
+        pass
+
 # Monthly geocode call cap — prevents runaway API costs.
 # Override with env var GEOCODE_MONTHLY_LIMIT (e.g. set to 0 to disable).
 # Google's free tier is ~40,000 calls/month; default leaves a 30,500-call buffer.
@@ -95,6 +107,7 @@ def _save_geocode_counter(counter: dict) -> None:
     try:
         tmp.write_text(json.dumps(counter, indent=2), encoding="utf-8")
         tmp.replace(_GEOCODE_COUNTER_PATH)
+        _restrict_perms(_GEOCODE_COUNTER_PATH)
     except Exception as exc:
         print(f"[gtfs_loader] Could not save geocode counter: {exc}")
         try:
@@ -173,6 +186,7 @@ def _save_geocode_cache(cache: dict) -> bool:
             encoding="utf-8",
         )
         tmp.replace(_GEOCODE_CACHE_PATH)
+        _restrict_perms(_GEOCODE_CACHE_PATH)
         # Snapshot now contains every key the journal replayed — drop it.
         try:
             _GEOCODE_JOURNAL_PATH.unlink(missing_ok=True)
@@ -204,6 +218,7 @@ def _save_geocode_ages(ages: dict[str, float]) -> None:
     try:
         tmp.write_text(json.dumps(ages, indent=2), encoding="utf-8")
         tmp.replace(_GEOCODE_AGES_PATH)
+        _restrict_perms(_GEOCODE_AGES_PATH)
     except Exception as exc:
         print(f"[gtfs_loader] Could not save geocode ages: {exc}")
         try:
@@ -273,10 +288,13 @@ _geocode_last_eviction: float   = time.monotonic()
 def _append_geocode_journal(entries: dict[str, tuple[float, float] | None]) -> None:
     """Append new cache entries to the journal as JSONL — O(delta) per flush."""
     try:
+        new_file = not _GEOCODE_JOURNAL_PATH.exists()
         with _GEOCODE_JOURNAL_PATH.open("a", encoding="utf-8") as f:
             for k, v in entries.items():
                 f.write(json.dumps([k, list(v) if v is not None else None], ensure_ascii=False) + "\n")
             f.flush()
+        if new_file:
+            _restrict_perms(_GEOCODE_JOURNAL_PATH)
             try:
                 os.fsync(f.fileno())
             except OSError:
@@ -1116,3 +1134,25 @@ def resolve_location(query: str) -> tuple[list[dict], list[dict], str | None]:
         find_nearest_bus_stops(lat, lon),
         matched_name,
     )
+
+
+def coords_for_location(
+    query: str,
+    fallback_stations: list[dict] | None = None,
+) -> tuple[float, float] | None:
+    """Return (lat, lon) for a location query: exact dict → fuzzy → Google → station centroid."""
+    q = _normalize_street_abbr(query.lower().strip())
+    coords = NEIGHBORHOOD_COORDS.get(q)
+    if coords:
+        return coords
+    coords, _ = fuzzy_match_neighborhood(q)
+    if coords:
+        return coords
+    coords = geocode_google(q)
+    if coords:
+        return coords
+    if fallback_stations:
+        lats = [s["lat"] for s in fallback_stations]
+        lons = [s["lon"] for s in fallback_stations]
+        return (sum(lats) / len(lats), sum(lons) / len(lons))
+    return None

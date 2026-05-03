@@ -1,7 +1,10 @@
-import { useState, useRef, useEffect, useMemo, useCallback, Fragment } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback, Fragment, lazy, Suspense } from "react";
 import { useTranslation } from "react-i18next";
 import "./App.css";
-import MapView from "./MapView.jsx";
+// MapView pulls in maplibre-gl (~210 KB gz) — keep it out of the eager
+// bundle. Suspense fallback is a blank panel (panel-map already has the
+// app background colour) so cold loads don't flash a skeleton.
+const MapView = lazy(() => import("./MapView.jsx"));
 import { SUPPORTED } from "./i18n.js";
 import TransitPhoto from "./components/TransitPhoto.jsx";
 import LoadingSkeleton from "./components/LoadingSkeleton.jsx";
@@ -9,6 +12,7 @@ import SettingsPanel from "./components/SettingsPanel.jsx";
 import RouteCard from "./components/RouteCard.jsx";
 import PinnedStopsBoard from "./components/PinnedStopsBoard.jsx";
 import ServiceAlertsBar from "./components/ServiceAlertsBar.jsx";
+import TwoToneHeading from "./components/TwoToneHeading.jsx";
 import WeatherStrip from "./components/WeatherStrip.jsx";
 import { useFavorites } from "./hooks/useFavorites.js";
 import { useTripTracker } from "./hooks/useTripTracker.js";
@@ -26,10 +30,12 @@ import SavedRoutesPanel from "./components/SavedRoutesPanel.jsx";
 import SharedRouteBanner from "./components/SharedRouteBanner.jsx";
 import SideRail from "./components/SideRail.jsx";
 import SignalLamp from "./components/SignalLamp.jsx";
+import Wordmark from "./components/Wordmark.jsx";
 import { useApiQuery } from "./hooks/useApiQuery.js";
 import { useLocalStorage } from "./hooks/useLocalStorage.js";
 import { fetchWithRetry as _fetchWithRetry } from "./utils/fetchWithRetry.js";
 import { renderMarkdown } from "./utils/renderMarkdown.js";
+import { extractTransitLines } from "./utils/routeUtils.js";
 
 // Thin wrapper so call-sites don't need to pass RETRY_DELAYS_MS explicitly.
 // Full implementation and JSDoc live in utils/fetchWithRetry.js (TD-040).
@@ -64,6 +70,12 @@ const LANGUAGE_NAMES = {
 };
 
 const RTL_LANGS = new Set(["ar", "ur", "ps"]);
+
+const looksHostile = (s) =>
+  !s ||
+  s.length > 200 ||
+  /^\s*(javascript|data|vbscript|file):/i.test(s) ||
+  /:\/\//.test(s);
 
 const WALK_SPEED_FACTORS = { slow: 0.75, standard: 1.0, brisk: 1.25 };
 
@@ -177,17 +189,13 @@ export default function App() {
   const currentRouteLines = useMemo(() => {
     const route = result?.routes?.[selectedRouteIndex];
     if (!route?.legs) return null;
-    const lines = new Set();
-    for (const leg of route.legs) {
-      if (leg.type !== "transit") continue;
-      const id = leg.line_code?.replace(" Line", "");
-      if (id) lines.add(id);
-    }
-    return lines.size > 0 ? lines : null;
+    const lines = extractTransitLines(route.legs);
+    if (!lines.length) return null;
+    return new Set(lines.map((l) => l.isBus ? l.lineCode : l.line?.replace(" Line", "")));
   }, [result, selectedRouteIndex]);
 
   const visibleAlerts = useMemo(() => {
-    if (!currentRouteLines) return undismissedAlerts;
+    if (!currentRouteLines) return [];
     return undismissedAlerts.filter((a) =>
       (a.routes ?? []).some((r) => currentRouteLines.has(r.replace(" Line", "")))
     );
@@ -212,14 +220,6 @@ export default function App() {
     document.documentElement.dir = RTL_LANGS.has(lang) ? "rtl" : "ltr";
     document.documentElement.lang = lang;
   }, [i18n.resolvedLanguage, i18n.language]);
-
-  function handleAiChange(value) {
-    setAiEnabled(value);
-  }
-
-  function handleWalkSpeedChange(speed) {
-    setWalkSpeed(speed);
-  }
 
   function handleAlertDismiss(alertId) {
     setDismissedAlertIds((prev) => {
@@ -261,22 +261,43 @@ export default function App() {
     startTrip, stopTrip, toggleOnVehicle, dismissOffRoute, dismissTripGeoError, resetForReroute,
   } = useTripTracker({ result, selectedRouteIndex });
 
+  // ── Feature ArrivedToast ─────────────────────────────────────────────────
+  const [showArrivedToast, setShowArrivedToast] = useState(false);
+
+  // Reset toast when the trip ends.
+  useEffect(() => {
+    if (!tripActive) setShowArrivedToast(false);
+  }, [tripActive]);
+
+  // Auto-dismiss after 5 s; clear the timer on unmount or re-trigger.
+  useEffect(() => {
+    if (!showArrivedToast) return;
+    const id = setTimeout(() => setShowArrivedToast(false), 5000);
+    return () => clearTimeout(id);
+  }, [showArrivedToast]);
+
   // Shared /recommend API call — used by both performSearch and handleReroute
   // so the request body, error handling, and setResult shape stay in one place.
   // Returns the number of routes in the response (used by performSearch for route-index pre-selection).
   async function callRecommendAPI(originStr, destinationStr) {
+    // BYOK key travels in the Authorization header rather than the body so it
+    // is never JSON-serialized into a payload that proxies, the service worker,
+    // or back/forward cache might retain.
+    const headers = { "Content-Type": "application/json" };
+    if (BYOK_ENABLED && byokKey) {
+      headers["Authorization"] = `Bearer ${byokKey}`;
+    }
     const res = await fetchWithRetry(
       `${BACKEND_URL}/recommend`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           origin:       originStr,
           destination:  destinationStr,
           transit_mode: transitMode,
           ai_enabled:   aiEnabled,
           language:     i18n.language,
-          ...(BYOK_ENABLED && byokKey ? { anthropic_api_key: byokKey } : {}),
           ...(WALK_SPEED_FACTORS[walkSpeed] !== 1.0 ? { walk_speed: WALK_SPEED_FACTORS[walkSpeed] } : {}),
         }),
         signal: abortRef.current.signal,
@@ -396,7 +417,7 @@ export default function App() {
     const from = params.get("from");
     const to = params.get("to");
     const routeIndex = parseInt(params.get("route") ?? "0", 10) || 0;
-    if (from && to) {
+    if (from && to && !looksHostile(from) && !looksHostile(to)) {
       setOrigin(from);
       setDestination(to);
       setIsSharedLink(true);
@@ -438,10 +459,7 @@ export default function App() {
             </div>
             <div className="masthead-rule" aria-hidden="true" />
             <div className="masthead-title-row">
-              <h1 className="masthead-title" aria-label={t("app_title")}>
-                <span className="masthead-title-italic">The Chicago</span>
-                <span className="masthead-title-roman"> Routefinder<span className="masthead-period">.</span></span>
-              </h1>
+              <Wordmark />
             </div>
             <div className="masthead-controls">
               <button
@@ -492,9 +510,9 @@ export default function App() {
               onSave={handleSaveByokKey}
               onClose={() => setSettingsOpen(false)}
               aiEnabled={aiEnabled}
-              onAiChange={handleAiChange}
+              onAiChange={setAiEnabled}
               walkSpeed={walkSpeed}
-              onWalkSpeedChange={handleWalkSpeedChange}
+              onWalkSpeedChange={setWalkSpeed}
             />
           )}
 
@@ -517,11 +535,17 @@ export default function App() {
 
           {activeTab === "alerts" && (
             <main className="main tab-alerts-view">
-              {visibleAlerts.length === 0 ? (
+              <TwoToneHeading
+                capsKey="caps_advisories"
+                headingKey="alerts_tab_heading"
+                italicWords={1}
+                className="tab-alerts-view__heading"
+              />
+              {undismissedAlerts.length === 0 ? (
                 <p className="tab-empty">{t("alerts_empty")}</p>
               ) : (
                 <ServiceAlertsBar
-                  alerts={visibleAlerts}
+                  alerts={undismissedAlerts}
                   onDismiss={handleAlertDismiss}
                 />
               )}
@@ -638,7 +662,7 @@ export default function App() {
                 )}
 
                 {isOffRoute && (
-                  <div className="special-dispatch special-dispatch--delay" role="alert">
+                  <div className="special-dispatch special-dispatch--advisory" role="alert">
                     <span className="special-dispatch__kicker">{t("alerts_severity_advisory")}</span>
                     <p className="special-dispatch__body">{t("trip_off_route_message")}</p>
                     <div className="special-dispatch__actions">
@@ -723,23 +747,39 @@ export default function App() {
           {photoMounted && (
             <TransitPhoto key={photoKey} fading={photoFading} />
           )}
-          <MapView
-            route={result?.routes?.[selectedRouteIndex] ?? null}
-            originCoords={result?.originCoords ?? null}
-            destCoords={result?.destCoords ?? null}
-            userPosition={userPosition}
-            tripActive={tripActive}
-          />
+          <Suspense fallback={null}>
+            <MapView
+              route={result?.routes?.[selectedRouteIndex] ?? null}
+              originCoords={result?.originCoords ?? null}
+              destCoords={result?.destCoords ?? null}
+              userPosition={userPosition}
+              tripActive={tripActive}
+              activeLegIndex={activeLegIndex}
+              activeTab={activeTab}
+              onArrived={() => setShowArrivedToast(true)}
+            />
+          </Suspense>
         </div>
       </div>
 
+      {showArrivedToast && (
+        <div
+          className="special-dispatch special-dispatch--arrived"
+          role="alert"
+          onClick={() => setShowArrivedToast(false)}
+        >
+          <span className="special-dispatch__kicker">{t("map_arrived_kicker")}</span>
+          <p className="special-dispatch__body">{t("map_arrived_body")}</p>
+        </div>
+      )}
+
       <nav className="tab-bar" aria-label={t("aria_main_nav")}>
         {[
-          { id: "home",   icon: "📍", label: t("tab_home") },
-          { id: "map",    icon: "🗺",  label: t("tab_map") },
-          { id: "alerts", icon: "⚠",  label: t("tab_alerts") },
-          { id: "saved",  icon: "⭐", label: t("tab_saved") },
-        ].map(({ id, icon, label }) => (
+          { id: "home",   label: t("tab_home") },
+          { id: "map",    label: t("tab_map") },
+          { id: "alerts", label: t("tab_alerts") },
+          { id: "saved",  label: t("tab_saved") },
+        ].map(({ id, label }) => (
           <button
             key={id}
             type="button"
@@ -747,7 +787,6 @@ export default function App() {
             onClick={() => handleTabChange(id)}
             aria-current={activeTab === id ? "page" : undefined}
           >
-            <span className="tab-bar__icon" aria-hidden="true">{icon}</span>
             <span className="tab-bar__label">{label}</span>
           </button>
         ))}

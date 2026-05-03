@@ -13,11 +13,13 @@ The download queries the OpenStreetMap Overpass API — it takes 3–10 minutes
 depending on your connection. After the first run the server loads from the
 local cache file in under a second.
 
-Geographic scope: Linden/Dempster-Skokie (north) to 95th/Dan Ryan (south),
-lakefront (east) to the Dempster-Skokie/Midway corridor (west). Covers a
-0.25-mile pedestrian radius around every CTA train station with accurate
-street-network walk times. Points outside fall back to Haversine estimates.
-Bounds are defined in `utils.STREET_GRAPH_BBOX_OSMNX` — adjust there.
+Geographic scope: Chicago city limits + Evanston (Purple Line). North bound is
+Linden (Wilmette); south bound is ~100th St, just south of 95th/Dan Ryan (Red
+Line terminal); west bound is Chicago's west side covering Austin (Blue Line)
+but excluding Oak Park, Forest Park, Cicero, Skokie, and Rosemont suburbs;
+east bound is the lakefront. Points outside fall back to Haversine estimates.
+Pace and Metra service areas are out of scope. Bounds are defined in
+`utils.STREET_GRAPH_BBOX_OSMNX`.
 
 NOTE: This file is committed to the repo via Git LFS (backend/street_graph.graphml).
 When Railway (or another CI environment) checks out the repo without pulling LFS
@@ -28,6 +30,7 @@ re-downloads the graph from OpenStreetMap automatically.
 import os
 import pickle
 import sys
+import time
 from pathlib import Path
 
 from utils import STREET_GRAPH_BBOX_OSMNX
@@ -35,9 +38,64 @@ from utils import STREET_GRAPH_BBOX_OSMNX
 GRAPH_PATH  = Path(__file__).parent / "street_graph.graphml"
 IGRAPH_PATH = Path(__file__).parent / "street_graph_igraph.pkl"
 
+# ---------------------------------------------------------------------------
+# Progress reporting helpers
+#
+# Each major phase of the build is wrapped in _step_begin / _step_end so the
+# user can see which step is running, how long it has taken, and (if psutil is
+# installed) the current and peak resident-set-size of this process. This is
+# the diagnostic surface for spotting bottlenecks on slower hardware.
+# ---------------------------------------------------------------------------
+try:
+    import psutil
+    _PROC = psutil.Process()
+    def _rss_mb() -> float | None:
+        return _PROC.memory_info().rss / (1024 * 1024)
+except ImportError:
+    def _rss_mb() -> float | None:
+        return None
+
+_step_state = {"step": 0, "total": 0, "t0": None, "step_t0": None, "peak_rss": 0.0}
+
+
+def _fmt_elapsed(seconds: float) -> str:
+    m, s = divmod(int(seconds), 60)
+    return f"{m:02d}:{s:02d}"
+
+
+def _set_step_total(total: int) -> None:
+    _step_state["total"] = total
+    _step_state["step"] = 0
+    _step_state["t0"] = time.monotonic()
+    _step_state["peak_rss"] = 0.0
+
+
+def _step_begin(label: str) -> None:
+    if _step_state["t0"] is None:
+        _step_state["t0"] = time.monotonic()
+    _step_state["step"] += 1
+    _step_state["step_t0"] = time.monotonic()
+    elapsed = time.monotonic() - _step_state["t0"]
+    rss = _rss_mb()
+    if rss is not None:
+        _step_state["peak_rss"] = max(_step_state["peak_rss"], rss)
+    rss_str = f" RSS={rss:.0f}MB peak={_step_state['peak_rss']:.0f}MB" if rss is not None else ""
+    total = _step_state["total"] or "?"
+    print(f"[{_step_state['step']}/{total} t+{_fmt_elapsed(elapsed)}{rss_str}] {label}...")
+
+
+def _step_end(detail: str = "") -> None:
+    step_elapsed = time.monotonic() - (_step_state["step_t0"] or time.monotonic())
+    rss = _rss_mb()
+    if rss is not None:
+        _step_state["peak_rss"] = max(_step_state["peak_rss"], rss)
+    rss_str = f" peak={_step_state['peak_rss']:.0f}MB" if rss is not None else ""
+    suffix = f" -- {detail}" if detail else ""
+    print(f"  done in {_fmt_elapsed(step_elapsed)}{rss_str}{suffix}")
+
 # OSMnx 2.x format: (left/west, bottom/south, right/east, top/north)
-# Coverage: Linden/Dempster-Skokie (north) → 95th/Dan Ryan (south) | Lakefront (east) → Dempster-Skokie/Midway corridor (west)
-# Bounds are defined in utils.STREET_GRAPH_BBOX_OSMNX; expand there when Railway memory allows.
+# Coverage: Linden (north) → 100th St (south) | Lakefront (east) → Austin/Blue Line (west)
+# Bounds are defined in utils.STREET_GRAPH_BBOX_OSMNX.
 BBOX = STREET_GRAPH_BBOX_OSMNX
 
 
@@ -62,58 +120,69 @@ def _needs_download() -> bool:
     return False
 
 
-def download_and_save() -> None:
+def download_and_save(verbose: bool = False) -> None:
     try:
         import osmnx as ox
     except ImportError:
         print("osmnx is not installed. Run: pip install osmnx")
         sys.exit(1)
 
-    print("Querying OpenStreetMap for the full Chicago walk network...")
-    print(f"  Bounding box: west={BBOX[0]}, south={BBOX[1]}, east={BBOX[2]}, north={BBOX[3]}")
-    print("  This usually takes 1–3 minutes.\n")
+    # Always emit OSMnx's own internal logs to the console -- gives visibility
+    # into Overpass round-trip timing, retries, and consolidation sub-steps.
+    # The `verbose` parameter is currently a no-op (kept for API compatibility);
+    # flip it off here if console output ever becomes too noisy.
+    ox.settings.log_console = True
+    _ = verbose
 
+    # 7 steps: download, filter, project-forward, consolidate, project-back, save graphml, build pickle
+    _set_step_total(7)
+    print(f"Bounding box: west={BBOX[0]}, south={BBOX[1]}, east={BBOX[2]}, north={BBOX[3]}\n")
+
+    ox.settings.max_query_area_size = 2_500_000_000  # ~2,500 km²; restores pre-2.x default so bbox is fetched in one pass
+
+    _step_begin("Querying OpenStreetMap for the full Chicago walk network")
     G = ox.graph_from_bbox(bbox=BBOX, network_type="walk")
-
     raw_nodes = G.number_of_nodes()
     raw_edges = G.number_of_edges()
-    print(f"Network downloaded: {raw_nodes:,} nodes, {raw_edges:,} edges")
+    _step_end(f"{raw_nodes:,} nodes, {raw_edges:,} edges")
 
-    # Remove service roads (driveways, parking aisles, alleys) — pedestrians
-    # should not be routed through them.
+    _step_begin("Filtering service/alley edges (not walkable)")
     _WALK_EXCLUDED_HIGHWAYS = {"service", "alley"}
     def _hw(data) -> str:
         val = data.get("highway", "")
         if isinstance(val, list): val = val[0] if val else ""
         return (val or "").strip()
-
     svc_edges = [
         (u, v, k) for u, v, k, data in G.edges(keys=True, data=True)
         if _hw(data) in _WALK_EXCLUDED_HIGHWAYS
     ]
     if svc_edges:
         G.remove_edges_from(svc_edges)
-        print(f"Removed {len(svc_edges):,} service/alley edges from walk graph")
+    _step_end(f"removed {len(svc_edges):,} service/alley edges")
 
-    print("Consolidating intersections (tolerance=10 m) ...")
+    _step_begin("Projecting graph to UTM for metric consolidation")
     G_proj = ox.project_graph(G)
-    G_proj = ox.consolidate_intersections(G_proj, tolerance=10, rebuild_graph=True, dead_ends=False)
-    G = ox.project_graph(G_proj, to_crs="epsg:4326")
+    _step_end()
 
-    cons_nodes = G.number_of_nodes()
-    cons_edges = G.number_of_edges()
+    _step_begin("Consolidating intersections (tolerance=10 m) -- this is the slow step")
+    G_proj = ox.consolidate_intersections(G_proj, tolerance=10, rebuild_graph=True, dead_ends=False)
+    cons_nodes = G_proj.number_of_nodes()
+    cons_edges = G_proj.number_of_edges()
     node_pct = (raw_nodes - cons_nodes) / raw_nodes * 100
     edge_pct = (raw_edges - cons_edges) / raw_edges * 100
-    print(
-        f"After consolidation: {cons_nodes:,} nodes (−{raw_nodes - cons_nodes:,}, {node_pct:.1f}%), "
-        f"{cons_edges:,} edges (−{raw_edges - cons_edges:,}, {edge_pct:.1f}%)"
+    _step_end(
+        f"{cons_nodes:,} nodes (-{raw_nodes - cons_nodes:,}, {node_pct:.1f}%), "
+        f"{cons_edges:,} edges (-{raw_edges - cons_edges:,}, {edge_pct:.1f}%)"
     )
 
-    print(f"Saving to {GRAPH_PATH} ...")
-    ox.save_graphml(G, GRAPH_PATH)
+    _step_begin("Reprojecting back to EPSG:4326 (lat/lon)")
+    G = ox.project_graph(G_proj, to_crs="epsg:4326")
+    _step_end()
 
+    _step_begin(f"Saving graphml to {GRAPH_PATH.name}")
+    ox.save_graphml(G, GRAPH_PATH)
     size_mb = GRAPH_PATH.stat().st_size / (1024 * 1024)
-    print(f"Saved ({size_mb:.1f} MB). Street graph is ready.")
+    _step_end(f"{size_mb:.1f} MB written")
 
     _save_igraph_artifact(G)
 
@@ -129,7 +198,7 @@ def _save_igraph_artifact(G_nx) -> None:
         import igraph as ig
         from shapely import wkt as shapely_wkt
 
-        print("Converting to igraph compact artifact ...")
+        _step_begin("Converting to compact igraph artifact")
 
         nodes = list(G_nx.nodes())
         node_to_idx = {n: i for i, n in enumerate(nodes)}
@@ -184,45 +253,149 @@ def _save_igraph_artifact(G_nx) -> None:
             pickle.dump({"graph": ig_graph}, f, protocol=pickle.HIGHEST_PROTOCOL)
 
         artifact_mb = IGRAPH_PATH.stat().st_size / (1024 * 1024)
-        print(f"igraph artifact saved to {IGRAPH_PATH} ({artifact_mb:.1f} MB, {ig_graph.vcount():,} vertices, {ig_graph.ecount():,} edges)")
+        _step_end(f"{artifact_mb:.1f} MB, {ig_graph.vcount():,} vertices, {ig_graph.ecount():,} edges")
 
     except Exception as e:
-        print(f"[warning] igraph artifact creation failed ({type(e).__name__}: {e}) — runtime will fall back to graphml")
+        print(f"[warning] igraph artifact creation failed ({type(e).__name__}: {e}) -- runtime will fall back to graphml")
+
+
+# Public Overpass mirrors. Keys are the short names users pass to --mirror;
+# values are the full API endpoint URLs. The canonical instance is the default
+# unless the user explicitly chooses otherwise.
+#
+# Use a mirror only as an occasional escape valve when the canonical instance
+# has rate-limited your IP. Mirrors are donated infrastructure too -- don't
+# hammer them with retry loops.
+OVERPASS_MIRRORS: dict[str, str] = {
+    "default": "https://overpass-api.de/api/interpreter",
+    "kumi":    "https://overpass.kumi.systems/api/interpreter",
+    "france":  "https://overpass.openstreetmap.fr/api/interpreter",
+    "russia":  "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+}
+
+
+def _parse_mirror_arg(argv: list[str]) -> str | None:
+    """Return the chosen Overpass URL (or None for the OSMnx default).
+
+    Accepts --mirror=NAME, --mirror NAME, or a full https URL in place of NAME.
+    """
+    for i, arg in enumerate(argv):
+        value: str | None = None
+        if arg.startswith("--mirror="):
+            value = arg.split("=", 1)[1]
+        elif arg == "--mirror" and i + 1 < len(argv):
+            value = argv[i + 1]
+        if value is None:
+            continue
+        if value.startswith("http://") or value.startswith("https://"):
+            return value
+        if value in OVERPASS_MIRRORS:
+            return OVERPASS_MIRRORS[value]
+        print(f"Unknown --mirror value: {value!r}")
+        print(f"  Choose one of: {', '.join(OVERPASS_MIRRORS)}  (or pass a full URL)")
+        sys.exit(2)
+    return None
+
+
+def _file_report(path: Path) -> str:
+    """One-line human description of a file's status."""
+    if not path.exists():
+        return "missing"
+    if _is_lfs_pointer(path):
+        return "Git LFS pointer stub (no real data)"
+    size_mb = path.stat().st_size / (1024 * 1024)
+    if path.stat().st_size < 1024:
+        return f"present but only {path.stat().st_size} bytes (corrupt)"
+    return f"present ({size_mb:.1f} MB)"
+
+
+def _rebuild_pickle_from_graphml() -> None:
+    """Skip the download + consolidation; just rebuild the pickle from the cached graphml."""
+    try:
+        import osmnx as ox
+    except ImportError:
+        print("osmnx is not installed. Run: pip install osmnx")
+        sys.exit(1)
+    _set_step_total(2)
+    _step_begin(f"Loading cached graphml from {GRAPH_PATH.name}")
+    G = ox.load_graphml(GRAPH_PATH)
+    _step_end(f"{G.number_of_nodes():,} nodes, {G.number_of_edges():,} edges")
+    _save_igraph_artifact(G)
 
 
 if __name__ == "__main__":
     force = "--force" in sys.argv
-
-    if _needs_download():
-        reason = "not found" if not GRAPH_PATH.exists() else ("LFS pointer" if _is_lfs_pointer(GRAPH_PATH) else "too small")
-        print(f"Street graph {reason} at {GRAPH_PATH}. Downloading from OpenStreetMap...")
-        if GRAPH_PATH.exists():
-            GRAPH_PATH.unlink()
-        download_and_save()
-    elif force:
-        print(f"Street graph exists. Re-downloading (--force).")
-        GRAPH_PATH.unlink()
-        download_and_save()
-    else:
-        size_mb = GRAPH_PATH.stat().st_size / (1024 * 1024)
-        if os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("CI"):
-            print(f"Street graph already present ({size_mb:.1f} MB). Keeping it (non-interactive; pass --force to re-download).")
-        else:
-            print(f"Street graph already exists ({size_mb:.1f} MB) at {GRAPH_PATH}.")
-            answer = input("Re-download and overwrite? [y/N]: ").strip().lower()
-            if answer == "y":
-                GRAPH_PATH.unlink()
-                print("Old graph removed.")
-                download_and_save()
-            else:
-                print("Aborted. Existing graph kept.")
-
-    # If the graphml is present but the igraph artifact is missing, build it now.
-    if GRAPH_PATH.exists() and not _needs_download() and not IGRAPH_PATH.exists():
-        print(f"igraph artifact missing — building from existing graphml ...")
+    verbose = "--verbose" in sys.argv
+    mirror_url = _parse_mirror_arg(sys.argv)
+    if mirror_url:
         try:
             import osmnx as ox
-            G_existing = ox.load_graphml(GRAPH_PATH)
-            _save_igraph_artifact(G_existing)
-        except Exception as e:
-            print(f"[warning] Could not build igraph artifact ({type(e).__name__}: {e})")
+        except ImportError:
+            print("osmnx is not installed. Run: pip install osmnx")
+            sys.exit(1)
+        ox.settings.overpass_url = mirror_url
+        print(f"Using non-default Overpass mirror: {mirror_url}\n")
+
+    graphml_usable = GRAPH_PATH.exists() and GRAPH_PATH.stat().st_size >= 1024 and not _is_lfs_pointer(GRAPH_PATH)
+    pickle_usable = IGRAPH_PATH.exists() and IGRAPH_PATH.stat().st_size >= 1024
+
+    print("Current files in backend/:")
+    print(f"  street_graph.graphml      {_file_report(GRAPH_PATH)}")
+    print(f"  street_graph_igraph.pkl   {_file_report(IGRAPH_PATH)}")
+    print()
+
+    # --force always means: full rebuild, no questions. Used by CI / non-interactive callers.
+    if force:
+        print("--force given: doing a full rebuild (download + consolidation + pickle).\n")
+        if GRAPH_PATH.exists():
+            GRAPH_PATH.unlink()
+        download_and_save(verbose=verbose)
+        sys.exit(0)
+
+    # CI/Railway: never prompt. If the graph is missing, download; otherwise keep what's there.
+    if os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("CI"):
+        if not graphml_usable:
+            print("Non-interactive environment, graph missing -- downloading.\n")
+            if GRAPH_PATH.exists():
+                GRAPH_PATH.unlink()
+            download_and_save(verbose=verbose)
+        else:
+            print("Non-interactive environment, graph present -- keeping it. (Pass --force to re-download.)")
+        sys.exit(0)
+
+    # Interactive menu. Build the option list dynamically based on what's available.
+    print("What would you like to do?")
+    options: list[tuple[str, str, str]] = []  # (key, label, action)
+    if graphml_usable:
+        options.append(("1", "Rebuild ONLY the pickle from the existing graphml (fast, ~1 min)", "pickle"))
+        options.append(("2", "Rebuild BOTH (re-download graphml from OSM, then rebuild pickle) -- slow", "both"))
+    else:
+        options.append(("1", "Create a fresh graph (download from OSM, then build pickle) -- slow", "both"))
+    options.append(("q", "Quit without changes", "quit"))
+
+    for key, label, _ in options:
+        print(f"  [{key}] {label}")
+    print()
+
+    valid_keys = {key for key, _, _ in options}
+    while True:
+        answer = input("Choice: ").strip().lower()
+        if answer in valid_keys:
+            break
+        print(f"  Please enter one of: {', '.join(sorted(valid_keys))}")
+
+    action = next(a for k, _, a in options if k == answer)
+
+    if action == "quit":
+        print("Aborted. No changes made.")
+        sys.exit(0)
+    if action == "pickle":
+        print()
+        _rebuild_pickle_from_graphml()
+        sys.exit(0)
+    if action == "both":
+        print()
+        if GRAPH_PATH.exists():
+            GRAPH_PATH.unlink()
+        download_and_save(verbose=verbose)
+        sys.exit(0)

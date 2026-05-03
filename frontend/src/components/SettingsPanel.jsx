@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { isValidByokKey, BYOK_ENABLED } from "../constants.js";
+import TwoToneHeading from "./TwoToneHeading.jsx";
 const WALK_SPEEDS = ["slow", "standard", "brisk"];
 
 export default function SettingsPanel({
@@ -22,8 +23,12 @@ export default function SettingsPanel({
       <div className="settings-sheet paper-grain-bright">
 
         {/* Sheet header */}
-        <div className="settings-sheet-header">
-          <span className="settings-sheet-title">⟡ {t("settings_title")} ⟡</span>
+        <div className="settings-sheet-header settings-sheet-header--two-tone">
+          <TwoToneHeading
+            capsKey="caps_preferences"
+            headingKey="settings_title"
+            italicWords={1}
+          />
           <button
             className="settings-sheet-close"
             onClick={onClose}
@@ -32,7 +37,6 @@ export default function SettingsPanel({
             ×
           </button>
         </div>
-        <div className="settings-sheet-rule" aria-hidden="true" />
 
         {/* AI recommendation */}
         <div className="settings-section">

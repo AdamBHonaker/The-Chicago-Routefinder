@@ -102,16 +102,19 @@ describe("LocationInput", () => {
       json: async () => ({ suggestions }),
     });
 
-    render(<LocationInput {...BASE_PROPS} value="how" />);
+    render(<LocationInput {...BASE_PROPS} value="" />);
+    const input = screen.getByRole("combobox");
 
-    // Manually set suggestions via state — test the suggestion click path via fetch
-    await waitFor(() => expect(global.fetch).toHaveBeenCalled(), { timeout: 500 });
+    // Trigger the debounced fetch by typing — onChange handler is what actually
+    // calls fetchAcSuggestions. Rendering with `value="how"` alone does NOT
+    // fire fetch (the value prop bypasses the onChange path).
+    fireEvent.change(input, { target: { value: "how" } });
 
-    // Suggestion option should appear in the listbox
-    const option = await screen.findByRole("option", { name: /Howard/ }, { timeout: 500 }).catch(() => null);
-    if (option) {
-      fireEvent.mouseDown(option);
-      expect(BASE_PROPS.onChange).toHaveBeenCalledWith("Howard");
-    }
+    await waitFor(() => expect(global.fetch).toHaveBeenCalled(), { timeout: 1000 });
+
+    // Suggestion <li role="option"> appears once setAcSuggestions resolves.
+    const option = await screen.findByRole("option", { name: /Howard/ }, { timeout: 1000 });
+    fireEvent.mouseDown(option);
+    expect(BASE_PROPS.onChange).toHaveBeenCalledWith("Howard");
   });
 });

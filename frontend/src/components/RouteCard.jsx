@@ -1,7 +1,8 @@
 import { useState, memo, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { LINE_COLORS, BUS_DIRECTION_COLORS, getRouteColor } from "../constants.js";
+import { LINE_COLORS, BUS_DIRECTION_COLORS, getRouteColor, SHARE_STATE_RESET_MS } from "../constants.js";
 import LinePill from "./LinePill.jsx";
+import { extractTransitLines } from "../utils/routeUtils.js";
 
 function formatBlocks(b, blockType, t) {
   if (!blockType) return b === 1 ? `1 ${t("block_singular")}` : `${b} ${t("block_plural")}`;
@@ -57,32 +58,37 @@ function WalkLegItem({ leg, index, completedSteps, extraClass = "" }) {
 
   return (
     <li key={index} className={`leg leg-walk${extraClass}`}>
-      {extraClass.includes("leg-complete") && <span className="leg-complete-check">✓</span>}
-      <span className="leg-icon">🚶</span>
-      <span className="leg-walk-body">
-        <span className="leg-text">{label}</span>
-        {showExit && (
-          <span className="leg-exit-label">{t("exit_label_prefix")} {leg.exit_label}</span>
-        )}
-        {hasSteps && !isMultiStep && (
-          <ol className="leg-steps leg-steps--inline">
-            {renderStep(leg.directions[0], 0)}
-          </ol>
-        )}
-        {isMultiStep && (
-          <button
-            className="leg-steps-toggle"
-            onClick={() => setStepsOpen((v) => !v)}
-            aria-expanded={stepsOpen}
-          >
-            {stepsOpen ? t("steps_hide") : t("steps_show")}
-          </button>
-        )}
-        {isMultiStep && stepsOpen && (
-          <ol className="leg-steps">
-            {leg.directions.map(renderStep)}
-          </ol>
-        )}
+      <span className="leg-minutes" aria-hidden="true">{leg.minutes}</span>
+      <span className="leg-spine" aria-hidden="true">
+        <span className="itinerary-dot" />
+      </span>
+      <span className="leg-content">
+        {extraClass.includes("leg-complete") && <span className="leg-complete-check">✓</span>}
+        <span className="leg-walk-body">
+          <span className="leg-text">{label}</span>
+          {showExit && (
+            <span className="leg-exit-label">{t("exit_label_prefix")} {leg.exit_label}</span>
+          )}
+          {hasSteps && !isMultiStep && (
+            <ol className="leg-steps leg-steps--inline">
+              {renderStep(leg.directions[0], 0)}
+            </ol>
+          )}
+          {isMultiStep && (
+            <button
+              className="leg-steps-toggle"
+              onClick={() => setStepsOpen((v) => !v)}
+              aria-expanded={stepsOpen}
+            >
+              {stepsOpen ? t("steps_hide") : t("steps_show")}
+            </button>
+          )}
+          {isMultiStep && stepsOpen && (
+            <ol className="leg-steps">
+              {leg.directions.map(renderStep)}
+            </ol>
+          )}
+        </span>
       </span>
     </li>
   );
@@ -132,29 +138,37 @@ function RouteLegs({ legs, initialWait, activeLegIndex, completedSteps, pinnedSt
         const isPinned  = !!stopId && pinnedIds.has(`${stopType}:${stopId}`);
         const hasAlert  = activeAlertRoutes?.has(pillLabel);
 
+        const dotStyle = { background: color };
         return (
           <li key={i} className={`leg leg-transit${legClass}`}>
-            {isDone && <span className="leg-complete-check">✓</span>}
-            {xferNote && <span className="transfer-wait-note">{xferNote}</span>}
-            <LinePill line={leg.line} isBus={isBus} lineCode={leg.line_code} size="sm" />
-            {hasAlert && <span className="leg-alert-badge" title={t("aria_service_alert_active")}>⚠</span>}
-            <span className="leg-text">
-              {leg.from} → {leg.to}
-              <span className="leg-duration"> · {leg.minutes} min</span>
+            <span className="leg-minutes" aria-hidden="true">{leg.minutes}</span>
+            <span className="leg-spine" aria-hidden="true">
+              <span className="itinerary-dot" style={dotStyle} />
             </span>
-            {stopId && onPinToggle && (
-              <button
-                className={`pin-btn${isPinned ? " pin-btn--pinned" : ""}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onPinToggle(stopType, stopId, leg.from, leg.line_code || "", isPinned);
-                }}
-                title={isPinned ? t("unpin_stop", { stop: leg.from }) : t("pin_stop", { stop: leg.from })}
-                aria-label={isPinned ? t("unpin_stop", { stop: leg.from }) : t("pin_stop", { stop: leg.from })}
-              >
-                {isPinned ? "📌" : "📍"}
-              </button>
-            )}
+            <span className="leg-content">
+              {isDone && <span className="leg-complete-check">✓</span>}
+              {xferNote && <span className="transfer-wait-note">{xferNote}</span>}
+              <span className="leg-transit-row">
+                <LinePill line={leg.line} isBus={isBus} lineCode={leg.line_code} size="sm" />
+                {hasAlert && <span className="leg-alert-badge" title={t("aria_service_alert_active")}>⚠</span>}
+                <span className="leg-text">
+                  {leg.from} → {leg.to}
+                </span>
+                {stopId && onPinToggle && (
+                  <button
+                    className={`pin-btn${isPinned ? " pin-btn--pinned" : ""}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onPinToggle(stopType, stopId, leg.from, leg.line_code || "", isPinned);
+                    }}
+                    title={isPinned ? t("unpin_stop", { stop: leg.from }) : t("pin_stop", { stop: leg.from })}
+                    aria-label={isPinned ? t("unpin_stop", { stop: leg.from }) : t("pin_stop", { stop: leg.from })}
+                  >
+                    {isPinned ? "📌" : "📍"}
+                  </button>
+                )}
+              </span>
+            </span>
           </li>
         );
       })}
@@ -190,8 +204,10 @@ export default memo(function RouteCard({
       return;
     }
 
+    let copied = false;
     try {
       await navigator.clipboard.writeText(shareUrl);
+      copied = true;
     } catch {
       const ta = document.createElement("textarea");
       ta.value = shareUrl;
@@ -199,11 +215,13 @@ export default memo(function RouteCard({
       ta.style.opacity = "0";
       document.body.appendChild(ta);
       ta.select();
-      document.execCommand("copy");
+      try { copied = document.execCommand("copy"); } catch { copied = false; }
       document.body.removeChild(ta);
     }
-    setShareState("copied");
-    setTimeout(() => setShareState("idle"), 2000);
+    if (copied) {
+      setShareState("copied");
+      setTimeout(() => setShareState("idle"), SHARE_STATE_RESET_MS);
+    }
   }
   const activeLeg = (tripActive && activeLegIndex !== null) ? route.legs[activeLegIndex] : null;
   const isTransitLeg = activeLeg?.type === 'transit';
@@ -223,19 +241,7 @@ export default memo(function RouteCard({
       ? t("label_1_transfer")
       : t("label_n_transfers", { count: transfers });
 
-  const transitLines = useMemo(() => {
-    const seen = new Set();
-    return route.legs
-      .filter(l => l.type === "transit")
-      .filter(l => {
-        const isBus = l.line in BUS_DIRECTION_COLORS;
-        const key = isBus ? `bus:${l.line_code}` : l.line;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      })
-      .map(l => ({ line: l.line, isBus: l.line in BUS_DIRECTION_COLORS, lineCode: l.line_code }));
-  }, [route.legs]);
+  const transitLines = useMemo(() => extractTransitLines(route.legs), [route.legs]);
 
   return (
     <div className={`route-card${isFirst ? " route-card--best paper-grain-bright" : ""}${isSelected ? " route-card--selected" : ""}`}>

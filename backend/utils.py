@@ -137,16 +137,20 @@ CHICAGO_BBOX_OVERPASS: str = f"{CHICAGO_SOUTH},{CHICAGO_WEST},{CHICAGO_NORTH},{C
 CHICAGO_BBOX_OSMNX: tuple  = (CHICAGO_WEST, CHICAGO_SOUTH, CHICAGO_EAST, CHICAGO_NORTH)
 
 # ---------------------------------------------------------------------------
-# Street-graph bounding box — tighter than full Chicago for Railway memory limits.
+# Street-graph bounding box — Chicago city limits + Evanston (Purple Line).
 #
-# Current coverage: Linden/Dempster-Skokie (north, 42.083) → 95th/Dan Ryan (south, 41.718)
-#                   Dempster-Skokie/Midway corridor (west, -87.757) → Lakefront (east, -87.520)
+# Coverage:
+#   North 42.083 — Linden (Wilmette, Purple Line terminal)
+#   South 41.712 — ~100th St, just south of 95th/Dan Ryan (Red Line terminal)
+#   West  -87.800 — Chicago west side; covers Austin (Blue Line) but excludes
+#                   Oak Park, Forest Park, Cicero, Skokie, and Rosemont suburbs
+#   East  -87.520 — Chicago lakefront
 #
-# Expanded by Feature NorthExpansion (Yellow + Purple north of Howard) and
-# Feature SouthExpansion (Red/Green/Orange south terminals) — regenerated together.
+# Includes Chicago + Evanston only. Pace and Metra service areas are out of scope
+# (see FEATURE_IMPLEMENTATION_PLANS.md → Pace/Metra Coverage Expansion).
 # ---------------------------------------------------------------------------
-STREET_GRAPH_SOUTH: float = 41.7180
+STREET_GRAPH_SOUTH: float = 41.7120
 STREET_GRAPH_NORTH: float = 42.0830
-STREET_GRAPH_WEST:  float = -87.7570
+STREET_GRAPH_WEST:  float = -87.8000
 STREET_GRAPH_EAST:  float = -87.5200
 STREET_GRAPH_BBOX_OSMNX: tuple = (STREET_GRAPH_WEST, STREET_GRAPH_SOUTH, STREET_GRAPH_EAST, STREET_GRAPH_NORTH)

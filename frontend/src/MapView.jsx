@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import ReactDOM from "react-dom/client";
 import maplibregl from "maplibre-gl";
-import { getRouteColor, BUS_DIRECTION_COLORS } from "./constants.js";
+import { useLocalStorage } from "./hooks/useLocalStorage.js";
+import { useMapMarker, mountMarker, removeMarker } from "./hooks/useMapMarker.jsx";
+import { useRouteLayers } from "./hooks/useRouteLayers.js";
+import { BUS_DIRECTION_COLORS } from "./constants.js";
 import { haversineMeters } from "./utils/tripGeometry.js";
 import LinePill from "./components/LinePill.jsx";
 import OriginMarker from "./components/markers/OriginMarker.jsx";
@@ -17,29 +19,22 @@ const DEFAULT_STYLE  = import.meta.env.VITE_MAP_STYLE_URL || "https://tiles.open
 const DEFAULT_CENTER = [-87.654, 41.966]; // Uptown, Chicago
 const DEFAULT_ZOOM   = 13;
 
-function legColor(leg) {
-  return getRouteColor(leg.line);
-}
-
 // Backend returns [lat, lon]; GeoJSON / MapLibre expects [lon, lat].
-const toGeo = ([lat, lon]) => [lon, lat];
-
-// Returns true only for a two-element array where both values are finite numbers.
-// Guards against null, undefined, empty arrays, [null, null], and plain objects.
-const isValidCoord = (c) =>
-  Array.isArray(c) && c.length === 2 &&
-  typeof c[0] === "number" && isFinite(c[0]) &&
-  typeof c[1] === "number" && isFinite(c[1]);
-
-// ---------------------------------------------------------------------------
-// Marker utilities
-// ---------------------------------------------------------------------------
+const swapLngLat = ([lat, lon]) => [lon, lat];
 
 // Intentional snapshot: evaluated at page load, not updated mid-session.
 // A full reload picks up any change to the OS reduced-motion preference.
 const prefersReducedMotion =
   typeof window !== "undefined" &&
   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+// Returns "NW 315°" style string using locale-aware cardinal abbreviations.
+function getBearingLabel(heading, t) {
+  const dirs = ["n", "ne", "e", "se", "s", "sw", "w", "nw"];
+  const idx = Math.round(((heading % 360) + 360) % 360 / 45) % 8;
+  const deg = Math.round(((heading % 360) + 360) % 360);
+  return `${t(`compass_${dirs[idx]}`)} ${deg}°`;
+}
 
 // Circular exponential moving average for heading smoothing.
 // alpha=0.3 → each new reading contributes 30%, history 70% (~2–3 reading lag at 1 Hz GPS).
@@ -49,238 +44,33 @@ function smoothHeading(prev, next, alpha = 0.3) {
   return (prev + alpha * delta + 360) % 360;
 }
 
-// Mount a React component as a MapLibre marker at the given [lng, lat].
-// Returns { marker, root } — keep the reference to update props or remove later.
-function mountMarker(map, Component, props, lngLat) {
-  const el = document.createElement("div");
-  const root = ReactDOM.createRoot(el);
-  root.render(<Component {...props} />);
-  const marker = new maplibregl.Marker({ element: el, anchor: "center" })
-    .setLngLat(lngLat)
-    .addTo(map);
-  return { marker, root };
-}
-
-// Remove a marker previously created by mountMarker and clear the ref.
-function removeMarker(ref) {
-  ref.current?.marker.remove();
-  ref.current?.root.unmount();
-  ref.current = null;
-}
-
-// ---------------------------------------------------------------------------
-// Layer management helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Remove all route layers/sources whose IDs are tracked in the provided arrays,
- * then clear those arrays.  Does NOT call map.isStyleLoaded() — we use the
- * tracked ID lists so old layers are never left behind even when the style
- * reloads mid-session.  try/catch guards against layers that were never added
- * (e.g. because style wasn't loaded when renderRoute ran).
- */
-function clearRouteLayers(map, layerIds, sourceIds) {
-  // Layers must be removed before their sources
-  for (const id of layerIds.splice(0)) {
-    try { map.removeLayer(id); } catch { /* already gone or style reloaded */ }
-  }
-  for (const id of sourceIds.splice(0)) {
-    try { map.removeSource(id); } catch { /* already gone or style reloaded */ }
-  }
-}
-
-/** Thin wrappers that add a source/layer AND record the ID for later cleanup. */
-function _trackSource(map, id, data, sourceIds) {
-  map.addSource(id, data);
-  sourceIds.push(id);
-}
-
-function _trackLayer(map, cfg, layerIds) {
-  map.addLayer(cfg);
-  layerIds.push(cfg.id);
-}
-
-// ---------------------------------------------------------------------------
-// Route rendering
-// ---------------------------------------------------------------------------
-
-function renderRoute(map, route, originCoords, destCoords, layerIds, sourceIds) {
-  if (!route?.legs?.length) return;
-  try {
-    _renderRouteInner(map, route, originCoords, destCoords, layerIds, sourceIds);
-  } catch (err) {
-    console.error("[MapView] renderRoute failed:", err);
-  }
-}
-
-// renderPolylines — Pass 1 of route rendering.
-// Adds one LineString layer per leg (dashed grey for walk, solid colored for transit).
-// Pushes all rendered coordinates into allGeoCoords for auto-fit bounds. (TD-037)
-function renderPolylines(map, legs, legGeoCoords, legColors, allGeoCoords, layerIds, sourceIds) {
-  legs.forEach((leg, i) => {
-    if (leg.type === "walk") {
-      const coords = legGeoCoords[i];
-      if (coords.length < 2) return;
-      coords.forEach(c => allGeoCoords.push(c));
-      _trackSource(map, `route-walk-${i}`, {
-        type: "geojson",
-        data: { type: "Feature", geometry: { type: "LineString", coordinates: coords } },
-      }, sourceIds);
-      _trackLayer(map, {
-        id:     `route-walk-line-${i}`,
-        type:   "line",
-        source: `route-walk-${i}`,
-        paint:  { "line-color": "#888888", "line-width": 3, "line-dasharray": [2, 2] },
-      }, layerIds);
-    } else if (leg.type === "transit") {
-      const coords = legGeoCoords[i];
-      if (coords.length < 2) return;
-      coords.forEach(c => allGeoCoords.push(c));
-      _trackSource(map, `route-transit-${i}`, {
-        type: "geojson",
-        data: { type: "Feature", geometry: { type: "LineString", coordinates: coords } },
-      }, sourceIds);
-      _trackLayer(map, {
-        id:     `route-transit-line-${i}`,
-        type:   "line",
-        source: `route-transit-${i}`,
-        layout: { "line-cap": "round", "line-join": "round" },
-        paint:  { "line-color": legColors[i], "line-width": 5 },
-      }, layerIds);
-    }
-  });
-}
-
-// renderStopMarkers — Pass 2 of route rendering.
-// Adds board/exit circle markers and evenly-sampled intermediate stop dots
-// for each transit leg. Rendered after polylines so markers sit on top. (TD-037)
-function renderStopMarkers(map, legs, legGeoCoords, legColors, layerIds, sourceIds) {
-  legs.forEach((leg, i) => {
-    if (leg.type !== "transit") return;
-    const color = legColors[i];
-
-    // Board / exit stop markers — guard against missing or malformed coordinate arrays.
-    const boardExit = [];
-    if (isValidCoord(leg.from_coords)) boardExit.push({ coord: toGeo(leg.from_coords), label: `Board ${leg.line}`, color });
-    if (isValidCoord(leg.to_coords))   boardExit.push({ coord: toGeo(leg.to_coords),   label: `Exit ${leg.line}`,  color });
-
-    if (boardExit.length) {
-      _trackSource(map, `route-boardexit-${i}`, {
-        type: "geojson",
-        data: {
-          type: "FeatureCollection",
-          features: boardExit.map(({ coord, label, color: c }) => ({
-            type: "Feature",
-            geometry:   { type: "Point", coordinates: coord },
-            properties: { label, color: c },
-          })),
-        },
-      }, sourceIds);
-      _trackLayer(map, {
-        id:     `route-boardexit-circle-${i}`,
-        type:   "circle",
-        source: `route-boardexit-${i}`,
-        paint:  {
-          "circle-radius":       7,
-          "circle-color":        ["get", "color"],
-          "circle-stroke-width": 2,
-          "circle-stroke-color": "#ffffff",
-        },
-      }, layerIds);
-    }
-
-    // Intermediate stops — evenly sampled from the clipped shape.
-    const geoShape = legGeoCoords[i];
-    if (geoShape.length > 10) {
-      const step = Math.max(3, Math.floor(geoShape.length / 10));
-      const intermFeatures = [];
-      for (let j = step; j < geoShape.length - step; j += step) {
-        intermFeatures.push({
-          type: "Feature",
-          geometry:   { type: "Point", coordinates: geoShape[j] },
-          properties: { color },
-        });
-      }
-      if (intermFeatures.length) {
-        _trackSource(map, `route-stops-${i}`, {
-          type: "geojson",
-          data: { type: "FeatureCollection", features: intermFeatures },
-        }, sourceIds);
-        _trackLayer(map, {
-          id:     `route-stops-circle-${i}`,
-          type:   "circle",
-          source: `route-stops-${i}`,
-          paint:  {
-            "circle-radius":       4,
-            "circle-color":        "#ffffff",
-            "circle-stroke-width": 2,
-            "circle-stroke-color": ["get", "color"],
-          },
-        }, layerIds);
-      }
-    }
-  });
-}
-
-
-function _renderRouteInner(map, route, originCoords, destCoords, layerIds, sourceIds) {
-  const { legs } = route;
-
-  // Precompute per-leg colors once to avoid re-invoking legColor in each pass.
-  const legColors = legs.map(leg => leg.type === "transit" ? legColor(leg) : null);
-
-  // Pre-transform all path/shape coordinates once — avoids repeated .map(toGeo).
-  const legGeoCoords = legs.map(leg => {
-    if (leg.type === "walk")    return (leg.path  ?? []).map(toGeo);
-    if (leg.type === "transit") return (leg.shape ?? []).map(toGeo);
-    return [];
-  });
-
-  // Accumulate rendered coordinates for auto-fit bounds (GeoJSON [lon, lat] order).
-  const allGeoCoords = [];
-
-  renderPolylines(map, legs, legGeoCoords, legColors, allGeoCoords, layerIds, sourceIds);
-  renderStopMarkers(map, legs, legGeoCoords, legColors, layerIds, sourceIds);
-
-  // ── Auto-fit: snap to bounding box of all route coordinates ───────────────
-  if (allGeoCoords.length > 0) {
-    const bounds = allGeoCoords.reduce(
-      ([sw, ne], [lon, lat]) => [
-        [Math.min(sw[0], lon), Math.min(sw[1], lat)],
-        [Math.max(ne[0], lon), Math.max(ne[1], lat)],
-      ],
-      [[Infinity, Infinity], [-Infinity, -Infinity]],
-    );
-    map.fitBounds(bounds, { padding: 60, animate: false });
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
 export default function MapView({
-  route        = null,
-  originCoords = null,
-  destCoords   = null,
-  userPosition = null,
-  tripActive   = false,
-  style        = DEFAULT_STYLE,
-  center       = DEFAULT_CENTER,
-  zoom         = DEFAULT_ZOOM,
+  route          = null,
+  originCoords   = null,
+  destCoords     = null,
+  userPosition   = null,
+  tripActive     = false,
+  activeLegIndex = null,
+  activeTab      = "home",
+  onArrived      = null,
+  style          = DEFAULT_STYLE,
+  center         = DEFAULT_CENTER,
+  zoom           = DEFAULT_ZOOM,
 }) {
   const { t } = useTranslation();
-  const containerRef  = useRef(null);
-  const mapRef        = useRef(null);
-  const routeLayerIds  = useRef([]);   // tracked IDs set during renderRoute
-  const routeSourceIds = useRef([]);
-  const originMarkerRef    = useRef(null); // { marker, root } for OriginMarker
-  const destMarkerRef      = useRef(null); // { marker, root } for DestinationMarker
-  const liveMarkerRef      = useRef(null); // { marker, root } for LivePositionMarker
+  const containerRef = useRef(null);
+  const [map, setMap] = useState(null);
+  const liveMarkerRef      = useRef(null); // imperative — see useMapMarker.js
   const smoothedHeadingRef = useRef(0);    // circular EMA state for heading
-  const arrivedRef         = useRef(false); // one-way latch: destination arrived
+  const firstFixDoneRef    = useRef(false); // gate for one-time flyTo on first GPS fix
   const [unlocked, setUnlocked] = useState(false);
   const [styleError, setStyleError] = useState(false);
+  const [headingUp, setHeadingUp] = useLocalStorage("cta_heading_up", false);
+  const [arrived, setArrived] = useState(false);
 
   // Initialize map once after the container div mounts.
   //
@@ -302,13 +92,13 @@ export default function MapView({
   // this setTimeout adds no observable latency — it merely defers init past
   // any synchronous DOM measurements that share the same task.
   useEffect(() => {
-    let map = null;
+    let mapInstance = null;
 
     const timerId = setTimeout(() => {
       const container = containerRef.current;
       if (!container) return;
 
-      map = new maplibregl.Map({
+      mapInstance = new maplibregl.Map({
         container,
         style,
         center,
@@ -318,21 +108,21 @@ export default function MapView({
       });
 
       // Lock all interactions by default
-      map.scrollZoom.disable();
-      map.dragPan.disable();
-      map.dragRotate.disable();
-      map.doubleClickZoom.disable();
-      map.touchZoomRotate.disable();
-      map.keyboard.disable();
+      mapInstance.scrollZoom.disable();
+      mapInstance.dragPan.disable();
+      mapInstance.dragRotate.disable();
+      mapInstance.doubleClickZoom.disable();
+      mapInstance.touchZoomRotate.disable();
+      mapInstance.keyboard.disable();
 
       // After style loads: resize + repaint so the WebGL framebuffer is presented
       // correctly when the container starts at opacity:0.
-      map.once("load", () => {
-        map.resize();
-        map.triggerRepaint();
+      mapInstance.once("load", () => {
+        mapInstance.resize();
+        mapInstance.triggerRepaint();
       });
 
-      map.on("error", (e) => {
+      mapInstance.on("error", (e) => {
         console.error("[MapView] map error:", e?.error ?? e);
         // Only latch the error banner for style *document* failures — not
         // transient per-tile 404s or network blips, which self-recover.
@@ -341,77 +131,77 @@ export default function MapView({
                               e?.error?.message?.toLowerCase().includes("style");
         if (isStyleSource && (status === 0 || (status >= 400 && status < 600))) {
           setStyleError(true);
-          map.once("styledata", () => setStyleError(false));
+          mapInstance.once("styledata", () => setStyleError(false));
         }
       });
 
-      mapRef.current = map;
+      setMap(mapInstance);
     }, 0);
 
     return () => {
       clearTimeout(timerId);
-      map?.remove();
-      mapRef.current = null;
+      mapInstance?.remove();
+      setMap(null);
     };
   // Intentionally empty deps: props (style, center, zoom) are construction-time
   // values; re-running this effect would destroy and recreate the WebGL context.
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Render route polylines + stop circles via the layer-management hook.
+  useRouteLayers(map, route);
 
-  // Re-render route layers and origin/destination markers whenever route/coords change.
+  // Reset arrived latch when the route or destination changes.
   useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
+    setArrived(false);
+  }, [route, destCoords]);
 
-    const render = () => {
-      // Clear previous polylines/stop markers and React origin/dest markers.
-      clearRouteLayers(map, routeLayerIds.current, routeSourceIds.current);
-      removeMarker(originMarkerRef);
-      removeMarker(destMarkerRef);
-      arrivedRef.current = false;
+  // Resolve origin/destination lngLats. Explicit prop first, then fall back to
+  // the first/last path point of the route.
+  const originLngLat = originCoords
+    ? [originCoords[1], originCoords[0]]
+    : (() => { const p = route?.legs?.[0]?.path?.[0]; return p ? swapLngLat(p) : null; })();
+  const lastLeg = route?.legs?.[route.legs.length - 1];
+  const destLngLat = destCoords
+    ? [destCoords[1], destCoords[0]]
+    : (lastLeg?.path?.length ? swapLngLat(lastLeg.path[lastLeg.path.length - 1]) : null);
 
-      if (!route) return;
+  // Origin / destination markers — declarative; the hook owns createRoot/unmount.
+  useMapMarker(map, OriginMarker, { fromLabel: t("marker_from") }, originLngLat);
+  useMapMarker(
+    map,
+    DestinationMarker,
+    { arrived, toLabel: t("marker_to"), arrivedLabel: t("marker_arrived") },
+    destLngLat,
+  );
 
-      renderRoute(map, route, originCoords, destCoords, routeLayerIds.current, routeSourceIds.current);
-
-      // Resolve origin lngLat — explicit prop first, then first path point of first leg.
-      const originLngLat = originCoords
-        ? [originCoords[1], originCoords[0]]
-        : (() => { const p = route.legs?.[0]?.path?.[0]; return p ? toGeo(p) : null; })();
-
-      // Resolve dest lngLat — explicit prop first, then last path point of last leg.
-      const lastLeg = route.legs?.[route.legs.length - 1];
-      const destLngLat = destCoords
-        ? [destCoords[1], destCoords[0]]
-        : (lastLeg?.path?.length ? toGeo(lastLeg.path[lastLeg.path.length - 1]) : null);
-
-      // Render order: origin first, destination second — user position (live effect) last.
-      if (originLngLat) {
-        originMarkerRef.current = mountMarker(map, OriginMarker, { fromLabel: t("marker_from") }, originLngLat);
+  // Feature RouteProgress — mute completed legs on the map.
+  // Iterates legs 0..activeLegIndex-1 and dims their polyline/circle layers.
+  // useRouteLayers clears all layers when the route changes so no reset needed.
+  useEffect(() => {
+    if (!map || !route?.legs || activeLegIndex == null || activeLegIndex <= 0) return;
+    const muteColor = getComputedStyle(document.documentElement)
+      .getPropertyValue("--mute").trim() || "#8a7a60";
+    for (let i = 0; i < activeLegIndex; i++) {
+      const leg = route.legs[i];
+      const lineId = leg.type === "walk"
+        ? `route-walk-line-${i}`
+        : `route-transit-line-${i}`;
+      if (map.getLayer(lineId)) {
+        map.setPaintProperty(lineId, "line-color", muteColor);
+        map.setPaintProperty(lineId, "line-opacity", leg.type === "walk" ? 0.4 : 0.35);
       }
-      if (destLngLat) {
-        destMarkerRef.current = mountMarker(map, DestinationMarker, {
-          arrived: false,
-          toLabel: t("marker_to"),
-          arrivedLabel: t("marker_arrived"),
-        }, destLngLat);
+      const circleId = `route-boardexit-circle-${i}`;
+      if (map.getLayer(circleId)) {
+        map.setPaintProperty(circleId, "circle-opacity", 0.3);
       }
-    };
-
-    if (map.isStyleLoaded()) {
-      render();
-    } else {
-      // Style not yet loaded — defer until it is, clean up if route changes first.
-      map.once("load", render);
-      return () => map.off("load", render);
     }
-  // `renderRoute`, `clearRouteLayers`, `mountMarker`, `removeMarker` are stable module-level
-  // functions; refs are not reactive values — omitting them is correct.
-  }, [route, originCoords, destCoords]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [map, activeLegIndex, route]);
 
-  // Live position marker — shown during an active trip.
+  // Live position marker — kept imperative because the heading prop must update
+  // synchronously with smoothedHeadingRef (a ref, intentionally non-reactive to
+  // avoid a 1 Hz re-render of MapView). useMapMarker's auto-render-on-props
+  // model would lag the heading by one frame.
   useEffect(() => {
-    const map = mapRef.current;
     if (!map) return;
 
     function render() {
@@ -425,47 +215,69 @@ export default function MapView({
         }
 
         // Arrived latch — 50 m threshold, never resets during a trip.
-        if (!arrivedRef.current && destCoords) {
+        if (!arrived && destCoords) {
           const dist = haversineMeters(
             { lat: userPosition.lat, lng: userPosition.lng },
             { lat: destCoords[0], lng: destCoords[1] }, // destCoords is [lat, lon]
           );
           if (dist <= 50) {
-            arrivedRef.current = true;
-            destMarkerRef.current?.root.render(
-              <DestinationMarker arrived={true} arrivedLabel={t("marker_arrived")} />,
-            );
+            setArrived(true);
+            onArrived?.();
           }
         }
 
+        // Adjust heading for current map bearing so the needle always points in
+        // the world direction of travel, regardless of map rotation.
+        const displayHeading = (smoothedHeadingRef.current + map.getBearing() + 360) % 360;
+
         const markerProps = {
-          heading: smoothedHeadingRef.current,
+          heading: displayHeading,
           hasHeading: Number.isFinite(userPosition.heading),
           reducedMotion: prefersReducedMotion,
+          youLabel: t("marker_you"),
         };
 
         if (!liveMarkerRef.current) {
           liveMarkerRef.current = mountMarker(
             map,
             LivePositionMarker,
-            { ...markerProps, youLabel: t("marker_you") },
+            markerProps,
             [userPosition.lng, userPosition.lat],
+            { className: "marker-live-position-wrapper" },
           );
+          liveMarkerRef.current.marker.getElement().addEventListener("click", (event) => {
+            event.stopPropagation();
+            handleRelock();
+          });
           // Center map on first GPS fix.
-          map.flyTo({ center: [userPosition.lng, userPosition.lat], zoom: 15 });
+          if (!firstFixDoneRef.current) {
+            firstFixDoneRef.current = true;
+            map.flyTo({ center: [userPosition.lng, userPosition.lat], zoom: 15 });
+          }
         } else {
           liveMarkerRef.current.marker.setLngLat([userPosition.lng, userPosition.lat]);
-          liveMarkerRef.current.root.render(<LivePositionMarker {...markerProps} youLabel={t("marker_you")} />);
-          // Keep user centered while map is locked during an active trip.
+          liveMarkerRef.current.root.render(<LivePositionMarker {...markerProps} />);
+          // Keep user centered and apply heading-up rotation while map is locked.
           if (!unlocked) {
             map.easeTo({ center: [userPosition.lng, userPosition.lat] });
+            // Rotate map to face direction of travel in heading-up mode.
+            // 1° guard prevents sub-degree GPS wobble from triggering rapid rotateTo calls.
+            if (headingUp && Number.isFinite(smoothedHeadingRef.current)) {
+              const target = -smoothedHeadingRef.current;
+              if (Math.abs(map.getBearing() - target) >= 1) {
+                map.rotateTo(target, { duration: 200 });
+              }
+            }
           }
         }
       } else {
         // Trip ended or no position — tear down marker and reset transient state.
         removeMarker(liveMarkerRef);
         smoothedHeadingRef.current = 0;
-        arrivedRef.current = false;
+        firstFixDoneRef.current = false;
+        // Reset heading-up preference and map bearing on trip end.
+        setHeadingUp(false);
+        map.rotateTo(0, { duration: 300 });
       }
     }
 
@@ -474,13 +286,20 @@ export default function MapView({
       return () => map.off("load", render);
     }
     render();
-  // `mapRef`, refs, and module-level helpers are not reactive values — omitting is correct.
-  // `destCoords` is intentionally omitted: the arrived latch resets via the route effect
-  // when destCoords changes, and the latch only ever needs the coord at latch-check time.
-  }, [tripActive, userPosition, unlocked]); // eslint-disable-line react-hooks/exhaustive-deps
+  // `destCoords` is intentionally omitted: when it changes, the route effect resets
+  // arrived via setArrived(false), which re-runs this effect through the `arrived` dep.
+  }, [map, tripActive, userPosition, unlocked, headingUp, arrived]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // On desktop, panel-map transitions in over 220ms (--dur-base). Notify
+  // MapLibre after the transition so the WebGL framebuffer matches the new
+  // container dimensions. Safe to call on every tab change — resize is cheap.
+  useEffect(() => {
+    if (!map) return;
+    const id = setTimeout(() => map.resize(), 220);
+    return () => clearTimeout(id);
+  }, [map, activeTab]);
 
   function handleUnlock() {
-    const map = mapRef.current;
     if (!map) return;
     map.scrollZoom.enable();
     map.dragPan.enable();
@@ -489,6 +308,30 @@ export default function MapView({
     map.touchZoomRotate.enable();
     map.keyboard.enable();
     setUnlocked(true);
+  }
+
+  function handleRelock() {
+    if (!map) return;
+    map.scrollZoom.disable();
+    map.dragPan.disable();
+    map.dragRotate.disable();
+    map.doubleClickZoom.disable();
+    map.touchZoomRotate.disable();
+    map.keyboard.disable();
+    setUnlocked(false);
+    if (userPosition) {
+      map.easeTo({ center: [userPosition.lng, userPosition.lat] });
+    }
+  }
+
+  function handleToggleHeadingUp() {
+    if (!map) return;
+    if (headingUp) {
+      map.rotateTo(0, { duration: 300 });
+      setHeadingUp(false);
+    } else {
+      setHeadingUp(true);
+    }
   }
 
   // Derive distinct transit legs for overlays — display computation only, no hooks.
@@ -510,6 +353,11 @@ export default function MapView({
       {route && !unlocked && !styleError && (
         <button className="map-unlock-btn" onClick={handleUnlock}>
           {t("map_unlock_btn")}
+        </button>
+      )}
+      {route && tripActive && unlocked && !styleError && (
+        <button className="map-relock-btn" onClick={handleRelock}>
+          {t("map_relock_btn")}
         </button>
       )}
       {primaryTransitLeg && (
@@ -549,6 +397,30 @@ export default function MapView({
             </div>
           ))}
         </div>
+      )}
+      {tripActive && !styleError && (
+        <button
+          className={`map-heading-btn${headingUp ? " map-heading-btn--active" : ""}`}
+          onClick={handleToggleHeadingUp}
+          aria-pressed={headingUp}
+          aria-label={headingUp ? t("map_heading_north_btn") : t("map_heading_up_btn")}
+        >
+          <svg
+            className="map-heading-btn__rose"
+            width="16" height="16" viewBox="-8 -8 16 16"
+            aria-hidden="true"
+            style={{ transform: `rotate(${map?.getBearing() ?? 0}deg)` }}
+          >
+            <polygon points="0,-7 -2.5,-2 2.5,-2" fill={headingUp ? "var(--rust)" : "var(--ink)"} />
+            <polygon points="0,7 -2.5,2 2.5,2" fill="var(--mute-fog)" />
+            <line x1="0" y1="-7" x2="0" y2="7" stroke={headingUp ? "var(--rust)" : "var(--ink)"} strokeWidth="1" />
+          </svg>
+          <span className="map-heading-btn__label">
+            {headingUp
+              ? getBearingLabel(smoothedHeadingRef.current, t)
+              : t("map_heading_up_btn")}
+          </span>
+        </button>
       )}
     </div>
   );

@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 import { LINE_COLORS } from "../constants.js";
 import LinePill from "./LinePill.jsx";
 import SignalLamp from "./SignalLamp.jsx";
+import TwoToneHeading from "./TwoToneHeading.jsx";
 
 function ArrivalRow({ route, destination, minutes }) {
   const { t } = useTranslation();
@@ -22,8 +23,12 @@ export default function PinnedStopsBoard({ stops, arrivals, onUnpin, onRefresh }
 
   return (
     <section className="psb">
-      <div className="psb-header">
-        <span className="psb-title">{t("pinned_stops_heading")}</span>
+      <div className="psb-header psb-header--two-tone">
+        <TwoToneHeading
+          capsKey="caps_stops"
+          headingKey="pinned_stops_heading"
+          italicWords={1}
+        />
         <div className="psb-header-right">
           <SignalLamp
             ariaLabel={t("psb_live_data")}
@@ -70,7 +75,7 @@ export default function PinnedStopsBoard({ stops, arrivals, onUnpin, onRefresh }
                 ) : (
                   arrList.map((a, i) => (
                     <ArrivalRow
-                      key={i}
+                      key={`${a.route}|${a.destination}|${a.minutes}|${i}`}
                       route={a.route}
                       destination={a.destination}
                       minutes={a.minutes}

@@ -1,3 +1,4 @@
 -r requirements.txt
 osmnx==2.1.0
-pytest>=8.0
+pytest>=8.0,<9
+psutil>=5.9
