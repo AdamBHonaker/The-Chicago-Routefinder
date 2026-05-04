@@ -138,11 +138,6 @@
   "psb_refresh": "Odśwież przyjazdy",
   "psb_unpin_stop": "Odepnij przystanek",
   "settings_btn_close": "Zamknij",
-  "photo_caption_red_line_howard": "Red Line — Howard",
-  "photo_caption_loop_elevated": "The Loop — Nadziemna linia",
-  "photo_caption_blue_line_ohare": "Blue Line — O'Hare",
-  "photo_caption_state_lake": "State/Lake — The Loop",
-  "photo_caption_wrigley_addison": "Addison — Wrigley Field",
   "marker_from": "Z",
   "marker_to": "DO",
   "marker_you": "TY",
@@ -177,5 +172,12 @@
   "caps_bookmarks": "Zakładki",
   "caps_stops": "Przystanki",
   "caps_advisories": "Ostrzeżenia",
-  "alerts_tab_heading": "Komunikaty i Opóźnienia"
+  "alerts_tab_heading": "Komunikaty i Opóźnienia",
+  "transfer_marker_kicker": "PRZESIADKA",
+  "transfer_marker_aria": "Przesiadka na {{station}}",
+  "transfer_marker_aria_passed": "Minięta przesiadka na {{station}}",
+  "footprint_marker_aria_walk_to_transit": "Wejście na {{station}}",
+  "footprint_marker_aria_walk_to_transit_passed": "Minięte wejście na {{station}}",
+  "footprint_marker_aria_transit_to_walk": "Wyjście na {{station}}",
+  "footprint_marker_aria_transit_to_walk_passed": "Minięte wyjście na {{station}}"
 }

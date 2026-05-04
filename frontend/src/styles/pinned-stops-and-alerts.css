@@ -1,0 +1,174 @@
+
+/* ── Feature Pinned Stops + Feature Last Train ──────────────────────────── */
+
+/* Pin button on transit legs */
+.pin-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.85rem;
+  line-height: 1;
+  margin-inline-start: auto;
+  opacity: var(--opacity-mute);
+  padding: 0 0.1rem;
+  transition: opacity 0.15s;
+}
+.pin-btn:hover,
+.pin-btn--pinned {
+  opacity: 1;
+}
+
+/* PinnedStopsBoard */
+.psb {
+  border-bottom: var(--hairline);
+}
+
+.psb-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--sp-4) var(--sp-6);
+  border-bottom: var(--hairline);
+}
+
+.psb-header-right {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.psb-refresh-btn {
+  background: none;
+  border: none;
+  color: var(--mute-fog);
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: var(--fs-mono);
+  line-height: 1;
+  padding: var(--sp-1) var(--sp-2);
+  min-width: 28px;
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color var(--dur-quick) var(--ease-out);
+}
+.psb-refresh-btn:hover { color: var(--ink); }
+
+.psb-cards {
+  display: flex;
+  flex-direction: column;
+}
+
+.psb-card {
+  padding: var(--sp-3) var(--sp-6);
+  border-bottom: var(--hairline);
+}
+.psb-card:last-child { border-bottom: none; }
+
+.psb-card-header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-2);
+}
+
+.psb-stop-label {
+  font-family: var(--serif);
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.psb-route-hint {
+  font-family: var(--serif);
+  font-size: var(--fs-body-sm);
+  font-style: italic;
+  color: var(--mute);
+  flex: 1;
+}
+
+.psb-unpin-btn {
+  background: none;
+  border: none;
+  color: var(--mute-fog);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  margin-inline-start: auto;
+  padding: 0 var(--sp-1);
+  min-width: 28px;
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color var(--dur-quick) var(--ease-out);
+}
+.psb-unpin-btn:hover { color: var(--rust); }
+
+.psb-arrivals {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.psb-arrival {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.psb-arrival-dest {
+  font-family: var(--serif);
+  font-size: var(--fs-body-sm);
+  color: var(--ink-soft);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.psb-arrival-due {
+  font-family: var(--mono);
+  font-size: var(--fs-mono);
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.psb-no-arrivals {
+  font-family: var(--serif);
+  font-size: var(--fs-body-sm);
+  font-style: italic;
+  color: var(--mute);
+}
+
+/* Last Train warning */
+.psb-last-train {
+  font-family: var(--mono);
+  font-size: var(--fs-mono);
+  color: var(--mute);
+  margin: var(--sp-2) 0 0;
+}
+
+.psb-last-train--urgent {
+  color: var(--rust);
+  font-weight: 700;
+}
+
+/* ── Feature Service Alerts ──────────────────────────────────────────────── */
+
+.alerts-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+/* Warning badge on route card transit legs with active alerts */
+.leg-alert-badge {
+  font-family: var(--mono);
+  font-size: var(--fs-mono);
+  color: var(--rust);
+  margin-inline-start: var(--sp-2);
+}

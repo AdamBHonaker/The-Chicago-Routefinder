@@ -138,11 +138,6 @@
   "psb_refresh": "Atúnka ìduro",
   "psb_unpin_stop": "Yọ ibẹ̀rẹ̀ kúrò",
   "settings_btn_close": "Pípa",
-  "photo_caption_red_line_howard": "Red Line — Howard",
-  "photo_caption_loop_elevated": "The Loop — Ọ̀na Gíga",
-  "photo_caption_blue_line_ohare": "Blue Line — O'Hare",
-  "photo_caption_state_lake": "State/Lake — The Loop",
-  "photo_caption_wrigley_addison": "Addison — Wrigley Field",
   "marker_from": "LÁTI",
   "marker_to": "SÍ",
   "marker_you": "IWO",
@@ -177,5 +172,12 @@
   "caps_bookmarks": "Àwọn Àmì",
   "caps_stops": "Àwọn Ìdúró",
   "caps_advisories": "Àwọn Ìfiránṣẹ́",
-  "alerts_tab_heading": "Ìfiránṣẹ́ àti Ìdádúró"
+  "alerts_tab_heading": "Ìfiránṣẹ́ àti Ìdádúró",
+  "transfer_marker_kicker": "GBIGBE",
+  "transfer_marker_aria": "Gbigbe ni {{station}}",
+  "transfer_marker_aria_passed": "Ti gbigbe ti le sile ni {{station}}",
+  "footprint_marker_aria_walk_to_transit": "Siso ni {{station}}",
+  "footprint_marker_aria_walk_to_transit_passed": "Ti siso ti le sile ni {{station}}",
+  "footprint_marker_aria_transit_to_walk": "Isale ni {{station}}",
+  "footprint_marker_aria_transit_to_walk_passed": "Ti isale ti le sile ni {{station}}"
 }

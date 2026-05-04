@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import maplibregl from "maplibre-gl";
 import { useLocalStorage } from "./hooks/useLocalStorage.js";
@@ -19,6 +19,27 @@ const DEFAULT_STYLE  = import.meta.env.VITE_MAP_STYLE_URL || "https://tiles.open
 const DEFAULT_CENTER = [-87.654, 41.966]; // Uptown, Chicago
 const DEFAULT_ZOOM   = 13;
 
+// Distance from destCoords (in metres) at which we latch the "arrived" state.
+const ARRIVED_THRESHOLD_M = 50;
+
+// All MapLibre interaction handlers we toggle as a group when locking/unlocking
+// the map (TD-FE-009). Source of truth — adding a new handler means adding it
+// here, not editing three call-sites.
+const INTERACTION_HANDLERS = [
+  "scrollZoom",
+  "dragPan",
+  "dragRotate",
+  "doubleClickZoom",
+  "touchZoomRotate",
+  "keyboard",
+];
+
+function setMapInteractive(map, enabled) {
+  for (const name of INTERACTION_HANDLERS) {
+    map[name][enabled ? "enable" : "disable"]();
+  }
+}
+
 // Backend returns [lat, lon]; GeoJSON / MapLibre expects [lon, lat].
 const swapLngLat = ([lat, lon]) => [lon, lat];
 
@@ -27,6 +48,14 @@ const swapLngLat = ([lat, lon]) => [lon, lat];
 const prefersReducedMotion =
   typeof window !== "undefined" &&
   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+// Resolved once at module load — the design system token does not change at
+// runtime, so the per-effect getComputedStyle call (a forced style flush) was
+// wasted work on every leg advance.
+const MUTE_COLOR =
+  (typeof window !== "undefined"
+    ? getComputedStyle(document.documentElement).getPropertyValue("--mute").trim()
+    : "") || "#8a7a60";
 
 // Returns "NW 315°" style string using locale-aware cardinal abbreviations.
 function getBearingLabel(heading, t) {
@@ -42,6 +71,17 @@ function getBearingLabel(heading, t) {
 function smoothHeading(prev, next, alpha = 0.3) {
   const delta = ((next - prev + 540) % 360) - 180;
   return (prev + alpha * delta + 360) % 360;
+}
+
+// Runs the body once the map's style is loaded, and returns a cleanup that
+// detaches the deferred listener if the effect tears down before "load" fires.
+function whenStyleReady(map, body) {
+  if (map.isStyleLoaded()) {
+    body();
+    return () => {};
+  }
+  map.once("load", body);
+  return () => map.off("load", body);
 }
 
 // ---------------------------------------------------------------------------
@@ -69,6 +109,12 @@ export default function MapView({
   const firstFixDoneRef    = useRef(false); // gate for one-time flyTo on first GPS fix
   const [unlocked, setUnlocked] = useState(false);
   const [styleError, setStyleError] = useState(false);
+  // Reactive mirror of map.getBearing(). MapLibre updates bearing imperatively
+  // (drag-rotate, rotateTo, easeTo), so reading it during render alone leaves
+  // bearing-derived UI (the compass rose below) stale until something else
+  // re-renders. The `rotate` listener wired up in the map-init effect keeps
+  // this in sync.
+  const [mapBearing, setMapBearing] = useState(0);
   const [headingUp, setHeadingUp] = useLocalStorage("cta_heading_up", false);
   const [arrived, setArrived] = useState(false);
 
@@ -108,12 +154,7 @@ export default function MapView({
       });
 
       // Lock all interactions by default
-      mapInstance.scrollZoom.disable();
-      mapInstance.dragPan.disable();
-      mapInstance.dragRotate.disable();
-      mapInstance.doubleClickZoom.disable();
-      mapInstance.touchZoomRotate.disable();
-      mapInstance.keyboard.disable();
+      setMapInteractive(mapInstance, false);
 
       // After style loads: resize + repaint so the WebGL framebuffer is presented
       // correctly when the container starts at opacity:0.
@@ -121,6 +162,10 @@ export default function MapView({
         mapInstance.resize();
         mapInstance.triggerRepaint();
       });
+
+      // Mirror bearing into React state so bearing-derived UI re-renders when
+      // the user drag-rotates or programmatic rotateTo/easeTo runs.
+      mapInstance.on("rotate", () => setMapBearing(mapInstance.getBearing()));
 
       mapInstance.on("error", (e) => {
         console.error("[MapView] map error:", e?.error ?? e);
@@ -179,15 +224,13 @@ export default function MapView({
   // useRouteLayers clears all layers when the route changes so no reset needed.
   useEffect(() => {
     if (!map || !route?.legs || activeLegIndex == null || activeLegIndex <= 0) return;
-    const muteColor = getComputedStyle(document.documentElement)
-      .getPropertyValue("--mute").trim() || "#8a7a60";
     for (let i = 0; i < activeLegIndex; i++) {
       const leg = route.legs[i];
       const lineId = leg.type === "walk"
         ? `route-walk-line-${i}`
         : `route-transit-line-${i}`;
       if (map.getLayer(lineId)) {
-        map.setPaintProperty(lineId, "line-color", muteColor);
+        map.setPaintProperty(lineId, "line-color", MUTE_COLOR);
         map.setPaintProperty(lineId, "line-opacity", leg.type === "walk" ? 0.4 : 0.35);
       }
       const circleId = `route-boardexit-circle-${i}`;
@@ -197,98 +240,96 @@ export default function MapView({
     }
   }, [map, activeLegIndex, route]);
 
-  // Live position marker — kept imperative because the heading prop must update
-  // synchronously with smoothedHeadingRef (a ref, intentionally non-reactive to
-  // avoid a 1 Hz re-render of MapView). useMapMarker's auto-render-on-props
-  // model would lag the heading by one frame.
+  // ── Trip live position — split into focused effects (TD-FE-008) ──
+  // The previous single 88-line effect mixed arrived detection, marker lifecycle,
+  // camera follow, heading-up rotation, and teardown. Each concern now lives in
+  // its own effect with the smallest dep set that keeps it correct.
+
+  // Arrived latch — set once when the user is within ARRIVED_THRESHOLD_M of
+  // destCoords. Reset by the route/destCoords effect above.
   useEffect(() => {
-    if (!map) return;
+    if (!tripActive || !userPosition || !destCoords || arrived) return;
+    const dist = haversineMeters(
+      { lat: userPosition.lat, lng: userPosition.lng },
+      { lat: destCoords[0], lng: destCoords[1] }, // destCoords is [lat, lon]
+    );
+    if (dist <= ARRIVED_THRESHOLD_M) {
+      setArrived(true);
+      onArrived?.();
+    }
+  }, [tripActive, userPosition, destCoords, arrived, onArrived]);
 
-    function render() {
-      if (tripActive && userPosition) {
-        // Smooth the raw heading before it reaches the marker.
-        if (Number.isFinite(userPosition.heading)) {
-          smoothedHeadingRef.current = smoothHeading(
-            smoothedHeadingRef.current,
-            userPosition.heading,
-          );
-        }
+  // Live marker lifecycle + camera follow + heading-up rotation.
+  // Imperative because the heading prop must update in lock-step with the
+  // smoothedHeadingRef (a ref, intentionally non-reactive to avoid re-rendering
+  // MapView at GPS rate). Skipped while no live data is available.
+  useEffect(() => {
+    if (!map || !tripActive || !userPosition) return;
 
-        // Arrived latch — 50 m threshold, never resets during a trip.
-        if (!arrived && destCoords) {
-          const dist = haversineMeters(
-            { lat: userPosition.lat, lng: userPosition.lng },
-            { lat: destCoords[0], lng: destCoords[1] }, // destCoords is [lat, lon]
-          );
-          if (dist <= 50) {
-            setArrived(true);
-            onArrived?.();
-          }
-        }
-
-        // Adjust heading for current map bearing so the needle always points in
-        // the world direction of travel, regardless of map rotation.
-        const displayHeading = (smoothedHeadingRef.current + map.getBearing() + 360) % 360;
-
-        const markerProps = {
-          heading: displayHeading,
-          hasHeading: Number.isFinite(userPosition.heading),
-          reducedMotion: prefersReducedMotion,
-          youLabel: t("marker_you"),
-        };
-
-        if (!liveMarkerRef.current) {
-          liveMarkerRef.current = mountMarker(
-            map,
-            LivePositionMarker,
-            markerProps,
-            [userPosition.lng, userPosition.lat],
-            { className: "marker-live-position-wrapper" },
-          );
-          liveMarkerRef.current.marker.getElement().addEventListener("click", (event) => {
-            event.stopPropagation();
-            handleRelock();
-          });
-          // Center map on first GPS fix.
-          if (!firstFixDoneRef.current) {
-            firstFixDoneRef.current = true;
-            map.flyTo({ center: [userPosition.lng, userPosition.lat], zoom: 15 });
-          }
-        } else {
-          liveMarkerRef.current.marker.setLngLat([userPosition.lng, userPosition.lat]);
-          liveMarkerRef.current.root.render(<LivePositionMarker {...markerProps} />);
-          // Keep user centered and apply heading-up rotation while map is locked.
-          if (!unlocked) {
-            map.easeTo({ center: [userPosition.lng, userPosition.lat] });
-            // Rotate map to face direction of travel in heading-up mode.
-            // 1° guard prevents sub-degree GPS wobble from triggering rapid rotateTo calls.
-            if (headingUp && Number.isFinite(smoothedHeadingRef.current)) {
-              const target = -smoothedHeadingRef.current;
-              if (Math.abs(map.getBearing() - target) >= 1) {
-                map.rotateTo(target, { duration: 200 });
-              }
-            }
-          }
-        }
-      } else {
-        // Trip ended or no position — tear down marker and reset transient state.
-        removeMarker(liveMarkerRef);
-        smoothedHeadingRef.current = 0;
-        firstFixDoneRef.current = false;
-        // Reset heading-up preference and map bearing on trip end.
-        setHeadingUp(false);
-        map.rotateTo(0, { duration: 300 });
+    return whenStyleReady(map, () => {
+      if (Number.isFinite(userPosition.heading)) {
+        smoothedHeadingRef.current = smoothHeading(
+          smoothedHeadingRef.current,
+          userPosition.heading,
+        );
       }
-    }
 
-    if (!map.isStyleLoaded()) {
-      map.once("load", render);
-      return () => map.off("load", render);
-    }
-    render();
-  // `destCoords` is intentionally omitted: when it changes, the route effect resets
-  // arrived via setArrived(false), which re-runs this effect through the `arrived` dep.
-  }, [map, tripActive, userPosition, unlocked, headingUp, arrived]); // eslint-disable-line react-hooks/exhaustive-deps
+      // Adjust heading for current map bearing so the needle always points in
+      // the world direction of travel, regardless of map rotation.
+      const displayHeading = (smoothedHeadingRef.current + map.getBearing() + 360) % 360;
+      const markerProps = {
+        heading: displayHeading,
+        hasHeading: Number.isFinite(userPosition.heading),
+        reducedMotion: prefersReducedMotion,
+        youLabel: t("marker_you"),
+      };
+
+      if (!liveMarkerRef.current) {
+        liveMarkerRef.current = mountMarker(
+          map,
+          LivePositionMarker,
+          markerProps,
+          [userPosition.lng, userPosition.lat],
+          { className: "marker-live-position-wrapper" },
+        );
+        liveMarkerRef.current.marker.getElement().addEventListener("click", (event) => {
+          event.stopPropagation();
+          handleRelock();
+        });
+        if (!firstFixDoneRef.current) {
+          firstFixDoneRef.current = true;
+          map.flyTo({ center: [userPosition.lng, userPosition.lat], zoom: 15 });
+        }
+        return;
+      }
+
+      liveMarkerRef.current.marker.setLngLat([userPosition.lng, userPosition.lat]);
+      liveMarkerRef.current.root.render(<LivePositionMarker {...markerProps} />);
+      if (unlocked) return;
+
+      map.easeTo({ center: [userPosition.lng, userPosition.lat] });
+      // Rotate map to face direction of travel in heading-up mode.
+      // 1° guard prevents sub-degree GPS wobble from triggering rapid rotateTo calls.
+      if (headingUp && Number.isFinite(smoothedHeadingRef.current)) {
+        const target = -smoothedHeadingRef.current;
+        if (Math.abs(map.getBearing() - target) >= 1) {
+          map.rotateTo(target, { duration: 200 });
+        }
+      }
+    });
+  // handleRelock is stable (closes only over `map`/`userPosition` which are deps).
+  }, [map, tripActive, userPosition, unlocked, headingUp, t]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Trip-end teardown — clear marker, reset transient refs, reset bearing.
+  // Runs when tripActive transitions to false (or map unmounts).
+  useEffect(() => {
+    if (!map || tripActive) return;
+    removeMarker(liveMarkerRef);
+    smoothedHeadingRef.current = 0;
+    firstFixDoneRef.current = false;
+    setHeadingUp(false);
+    map.rotateTo(0, { duration: 300 });
+  }, [map, tripActive, setHeadingUp]);
 
   // On desktop, panel-map transitions in over 220ms (--dur-base). Notify
   // MapLibre after the transition so the WebGL framebuffer matches the new
@@ -301,23 +342,13 @@ export default function MapView({
 
   function handleUnlock() {
     if (!map) return;
-    map.scrollZoom.enable();
-    map.dragPan.enable();
-    map.dragRotate.enable();
-    map.doubleClickZoom.enable();
-    map.touchZoomRotate.enable();
-    map.keyboard.enable();
+    setMapInteractive(map, true);
     setUnlocked(true);
   }
 
   function handleRelock() {
     if (!map) return;
-    map.scrollZoom.disable();
-    map.dragPan.disable();
-    map.dragRotate.disable();
-    map.doubleClickZoom.disable();
-    map.touchZoomRotate.disable();
-    map.keyboard.disable();
+    setMapInteractive(map, false);
     setUnlocked(false);
     if (userPosition) {
       map.easeTo({ center: [userPosition.lng, userPosition.lat] });
@@ -334,12 +365,21 @@ export default function MapView({
     }
   }
 
-  // Derive distinct transit legs for overlays — display computation only, no hooks.
-  const distinctTransitLegs = route
-    ? route.legs
-        .filter((l) => l.type === "transit")
-        .filter((l, i, arr) => arr.findIndex((x) => x.line === l.line) === i)
-    : [];
+  // Derive distinct transit legs for overlays. Memoised on `route` since this
+  // feeds two map overlays (train card + legend) and MapView re-renders at GPS
+  // rate during a trip; without memoisation the dedup work ran on every tick.
+  const distinctTransitLegs = useMemo(() => {
+    if (!route) return [];
+    const seen = new Set();
+    const out = [];
+    for (const l of route.legs) {
+      if (l.type !== "transit") continue;
+      if (seen.has(l.line)) continue;
+      seen.add(l.line);
+      out.push(l);
+    }
+    return out;
+  }, [route]);
   const primaryTransitLeg = distinctTransitLegs[0] ?? null;
 
   return (
@@ -409,7 +449,7 @@ export default function MapView({
             className="map-heading-btn__rose"
             width="16" height="16" viewBox="-8 -8 16 16"
             aria-hidden="true"
-            style={{ transform: `rotate(${map?.getBearing() ?? 0}deg)` }}
+            style={{ transform: `rotate(${mapBearing}deg)` }}
           >
             <polygon points="0,-7 -2.5,-2 2.5,-2" fill={headingUp ? "var(--rust)" : "var(--ink)"} />
             <polygon points="0,7 -2.5,2 2.5,2" fill="var(--mute-fog)" />

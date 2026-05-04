@@ -1,16 +1,26 @@
 import { useTranslation } from "react-i18next";
-import { LINE_COLORS } from "../constants.js";
+import { TRAIN_LINE_CODE_TO_NAME } from "../lineColors.js";
 import LinePill from "./LinePill.jsx";
 import SignalLamp from "./SignalLamp.jsx";
 import TwoToneHeading from "./TwoToneHeading.jsx";
 
 function ArrivalRow({ route, destination, minutes }) {
   const { t } = useTranslation();
-  const isBus = !(route in LINE_COLORS);
+  // /stop-arrivals sends train arrivals with the raw CTA `rt` code (e.g. "Red",
+  // "Brn", "G") in `route`. Bus arrivals send the bus route number/letter.
+  // Resolve trains via TRAIN_LINE_CODE_TO_NAME so the rail pill picks up the
+  // correct color, abbreviation, and aria-label.
+  const trainLineName = TRAIN_LINE_CODE_TO_NAME[route];
+  const isBus = !trainLineName;
   const due = minutes === 0 ? t("wait_due_short") : `${minutes}m`;
   return (
     <div className="psb-arrival">
-      <LinePill line={route} isBus={isBus} lineCode={isBus ? route : undefined} size="sm" />
+      <LinePill
+        line={isBus ? route : trainLineName}
+        isBus={isBus}
+        lineCode={isBus ? route : undefined}
+        size="sm"
+      />
       <span className="psb-arrival-dest">{destination}</span>
       <span className="psb-arrival-due">{due}</span>
     </div>

@@ -16,8 +16,10 @@ describe("renderMarkdown", () => {
     expect(renderMarkdown("Walk *quickly*")).toBe("Walk quickly");
   });
 
-  it("strips italic _text_", () => {
-    expect(renderMarkdown("Walk _quickly_")).toBe("Walk quickly");
+  it("preserves underscores in snake_case identifiers", () => {
+    // _…_ italic stripping was removed to avoid corrupting identifiers like
+    // `max_users_count` in AI recommendation text.
+    expect(renderMarkdown("Use max_users_count for routing")).toBe("Use max_users_count for routing");
   });
 
   it("strips inline code `text`", () => {

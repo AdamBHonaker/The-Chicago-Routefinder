@@ -42,21 +42,6 @@ Claude cannot do these. Check them off as you go.
 
 ---
 
-## Map UI — Post-Launch Checks
-
-- [ ] **Confirm desktop split-panel width ratio** — currently set to 40% route cards / 60% map. Check this on a real desktop screen before deployment and adjust if needed.
-
-- [ ] **Confirm mobile minimum heights** — currently set to route card panel min-height: 300px, map min-height: 350px. Test on a real mobile device before deployment and adjust if needed.
-
-- [ ] **Source and provide transit location photos** (see [BUG-007 in docs/BUGS.md](BUGS.md)) — at least 10 photos needed for the loading/no-routes map panel. Decide on sourcing approach:
-  - Option A: Take your own photos at CTA locations
-  - Option B: Free stock photos from Unsplash or Wikimedia Commons (verify license per image)
-  - Option C: Combination of both
-  - Each photo needs a location name caption (e.g. "Addison · Red Line", "O'Hare · Blue Line", "95th/Dan Ryan · Red Line")
-  - Once sourced, place images in `frontend/public/transit-photos/` and give Claude the list of filenames + captions to wire up
-
----
-
 ## Phase 7 — Monetization (future)
 
 **Strategy:** House ads first (Phase 1) — no third-party ad scripts. Defer EthicalAds/Carbon Ads until the user base is established. Google AdSense deliberately avoided for now (auto-placed display ads are likely to clash with The Chicago Routefinder editorial design).
@@ -71,6 +56,44 @@ Claude cannot do these. Check them off as you go.
 
 - [x] **Restore street-network walking graph (Feature K)** ✅ — Completed. `street_graph.graphml` uploaded as a GitHub Release asset; Dockerfile curl block re-enabled and pointed at the GitHub API asset endpoint. Street-routed walking is live in production.
 - [ ] **Remove geocoding rate limit** — `backend/gtfs_loader.py` has a temporary 9,500 calls/month cap (`_GEOCODE_CALL_LIMIT`) to prevent accidental charges during testing. Once the app is live and call volume is understood, remove the cap: delete `_GEOCODE_CALL_LIMIT`, `_GEOCODE_COUNTER_PATH`, `_geocode_call_counter`, `_load_geocode_counter`, `_save_geocode_counter`, `_geocode_call_count`, `_increment_geocode_call_count`, and the guard block inside `geocode_google`. The large comment block above `_GEOCODE_CALL_LIMIT` marks all of these.
+
+---
+
+## Analytics Suite Phase 1 — Post-Deployment Checks (2026-05-04)
+
+After deploying the FEAT-003 + FEAT-009 v1 changes, the following need human verification. The first item is the only one that blocks the dashboard from working at all; the rest are quality / data-integrity checks that should be done after some traffic has accumulated.
+
+- [x] **Sign up for a MaxMind account and generate a license key** ✅ (2026-05-04) — key added to local `backend/.env` for dev. Account registered under `wayfarer.atlas@gmail.com`. Form answers used at signup: platform = "Custom backend (Python, FastAPI on Railway)"; usage = "Aggregate, privacy-preserving city-level traffic stats for a public-transit web app. IPs are resolved to city names in memory only; only per-day per-city visit counters are persisted. No IP-to-city mapping is stored."
+
+- [X] **Add `MAXMIND_LICENSE_KEY` to Railway Build Arguments and redeploy** — the Dockerfile reads it as a *build* argument (not a runtime env var), so it must be set under **Railway → Service → Settings → Build Arguments**, NOT under Variables. After adding it, trigger a redeploy and confirm the build log shows `[geoip] /app/GeoLite2-City.mmdb: NN bytes` (a number in the tens of millions). Without this step the production GeoLite2-City database is never downloaded and the Chicago-metro share panel on `/stats` reads `—` forever, even though the local dev environment will work fine.
+
+- [ ] **Test the `/stats` page in a browser (desktop + mobile)** — once deployed and MAXMIND key is in place, open `https://cta-transit-pwa-prod-production.up.railway.app/stats`. Confirm: the DAU number renders, the 30-day trend bars draw under it, the Chicago-metro share reads sensibly, the page is mobile-responsive, and the cream/charcoal palette matches the rest of the app. The dashboard is intentionally not linked from anywhere — it's a quiet URL meant to be sent directly to advertisers. (Decision 2026-05-04: keep it quiet until the data is more impressive; revisit linking it once Phase 2/3 panels are live.) Implementation: [backend/public_stats.py](../backend/public_stats.py).
+
+- [ ] **Test `/stats` with JavaScript disabled** — the FEAT-009 spec requires that today's headline numbers (DAU + Chicago-metro %) render as plain text without JS, since the JS-driven version of the page is the enhancement, not the floor. To test: Chrome DevTools → ⋮ menu → Settings → Preferences → Debugger → "Disable JavaScript" → reload `/stats`. You should see the actual numbers, not `—`. If you see `—`, the server-side rendering step in [backend/main.py](../backend/main.py) (`public_stats_page` handler) isn't working and needs investigation.
+
+- [ ] **Confirm `geography.json` survives Railway restarts** — wait until production has accumulated geography data for at least one full Chicago calendar day, then: (1) `curl -H "Authorization: Bearer $DAU_ADMIN_TOKEN" https://cta-transit-pwa-prod-production.up.railway.app/admin/geography` and confirm non-empty `cities` and `metro` objects. (2) Trigger a redeploy in the Railway dashboard. (3) Hit the same endpoint again — yesterday's counts must still be there (today's counter resets in-memory, that's expected). The risk being checked: that Railway's persistent volume is actually mounted at `/app/data` for `geography.json` the same way it is for `dau.json`. If `dau.json` already survives restarts then geography.json will too — they share a directory — but worth one explicit confirmation. Source: [backend/geography.py](../backend/geography.py) (`GEO_FILE` path).
+
+- [ ] **Check `_CHICAGO_METRO_CITIES` covers the suburbs that actually visit the site** — once production has accumulated ~1–2 weeks of geography data, run `python backend/scripts/check_geography.py <DAU_ADMIN_TOKEN>` and look at the per-day per-city table. Compare the cities appearing there against the metro-list constant in [backend/geography.py](../backend/geography.py) (`_CHICAGO_METRO_CITIES` frozenset). If a real Chicago-area suburb is showing visits but isn't on the metro list, those visitors are silently being excluded from the "Chicago metro share" rollup, understating the headline number. Add missing suburbs to the frozenset and the change takes effect on the next read with no data migration needed (the rollup is computed at read time, not stored).
+
+---
+
+## Analytics Suite Phase 2 — Post-Deployment Checks (2026-05-04)
+
+After deploying the FEAT-001 + FEAT-004 + FEAT-005 + FEAT-008 + FEAT-009 panel-expansion changes, the following need human verification.
+
+- [ ] **Confirm session cookies actually flow cross-origin** — open the live site (Vercel) in a fresh browser profile, open DevTools → Application → Cookies → the Railway backend domain, and confirm a `sid` cookie appears after the page loads. Then submit a route request and confirm the same `sid` value persists (does NOT reset to a new value). If the cookie never appears: check that `ALLOWED_ORIGINS` on Railway is set to your *exact* Vercel origin including scheme (`https://...`), and that the response Access-Control-Allow-Credentials header is `true` (visible in DevTools → Network → /ping → Response Headers). If the cookie appears but resets every request: the frontend `credentials: "include"` flag is not making it through — check that no service-worker fetch is intercepting and stripping it.
+
+- [ ] **Sanity-check session/bounce/duration numbers after one full day of real traffic** — `python backend/scripts/check_sessions.py <DAU_ADMIN_TOKEN>` should show: `sessions` ≤ DAU (a session can be a returning visit on the same day, but in normal patterns `sessions` is roughly DAU × 1.0–1.5); `avg_duration_seconds` in the 30 s – 5 min range for a real transit-app workflow; `bounce_rate_pct` in the 30–70% range. Numbers wildly outside those bands suggest a wiring bug — most likely the cookie not flowing (every visit looks like a new bounced session) or the idle-timeout finalisation not firing.
+
+- [ ] **Sanity-check device split** — `python backend/scripts/check_devices.py <DAU_ADMIN_TOKEN>`. For a CTA transit app the mobile share should comfortably exceed desktop (>60% mobile is normal; >80% on weekends). If desktop dominates, the most likely cause is a misconfigured CDN or proxy stripping/rewriting the User-Agent header before it reaches Railway.
+
+- [ ] **Sanity-check referrer breakdown after some real traffic accumulates** — `python backend/scripts/check_referrers.py <DAU_ADMIN_TOKEN>`. Most early traffic should bucket as `direct` (you sharing the link directly). Once you start indexing in Google or post on social, those buckets should fill. If a press mention appears in the `other` long tail, that's the signal to consider linking the dashboard publicly. If `direct` is suspiciously low and `other` contains your own Vercel domain, the `_OWN_HOSTNAMES` derivation isn't picking up the production domain — check `ALLOWED_ORIGINS`.
+
+- [ ] **Confirm hour-of-day histogram peaks at sensible commute hours** — `python backend/scripts/check_hourly.py <DAU_ADMIN_TOKEN>` after a week of weekday traffic should show clear peaks around 7–9 a.m. and 4–6 p.m. Chicago time. If peaks are at unexpected hours (e.g. all at 0:00) it's a timezone bug in the Chicago-tz hour extraction.
+
+- [ ] **Reload `/stats` and verify all six panels populate** — DAU, Chicago metro, sessions/bounce/duration, peak-hours histogram, device split, traffic sources. Each panel that has data should render numbers; each panel with no data yet should render `—` and a friendly empty-state message rather than crashing the page.
+
+- [ ] **Visit `/privacy` and confirm the inline privacy text loads** — the dashboard footer links there. The route serves `public_stats.PRIVACY_TEXT` as plain text. Update the inline text in [backend/public_stats.py](../backend/public_stats.py) when [docs/PRIVACY.md](PRIVACY.md) materially changes; the two are intentionally not auto-synced because the docs file isn't on the production image.
 
 ---
 

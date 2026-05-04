@@ -6,13 +6,6 @@ Known issues catalogued for future fixing. Severity: 🔴 High · 🟡 Medium ·
 
 ---
 
-## BUG-007 · Transit photos missing from production
-
-- **File**: `frontend/public/transit-photos/` (directory), `frontend/src/components/TransitPhoto.jsx` (`PHOTOS` array)
-- **Severity**: Low
-
-**What happens:** The `frontend/public/transit-photos/` directory contains no image files. The app references photos like `blue-line-ohare.jpg` which return 404 on production, showing broken images in the background photo feature. This is a pre-existing asset gap from Phase 6 setup, not a code bug.
-
-**Fix:** Add ≥10 transit photos to `frontend/public/transit-photos/` and update the `PHOTOS` array in `frontend/src/components/TransitPhoto.jsx` to match the filenames. Then commit and let Vercel redeploy.
+_No outstanding items at this time. The 2026-05-04 backend and frontend bug scans (8 bugs) are all resolved — see [`docs/archive/RESOLVED_HISTORY.md`](archive/RESOLVED_HISTORY.md) for fix details._
 
 ---

@@ -1,0 +1,373 @@
+
+/* ── Favorites — Location field star + dropdown ─────────────────────────── */
+
+.field-wrapper {
+  position: relative;
+}
+
+.star-btn {
+  position: absolute;
+  inset-inline-end: 0.4rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1rem;
+  color: var(--mute-fog);
+  padding: 0.2rem;
+  line-height: 1;
+  z-index: var(--z-base);
+  transition: color var(--dur-quick) var(--ease-out);
+}
+.star-btn:hover { color: var(--rust); }
+.star-btn--saved { color: var(--rust); }
+
+.geo-btn-row {
+  margin-top: 0.2rem;
+}
+
+.geo-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: none;
+  border: none;
+  color: var(--mute);
+  font-family: var(--mono);
+  font-size: var(--fs-mono);
+  cursor: pointer;
+  padding: 0.1rem 0;
+  line-height: 1;
+  transition: color var(--dur-quick) var(--ease-out);
+}
+.geo-btn:hover:not(:disabled) { color: var(--ink); }
+.geo-btn:disabled { color: var(--mute-fog); cursor: default; }
+.geo-btn--error { color: var(--rust); }
+.geo-btn--loading { color: var(--mute-fog); }
+
+.geo-denied-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-top: 0.4rem;
+  padding: 8px 10px;
+  background: var(--paper-folio);
+  border: var(--hairline);
+  border-inline-start: 2px solid var(--rust);
+  color: var(--ink-soft);
+  font-family: var(--serif);
+  font-size: var(--fs-body-sm);
+  font-style: italic;
+  line-height: 1.4;
+}
+.geo-denied-banner span { flex: 1; }
+.geo-denied-dismiss {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--mute);
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0;
+}
+.geo-denied-dismiss:hover { color: var(--rust); }
+
+.trip-geo-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  padding: 8px 10px;
+  background: var(--paper-folio);
+  border: var(--hairline);
+  border-inline-start: 2px solid var(--rust);
+  color: var(--ink-soft);
+  font-family: var(--serif);
+  font-size: var(--fs-body-sm);
+  font-style: italic;
+  line-height: 1.4;
+}
+.trip-geo-error span { flex: 1; }
+
+.label-save-panel {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  margin-top: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.label-save-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--paper-bright);
+  border: none;
+  border-bottom: var(--rule);
+  border-radius: 0;
+  padding: 6px 8px;
+  font-family: var(--serif);
+  font-size: max(var(--fs-body-sm), 16px);
+  color: var(--ink);
+  outline: none;
+}
+
+.label-save-btn {
+  background: var(--ink);
+  color: var(--paper);
+  border: none;
+  border-radius: 0;
+  padding: 6px 12px;
+  font-family: var(--serif);
+  font-size: var(--fs-body-sm);
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.label-save-btn:hover { opacity: var(--opacity-hover); }
+
+.label-cancel-btn {
+  background: transparent;
+  border: var(--hairline);
+  border-radius: 0;
+  color: var(--mute);
+  cursor: pointer;
+  font-family: var(--serif);
+  font-size: var(--fs-body-sm);
+  padding: 6px 12px;
+  white-space: nowrap;
+}
+.label-cancel-btn:hover { border-color: var(--ink); color: var(--ink); }
+
+.fav-limit-error {
+  font-family: var(--sans);
+  font-size: var(--fs-caps);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--rust);
+  width: 100%;
+}
+
+.saved-dropdown {
+  position: absolute;
+  top: calc(100% + 2px);
+  inset-inline: 0;
+  background: var(--paper-bright);
+  border: var(--rule);
+  border-radius: 0;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  z-index: var(--z-dropdown);
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.saved-dropdown-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px;
+  gap: 0.5rem;
+  border-bottom: var(--hairline);
+}
+.saved-dropdown-item:last-child { border-bottom: none; }
+.saved-dropdown-item:hover { background: var(--paper-folio); }
+
+/* Editorial section marker for saved places (§N). Italic Fraunces, mute color. */
+.saved-marker {
+  font-family: var(--serif);
+  font-style: italic;
+  color: var(--mute);
+  font-size: 11px;
+  width: 18px;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.saved-dropdown-label {
+  flex: 1;
+  font-family: var(--serif);
+  font-size: var(--fs-body-sm);
+  color: var(--ink-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.saved-dropdown-delete {
+  background: none;
+  border: none;
+  color: var(--mute-fog);
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0 0.2rem;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.saved-dropdown-delete:hover { color: var(--rust); }
+
+.saved-dropdown-item--active {
+  text-decoration: underline var(--rust);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 2px;
+}
+
+.ac-type-badge {
+  font-family: var(--sans);
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--mute-fog);
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+/* ── Favorites — Routes section header ───────────────────────────────────── */
+
+.routes-section-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: var(--sp-3);
+}
+
+.routes-section-header .routes-heading {
+  margin-bottom: 0;
+}
+
+.save-route-btn {
+  background: none;
+  border: var(--hairline);
+  color: var(--mute);
+  cursor: pointer;
+  font-family: var(--serif);
+  font-size: var(--fs-body-sm);
+  font-style: italic;
+  padding: var(--sp-1) var(--sp-3);
+  transition: border-color var(--dur-quick) var(--ease-out), color var(--dur-quick) var(--ease-out);
+  white-space: nowrap;
+}
+.save-route-btn:hover { border-color: var(--ink); color: var(--ink); }
+.save-route-btn--saved { border-color: var(--field); color: var(--field); }
+
+.route-label-save-panel {
+  display: flex;
+  gap: var(--sp-3);
+  align-items: center;
+  margin-bottom: var(--sp-5);
+  flex-wrap: wrap;
+}
+
+.route-label-save-input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  border-bottom: var(--rule);
+  border-radius: 0;
+  padding: var(--sp-2) 0;
+  font-family: var(--serif);
+  font-size: max(var(--fs-body), 16px);
+  color: var(--ink);
+  outline: none;
+}
+
+.route-label-save-btn {
+  background: var(--ink);
+  color: var(--paper);
+  border: none;
+  padding: var(--sp-2) var(--sp-4);
+  font-family: var(--serif);
+  font-size: var(--fs-body-sm);
+  font-weight: 600;
+  font-style: italic;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: opacity var(--dur-quick) var(--ease-out);
+}
+.route-label-save-btn:hover { opacity: var(--opacity-hover); }
+
+.route-label-cancel-btn {
+  background: transparent;
+  border: var(--hairline);
+  color: var(--mute);
+  cursor: pointer;
+  font-family: var(--serif);
+  font-size: var(--fs-body-sm);
+  padding: var(--sp-2) var(--sp-4);
+  white-space: nowrap;
+  transition: border-color var(--dur-quick) var(--ease-out), color var(--dur-quick) var(--ease-out);
+}
+.route-label-cancel-btn:hover { border-color: var(--ink); color: var(--ink); }
+
+/* ── Saved Routes Panel ──────────────────────────────────────────────────── */
+
+.saved-route-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-6);
+  border-bottom: var(--hairline);
+}
+.saved-route-row:last-child { border-bottom: none; }
+
+.saved-route-label {
+  flex: 1;
+  font-family: var(--serif);
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.saved-route-go {
+  background: none;
+  border: none;
+  color: var(--mute);
+  cursor: pointer;
+  font-family: var(--serif);
+  font-size: var(--fs-body-sm);
+  font-style: italic;
+  padding: 0;
+  flex-shrink: 0;
+  transition: color var(--dur-quick) var(--ease-out);
+}
+.saved-route-go:hover { color: var(--ink); }
+
+.saved-route-delete {
+  background: none;
+  border: none;
+  color: var(--mute-fog);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 var(--sp-1);
+  flex-shrink: 0;
+  line-height: 1;
+  min-width: 28px;
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color var(--dur-quick) var(--ease-out);
+}
+.saved-route-delete:hover { color: var(--rust); }
+
+.saved-routes-empty {
+  font-family: var(--serif);
+  font-size: var(--fs-body-sm);
+  font-style: italic;
+  color: var(--mute);
+  padding: var(--sp-7) var(--sp-6);
+  text-align: center;
+  margin: 0;
+}
+
+/* ── RTL overrides for favorites ─────────────────────────────────────────── */
+
+/* .star-btn RTL handled via inset-inline-end (logical property) */
+/* .form input padding RTL handled via padding-inline-end (logical property) */

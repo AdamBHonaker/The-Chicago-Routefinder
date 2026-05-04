@@ -9,6 +9,7 @@ igraph>=0.11,<1
 networkx>=3.0,<4
 scipy>=1.7,<2
 shapely>=2.0,<3
-osmnx==2.1.0
 holidays>=0.46,<1
 cachetools>=5.3,<6
+geoip2>=4.8,<5
+ua-parser>=0.18,<2

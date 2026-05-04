@@ -1,0 +1,272 @@
+
+/* ── Layout ─────────────────────────────────────────────────────────────── */
+
+.app {
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  color: var(--ink);
+}
+
+/* Two layout modes — swap the modifier class to switch views */
+.layout {
+  flex: 1;
+  display: flex;
+  min-height: 0; /* required for flex children to scroll independently */
+}
+
+/* Desktop default: 3-column grid, both panels visible regardless of activeTab.
+   Mobile breakpoint below switches to a single-column flex with screen-swap. */
+.layout--split {
+  display: grid;
+  grid-template-columns: 60px minmax(0, 520px) 1fr;
+  min-height: 0;
+}
+
+/* Left panel — route cards, form, results */
+.panel-cards {
+  flex-shrink: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+  padding: 1.5rem 1.375rem env(safe-area-inset-bottom, 1.5rem);
+  background-color: var(--paper);
+}
+
+/* Right panel — map (always in DOM) */
+.panel-map {
+  position: relative;
+  background: var(--paper-folio);
+  overflow: hidden;
+}
+
+/* ── Side rail (desktop only) ───────────────────────────────────────────── */
+
+.side-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  border-inline-end: var(--rule-thick);
+  background: var(--paper);
+}
+
+.side-rail__nav {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  padding: 20px 0;
+  height: 100%;
+}
+
+.side-rail__title {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  font-family: var(--serif);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--ink);
+  margin-block-start: 8px;
+  user-select: none;
+}
+
+.side-rail__spacer {
+  flex: 1;
+}
+
+.side-rail__tab {
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--ink);
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--serif);
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: var(--r-0);
+  transition: background var(--dur-quick) var(--ease-out), color var(--dur-quick) var(--ease-out);
+}
+
+.side-rail__tab:hover {
+  background: var(--paper-folio);
+}
+
+.side-rail__tab--active,
+.side-rail__tab--active:hover {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.side-rail__tab:focus-visible {
+  outline: 2px solid var(--rust);
+  outline-offset: 2px;
+}
+
+/* ── Tab bar (mobile only — hidden on desktop) ───────────────────────────── */
+
+.tab-bar {
+  display: none; /* shown only inside the mobile breakpoint */
+}
+
+/* ── Desktop tab switching ───────────────────────────────────────────────── */
+/* On Home/Alerts/Saved: hide map. On Map: hide cards and expand map to fill. */
+
+@media (min-width: 801px) {
+  /* Base visible state — entering panels animate in from translateX(8px) */
+  .panel-cards,
+  .panel-map {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    transform: translateX(0);
+    transition:
+      opacity var(--dur-base) var(--ease-out),
+      transform var(--dur-base) var(--ease-out),
+      visibility 0s linear 0s;
+  }
+
+  /* Hidden panel state — fades + slides out, then removed from a11y tree */
+  [data-active-tab="map"] .panel-cards,
+  [data-active-tab="home"] .panel-map,
+  [data-active-tab="alerts"] .panel-map,
+  [data-active-tab="saved"] .panel-map {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transform: translateX(8px);
+    transition:
+      opacity var(--dur-base) var(--ease-out),
+      transform var(--dur-base) var(--ease-out),
+      visibility 0s linear var(--dur-base);
+  }
+
+  /* Grid collapse — visibility:hidden keeps elements in layout so the column
+     must be explicitly removed to prevent the hidden panel eating grid space */
+  [data-active-tab="map"] .layout--split,
+  [data-active-tab="alerts"] .layout--split,
+  [data-active-tab="saved"] .layout--split {
+    grid-template-columns: 60px 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel-cards,
+  .panel-map {
+    transition: none;
+  }
+}
+
+/* ── Mobile breakpoint ───────────────────────────────────────────────────── */
+
+@media (max-width: 800px) {
+  .app {
+    height: 100dvh;
+    overflow: hidden;
+  }
+
+  /* Mobile: stack into a single scroll column; hide the desktop rail. */
+  .side-rail { display: none; }
+
+  .layout--split {
+    display: flex;
+    flex-direction: column;
+    grid-template-columns: none;
+    overflow: hidden;
+  }
+
+  /* Panel-cards: scrollable column, clears tab bar */
+  .panel-cards {
+    width: 100%;
+    flex: 1;
+    overflow-y: auto;
+    min-height: 0;
+    padding-bottom: calc(56px + env(safe-area-inset-bottom) + 1rem);
+  }
+
+  /* Map panel: fill remaining height */
+  .panel-map {
+    width: 100%;
+    flex: 1;
+    min-height: 0;
+  }
+
+  /* Mobile screen-swap: hide the inactive panel so the active one fills
+     the viewport. Desktop keeps both panels visible at all times. */
+  [data-active-tab="map"] .panel-cards { display: none; }
+  [data-active-tab="home"] .panel-map,
+  [data-active-tab="alerts"] .panel-map,
+  [data-active-tab="saved"] .panel-map { display: none; }
+
+  /* Tab bar — D2 spec: serif word labels (no icons), 2px ink top border on
+   * paper, active tab is roman 13/700 ink with a 2px ink underline that
+   * overlaps the top border (margin-bottom: -2px). Inactive tabs are italic
+   * 13/400 mute. */
+  .tab-bar {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    position: fixed;
+    bottom: 0;
+    inset-inline: 0;
+    background: var(--paper);
+    border-top: var(--rule-thick);
+    z-index: var(--z-nav);
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
+  }
+
+  .tab-bar__tab {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: 10px 6px 4px;
+    text-align: center;
+    min-height: 44px;
+    font-family: var(--serif);
+    font-size: 13px;
+    font-style: italic;
+    font-weight: 400;
+    color: var(--mute);
+    line-height: 1.2;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;  /* underline overlaps the bar's top border */
+    transition: background var(--dur-quick) var(--ease-out);
+  }
+
+  .tab-bar__tab:hover {
+    background: var(--paper-folio);
+  }
+
+  .tab-bar__tab--active {
+    font-style: normal;
+    font-weight: 700;
+    color: var(--ink);
+    border-bottom-color: var(--ink);
+  }
+
+  .tab-bar__label {
+    display: block;
+  }
+}
+
+/* ── Alerts tab view ─────────────────────────────────────────────────────── */
+
+.tab-alerts-view {
+  padding: var(--sp-4) 0;
+}
+
+.tab-empty {
+  font-family: var(--serif);
+  font-size: var(--fs-body-sm);
+  font-style: italic;
+  color: var(--mute);
+  padding: var(--sp-8) var(--sp-6);
+  text-align: center;
+}

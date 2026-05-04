@@ -138,11 +138,6 @@
   "psb_refresh": "آمدونه تازه کړئ",
   "psb_unpin_stop": "ايستنځي آزاد کړئ",
   "settings_btn_close": "بند کړئ",
-  "photo_caption_red_line_howard": "Red Line — Howard",
-  "photo_caption_loop_elevated": "The Loop — بلند ریل",
-  "photo_caption_blue_line_ohare": "Blue Line — O'Hare",
-  "photo_caption_state_lake": "State/Lake — The Loop",
-  "photo_caption_wrigley_addison": "Addison — Wrigley Field",
   "marker_from": "له",
   "marker_to": "ته",
   "marker_you": "تاسو",
@@ -177,5 +172,12 @@
   "caps_bookmarks": "نښلوونکي",
   "caps_stops": "تمځایونه",
   "caps_advisories": "خبرتیاوې",
-  "alerts_tab_heading": "خبرتیاوې او ځنډونه"
+  "alerts_tab_heading": "خبرتیاوې او ځنډونه",
+  "transfer_marker_kicker": "انتقال",
+  "transfer_marker_aria": "د {{station}} په محطه کې انتقال",
+  "transfer_marker_aria_passed": "د {{station}} په محطه کې انتقال تیر شو",
+  "footprint_marker_aria_walk_to_transit": "د {{station}} په محطه کې سوار کېدل",
+  "footprint_marker_aria_walk_to_transit_passed": "د {{station}} په محطه کې سوار کېدل تیر شو",
+  "footprint_marker_aria_transit_to_walk": "د {{station}} په محطه کې ښکته کېدل",
+  "footprint_marker_aria_transit_to_walk_passed": "د {{station}} په محطه کې ښکته کېدل تیر شو"
 }

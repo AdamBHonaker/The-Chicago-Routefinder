@@ -53,6 +53,13 @@ Human Documentation/
 # Archived history logs — personal reference only
 docs/archive/
 
+# Pre-built street-network graphs — large derived artifacts.
+# graphml is the OSMnx source (built locally by fetch_street_graph.py).
+# pkl is the igraph runtime form, fetched at Docker build from the
+# "street-graph" GitHub Release.
+backend/street_graph.graphml
+backend/street_graph_igraph.pkl
+
 # Overpass/OSM API cache — re-built at runtime
 # (covers both backend/cache/ and a top-level cache/ created when the script is
 # run from the project root)

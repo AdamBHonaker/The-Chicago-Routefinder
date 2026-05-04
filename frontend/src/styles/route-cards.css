@@ -1,0 +1,479 @@
+
+/* ── Results ─────────────────────────────────────────────────────────────── */
+
+.results {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.recommendation {
+  background: var(--paper-bright);
+  border: var(--hairline);
+  padding: 1rem 1.25rem;
+  font-family: var(--serif);
+  font-size: var(--fs-body);
+  line-height: 1.7;
+  color: var(--ink-soft);
+}
+
+/* ── Route cards ─────────────────────────────────────────────────────────── */
+
+.routes-heading {
+  font-family: var(--sans);
+  font-size: var(--fs-caps);
+  font-weight: 700;
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--mute);
+  margin-bottom: 0;
+  line-height: var(--lh-caps);
+}
+
+.routes-heading--alternates {
+  margin-top: var(--sp-6);
+  padding-top: var(--sp-4);
+  border-top: var(--hairline);
+}
+
+.routes-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border-top: var(--rule-thick);
+  border-bottom: var(--hairline);
+}
+
+.route-card {
+  background: var(--paper);
+  border: none;
+  border-top: var(--hairline);
+  border-radius: 0;
+  overflow: visible;
+  padding: 16px 22px;
+}
+
+.route-card:first-child {
+  border-top: none;
+}
+
+.route-card--best {
+  background-color: var(--paper-bright);
+}
+
+.route-card--selected {
+  border-inline-start: 2px solid var(--rust);
+  padding-inline-start: 20px;
+}
+
+.route-card-header {
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  cursor: pointer;
+  text-align: start;
+  min-height: 44px;
+}
+
+.route-card-left {
+  flex-shrink: 0;
+}
+
+/* Drop-cap minute hero. Mobile = 72px / -3 letter-spacing / lh 0.82.
+ * Desktop column = 52px / -2 / lh 0.85 (D2 spec, applied via the desktop
+ * media query below). Live-trip 96px hero uses .drop-cap--hero.
+ * Breakpoint convention: <= 800px is mobile (matches the side-rail / tab-bar
+ * split at L272/L283); 801px+ is desktop. */
+.route-minutes {
+  font-family: var(--serif);
+  font-size: var(--drop-cap-mobile);
+  font-weight: 700;
+  font-style: italic;
+  letter-spacing: -3px;
+  line-height: 0.82;
+  color: var(--ink);
+  display: block;
+}
+
+@media (max-width: 359px) {
+  .route-minutes { font-size: 56px; }
+}
+
+@media (min-width: 801px) {
+  .route-card .route-minutes {
+    font-size: var(--drop-cap-desktop);
+    letter-spacing: -2px;
+    line-height: 0.85;
+  }
+}
+
+/* Live-trip hero countdown (96px / -5). Apply by composing on a route-minutes
+ * span: <span className="route-minutes drop-cap--hero">. */
+.drop-cap--hero {
+  font-size: var(--drop-cap-hero);
+  letter-spacing: -5px;
+  line-height: 0.82;
+}
+
+.route-card-right {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 4px;
+}
+
+/* "★ Recommended Path" kicker on the recommended route. Heavier (800) than
+ * the 700-weight standard caps labels, sits above the drop-cap with 6px clear.
+ * Glyph is U+2605 BLACK STAR — emitted directly in RouteCard.jsx. */
+.route-badge {
+  font-family: var(--sans);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--rust);
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  margin-bottom: 6px;
+  display: block;
+}
+
+/* Desktop tightens the gap (D2 spec: 4px on the desktop column). */
+@media (min-width: 801px) {
+  .route-card .route-badge { margin-bottom: 4px; }
+}
+
+.route-minutes-label {
+  font-family: var(--sans);
+  font-size: var(--fs-caps);
+  font-weight: 700;
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--mute);
+  line-height: var(--lh-caps);
+}
+
+.route-meta {
+  font-family: var(--serif);
+  font-size: 13px;
+  font-style: italic;
+  color: var(--ink-soft);
+  line-height: 1.35;
+}
+
+.route-pills-row {
+  display: flex;
+  gap: 3px;
+  flex-wrap: wrap;
+  margin-top: 5px;
+}
+
+.route-chevron {
+  font-family: var(--serif);
+  font-size: 12px;
+  color: var(--mute);
+  flex-shrink: 0;
+  align-self: flex-start;
+  padding-top: 4px;
+  line-height: 1;
+}
+
+/* ── Route legs ──────────────────────────────────────────────────────────── */
+
+.route-legs {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  border-top: var(--hairline);
+}
+
+/* ── Itinerary 3-column spine layout (Feature ItinerarySpine) ─────────────
+ * D2 canonical leg row: [minutes mono | 1px ink spine + 7×7 square dot | content].
+ * Spine cell has no padding so the ink rule runs continuously between legs;
+ * minutes/content cells pad vertically to give breathing room.
+ */
+.leg {
+  display: grid;
+  grid-template-columns: 40px 1px 1fr;
+  column-gap: 12px;
+  font-size: var(--fs-body-sm);
+  color: var(--ink-soft);
+  line-height: 1.45;
+  border-bottom: var(--hairline);
+}
+
+.leg:last-child { border-bottom: none; }
+
+.leg-minutes {
+  font-family: var(--mono);
+  font-size: var(--fs-mono);
+  color: var(--mute);
+  text-align: end;
+  padding: 12px 0 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.leg-spine {
+  position: relative;
+  background: var(--rule-color);
+  align-self: stretch;
+}
+
+/* Dot sits on the spine, centered horizontally on the 1px rule, vertically
+ * aligned with the first text baseline of the content column. */
+.leg-spine .itinerary-dot {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.leg-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 0;
+  min-width: 0;
+}
+
+.leg-transit-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.leg-text {
+  font-family: var(--serif);
+  color: var(--ink-soft);
+}
+
+.transfer-wait-note {
+  display: block;
+  font-family: var(--mono);
+  font-size: var(--fs-mono);
+  color: var(--mute);
+}
+
+.leg-walk-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-family: var(--serif);
+  font-style: italic;
+  color: var(--mute);
+  min-width: 0;
+}
+
+.leg-exit-label {
+  font-family: var(--mono);
+  font-size: var(--fs-mono);
+  color: var(--mute);
+  font-style: normal;
+}
+
+.leg-steps-toggle {
+  align-self: flex-start;
+  background: none;
+  border: var(--hairline);
+  border-radius: 0;
+  color: var(--mute);
+  cursor: pointer;
+  font-family: var(--serif);
+  font-size: 11px;
+  font-style: italic;
+  padding: 2px 6px;
+}
+.leg-steps-toggle:hover {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+
+.leg-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  border-inline-start: var(--hairline);
+  padding-inline-start: 8px;
+}
+
+.leg-step {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  font-family: var(--serif);
+  font-size: 11px;
+  font-style: italic;
+  color: var(--mute);
+}
+
+.leg-step-text {
+  flex: 1;
+}
+
+.leg-step-street {
+  font-style: normal;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+/* ── Itinerary leg dot (canonical D2 spine marker) ──────────────────────────
+ * 7×7 square, 1.5px ink border, no border-radius. Walk legs use a paper
+ * background; transit legs override `background` inline with the line color.
+ * Sits centered on the 1px ink spine in the middle column of `.leg`.
+ */
+.itinerary-dot {
+  width: 7px;
+  height: 7px;
+  background: var(--paper);
+  border: 1.5px solid var(--rule-color);
+  border-radius: 0;
+  flex-shrink: 0;
+}
+
+/* ── Feature Trip — active/complete leg highlighting ───────────────────────
+ * The active treatment now lives on the spine + dot rather than a left
+ * border on the leg row, so it composes cleanly with the 3-column grid.
+ */
+
+.leg-active .leg-spine {
+  background: var(--rust);
+}
+
+.leg-active .itinerary-dot {
+  border-color: var(--rust);
+  animation: radar-pulse 2s ease-out infinite;
+}
+
+.leg-active .leg-text {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.leg-active .leg-minutes {
+  color: var(--rust);
+}
+
+.leg-complete {
+  opacity: var(--opacity-mute);
+}
+
+.leg-complete .leg-text {
+  text-decoration: line-through;
+  font-style: italic;
+}
+
+.leg-complete-check {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--field);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.leg-step--complete {
+  opacity: var(--opacity-mute);
+}
+
+.leg-step-complete-check {
+  color: var(--field);
+  margin-inline-end: 2px;
+}
+
+/* ── Feature Trip — Start/Stop Trip buttons ──────────────────────────────── */
+
+.route-card-trip-footer {
+  padding: 14px 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  border-top: var(--rule-thick);
+  margin-top: 10px;
+}
+
+.on-vehicle-btn {
+  margin-inline-end: auto;
+  background: transparent;
+  color: var(--ink-soft);
+  border: var(--hairline);
+  border-radius: 0;
+  padding: 8px 14px;
+  font-family: var(--serif);
+  font-size: 13px;
+  font-style: italic;
+  cursor: pointer;
+  transition: background var(--dur-quick) var(--ease-out);
+}
+
+.on-vehicle-btn:hover {
+  background: var(--paper-folio);
+}
+
+.on-vehicle-btn--active {
+  background: var(--paper-folio);
+  border-color: var(--ink);
+  color: var(--ink);
+}
+
+.start-trip-btn {
+  background: var(--ink);
+  color: var(--paper);
+  border: none;
+  border-radius: 0;
+  padding: 14px 20px;
+  font-family: var(--serif);
+  font-size: 13px;
+  font-weight: 600;
+  font-style: italic;
+  cursor: pointer;
+  transition: opacity var(--dur-quick) var(--ease-out);
+}
+
+.start-trip-btn:hover {
+  opacity: var(--opacity-hover);
+}
+
+.stop-trip-btn {
+  background: transparent;
+  color: var(--rust);
+  border: 1px solid var(--rust);
+  border-radius: 0;
+  padding: 14px 20px;
+  font-family: var(--serif);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--dur-quick) var(--ease-out);
+}
+
+.stop-trip-btn:hover {
+  background: rgba(156,42,26,0.08);
+}
+
+/* ── Off-route banner — reskinned as .special-dispatch in App.jsx ─────────── */
+
+.btn-ghost-text {
+  background: none;
+  border: none;
+  color: var(--mute);
+  cursor: pointer;
+  font-family: var(--serif);
+  font-size: 13px;
+  font-style: italic;
+  padding: 4px 8px;
+  transition: color var(--dur-quick) var(--ease-out);
+}
+.btn-ghost-text:hover { color: var(--ink); }

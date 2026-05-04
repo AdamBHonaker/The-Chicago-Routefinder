@@ -1,0 +1,167 @@
+
+/* ── Editorial utilities (D2 system) ─────────────────────────────────────── */
+/* Naming mirrors the design system glossary so new code can compose specimen
+ * patterns without bespoke styles. These are additive — existing components
+ * keep their own bespoke caps/heading styles to avoid wide-blast refactors. */
+
+/* Caps label — small uppercase Inter for section headers, kickers, captions. */
+.caps {
+  font-family: var(--sans);
+  font-size: var(--fs-caps);
+  font-weight: var(--fw-caps);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--mute);
+  line-height: var(--lh-caps);
+}
+
+/* Two-tone headline: italic-serif opener + roman-serif continuation,
+ * 28px headline size with -0.6 tracking. Pair with .rule-thick below. */
+.headline {
+  font-family: var(--serif);
+  font-size: var(--fs-headline);
+  font-weight: var(--fw-headline);
+  letter-spacing: var(--ls-headline);
+  line-height: 1.2;
+  margin: 6px 0 12px;
+  color: var(--ink);
+}
+.headline__italic {
+  font-style: italic;
+  font-weight: 400;
+}
+
+/* TwoToneHeading wrapper — caps + headline + rule grouped without margin
+ * collapse surprises. Hosts can override via the className prop. */
+.two-tone-heading { display: block; }
+.two-tone-heading .caps { margin-bottom: 2px; }
+.two-tone-heading .headline { margin: 0 0 var(--sp-3); }
+.two-tone-heading .rule-thick { margin-bottom: var(--sp-4); }
+
+/* Two-tone variant of the settings sheet header: left-align the heading,
+ * keep the close button pinned at the inline-end edge. */
+.settings-sheet-header--two-tone {
+  justify-content: flex-start;
+  align-items: flex-start;
+  text-align: start;
+}
+.settings-sheet-header--two-tone > .two-tone-heading { flex: 1; }
+
+/* Two-tone variant of the pinned-stops header: replace the flex space-between
+ * row + bottom hairline with a stacked heading (which already supplies its
+ * own rule-thick) and the controls on a second row. */
+.psb-header--two-tone {
+  flex-direction: column;
+  align-items: stretch;
+  border-bottom: none;
+  position: relative;
+}
+.psb-header--two-tone .psb-header-right {
+  position: absolute;
+  inset-inline-end: var(--sp-6);
+  top: var(--sp-4);
+}
+
+.tab-alerts-view__heading { padding: 0 var(--sp-6); }
+
+/* Rule weights — four canonical treatments per the design system.
+ * Use as standalone <div> separators (not as borders on adjacent elements). */
+.rule-hair   { height: 1px; background: var(--mute-fog); }
+.rule        { height: 1px; background: var(--rule-color); }
+.rule-thick  { height: 2px; background: var(--rule-color); }
+.rule-double {
+  height: 5px;
+  border-top:    1px solid var(--rule-color);
+  border-bottom: 1px solid var(--rule-color);
+}
+.rule-dashed { border-top: 1px dashed var(--mute-fog); height: 0; }
+
+/* Tabular numerals — apply to any numeric column whose values change in
+ * place (ETAs, drop-cap minutes, schedule columns) to prevent jitter. */
+.tnum,
+.psb-arrival-due,
+.weather-strip__temp,
+.route-minutes,
+.drop-cap--hero {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Paper grain ────────────────────────────────────────────────────────── */
+
+/* Two-layer radial stipple — the base paper grain. Single-layer grain is off-spec. */
+.paper-grain {
+  background-color: var(--paper);
+  background-image:
+    radial-gradient(rgba(26,21,16,0.035) 1px, transparent 1px),
+    radial-gradient(rgba(26,21,16,0.025) 1px, transparent 1px);
+  background-size: 3px 3px, 7px 7px;
+  background-position: 0 0, 1px 2px;
+}
+
+/* Bright (featured panel) grain — single-layer 4px stipple per D2 spec. */
+.paper-grain-bright {
+  background-color: var(--paper-bright);
+  background-image: radial-gradient(rgba(26,21,16,0.03) 1px, transparent 1px);
+  background-size: 4px 4px;
+}
+
+/* ── Focus rings (a11y) ─────────────────────────────────────────────────── */
+
+button:focus-visible,
+[role="button"]:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--rust);
+  outline-offset: 2px;
+}
+
+/* ── Error boundary ─────────────────────────────────────────────────────── */
+
+.error-boundary {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100dvh;
+  padding: 2rem;
+  text-align: center;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+}
+
+.error-boundary__icon {
+  font-size: 2.5rem;
+  margin-bottom: 1rem;
+}
+
+.error-boundary__title {
+  font-family: var(--serif);
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin-bottom: 0.5rem;
+}
+
+.error-boundary__hint {
+  font-family: var(--serif);
+  font-style: italic;
+  color: var(--mute);
+  margin-bottom: 1.5rem;
+  max-width: 24rem;
+}
+
+.error-boundary__btn {
+  padding: 0.6rem 1.4rem;
+  border-radius: 0;
+  border: none;
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 600;
+  cursor: pointer;
+  font-size: 1rem;
+}

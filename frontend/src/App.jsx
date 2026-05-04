@@ -5,8 +5,6 @@ import "./App.css";
 // bundle. Suspense fallback is a blank panel (panel-map already has the
 // app background colour) so cold loads don't flash a skeleton.
 const MapView = lazy(() => import("./MapView.jsx"));
-import { SUPPORTED } from "./i18n.js";
-import TransitPhoto from "./components/TransitPhoto.jsx";
 import LoadingSkeleton from "./components/LoadingSkeleton.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
 import RouteCard from "./components/RouteCard.jsx";
@@ -14,23 +12,24 @@ import PinnedStopsBoard from "./components/PinnedStopsBoard.jsx";
 import ServiceAlertsBar from "./components/ServiceAlertsBar.jsx";
 import TwoToneHeading from "./components/TwoToneHeading.jsx";
 import WeatherStrip from "./components/WeatherStrip.jsx";
+import Masthead from "./components/Masthead.jsx";
 import { useFavorites } from "./hooks/useFavorites.js";
 import { useTripTracker } from "./hooks/useTripTracker.js";
 import { useByokIdleClear } from "./hooks/useByokIdleClear.js";
+import { useServiceAlerts } from "./hooks/useServiceAlerts.js";
+import { useShareLink } from "./hooks/useShareLink.js";
+import { useDocumentLanguage } from "./hooks/useDocumentLanguage.js";
 import {
   BACKEND_URL,
   RETRY_DELAYS_MS,
   BYOK_ENABLED,
-  PHOTO_FADE_MS,
-  MASTHEAD_EPOCH_YEAR,
+  WALK_SPEED_FACTORS,
 } from "./constants.js";
 import LabelSavePanel from "./components/LabelSavePanel.jsx";
 import LocationInput from "./components/LocationInput.jsx";
 import SavedRoutesPanel from "./components/SavedRoutesPanel.jsx";
 import SharedRouteBanner from "./components/SharedRouteBanner.jsx";
 import SideRail from "./components/SideRail.jsx";
-import SignalLamp from "./components/SignalLamp.jsx";
-import Wordmark from "./components/Wordmark.jsx";
 import { useApiQuery } from "./hooks/useApiQuery.js";
 import { useLocalStorage } from "./hooks/useLocalStorage.js";
 import { fetchWithRetry as _fetchWithRetry } from "./utils/fetchWithRetry.js";
@@ -43,66 +42,9 @@ function fetchWithRetry(url, options, onRetrying) {
   return _fetchWithRetry(url, options, RETRY_DELAYS_MS, onRetrying);
 }
 
-// Native-script names shown in the language selector so speakers can find their language.
-const LANGUAGE_NAMES = {
-  en:  "English",
-  es:  "Español",
-  fr:  "Français",
-  it:  "Italiano",
-  pl:  "Polski",
-  ro:  "Română",
-  uk:  "Українська",
-  ru:  "Русский",
-  zh:  "中文（普通话）",
-  yue: "粤语",
-  ja:  "日本語",
-  ko:  "한국어",
-  tl:  "Filipino",
-  vi:  "Tiếng Việt",
-  hi:  "हिंदी",
-  gu:  "ગુજરાતી",
-  pa:  "ਪੰਜਾਬੀ",
-  ne:  "नेपाली",
-  ur:  "اردو",
-  ar:  "العربية",
-  ps:  "پښتو",
-  yo:  "Yorùbá",
-};
-
-const RTL_LANGS = new Set(["ar", "ur", "ps"]);
-
-const looksHostile = (s) =>
-  !s ||
-  s.length > 200 ||
-  /^\s*(javascript|data|vbscript|file):/i.test(s) ||
-  /:\/\//.test(s);
-
-const WALK_SPEED_FACTORS = { slow: 0.75, standard: 1.0, brisk: 1.25 };
-
-// LabelSavePanel, LocationInput, and SavedRoutesPanel are in frontend/src/components/.
-
-// ── Masthead helpers ─────────────────────────────────────────────────────────
-function _toRoman(n) {
-  const vals = [10, 9, 5, 4, 1];
-  const syms = ["X", "IX", "V", "IV", "I"];
-  let r = "";
-  for (let i = 0; i < vals.length; i++) {
-    while (n >= vals[i]) { r += syms[i]; n -= vals[i]; }
-  }
-  return r;
-}
-function _dayOfYear(d) {
-  return Math.floor((d - new Date(d.getFullYear(), 0, 0)) / 864e5);
-}
-const _now = new Date();
-const MASTHEAD_DATE = _now.toLocaleDateString("en-US", {
-  weekday: "long", month: "long", day: "numeric",
-}).toUpperCase();
-const MASTHEAD_VOL = `VOL. ${_toRoman(_now.getFullYear() - MASTHEAD_EPOCH_YEAR)} · NO. ${_dayOfYear(_now)}`;
-
-
 export default function App() {
   const { t, i18n } = useTranslation();
+  useDocumentLanguage();
 
   const [origin, setOrigin] = useState("");
   const [originGeoCoords, setOriginGeoCoords] = useState(null);
@@ -150,8 +92,6 @@ export default function App() {
     handleSaveRoute,
   } = useFavorites({ origin, destination });
 
-  // Pinned Stops state managed by useFavorites above; arrivals fetched below.
-
   // Pinned-stop arrivals — fetched via useApiQuery (TD-038) so loading/error
   // state is managed centrally and the board auto-refreshes every 60 s.
   const pinnedArrivalsFetcher = useCallback((signal) => {
@@ -165,19 +105,9 @@ export default function App() {
   );
   const pinnedArrivals = pinnedArrivalsData?.arrivals || {};
 
-  // Service Alerts state (Feature Service Alerts)
-  const [serviceAlerts, setServiceAlerts] = useState([]);
-  const [dismissedAlertIds, setDismissedAlertIds] = useState(() => {
-    try {
-      return new Set(JSON.parse(sessionStorage.getItem("dismissed_alert_ids") || "[]"));
-    } catch {
-      return new Set();
-    }
-  });
-  const undismissedAlerts = useMemo(
-    () => serviceAlerts.filter((a) => !dismissedAlertIds.has(a.alert_id)),
-    [serviceAlerts, dismissedAlertIds]
-  );
+  // Service Alerts — fetch + dismissal state extracted to useServiceAlerts (TD-FE-006)
+  const { undismissedAlerts, dismiss: handleAlertDismiss } = useServiceAlerts();
+
   const activeAlertRoutes = useMemo(
     () => new Set(
       undismissedAlerts
@@ -186,13 +116,18 @@ export default function App() {
     ),
     [undismissedAlerts]
   );
+  // One pass per route, computed once and shared with each RouteCard for its
+  // pill row (OPT-FE-104). Indexed array keyed by route position.
+  const routeTransitLines = useMemo(
+    () => (result?.routes ?? []).map((r) => extractTransitLines(r.legs ?? [])),
+    [result]
+  );
+
   const currentRouteLines = useMemo(() => {
-    const route = result?.routes?.[selectedRouteIndex];
-    if (!route?.legs) return null;
-    const lines = extractTransitLines(route.legs);
-    if (!lines.length) return null;
+    const lines = routeTransitLines[selectedRouteIndex];
+    if (!lines?.length) return null;
     return new Set(lines.map((l) => l.isBus ? l.lineCode : l.line?.replace(" Line", "")));
-  }, [result, selectedRouteIndex]);
+  }, [routeTransitLines, selectedRouteIndex]);
 
   const visibleAlerts = useMemo(() => {
     if (!currentRouteLines) return [];
@@ -201,36 +136,12 @@ export default function App() {
     );
   }, [undismissedAlerts, currentRouteLines]);
 
-  // Fire-and-forget ping on mount for DAU counting — silent on failure.
-  useEffect(() => { fetch(`${BACKEND_URL}/ping`).catch(() => {}); }, []);
-
-  // Fetch service alerts on mount (Feature Service Alerts)
+  // Fire-and-forget ping on mount for DAU/session counting — silent on failure.
+  // credentials: "include" sends/receives the FEAT-001 session cookie cross-origin
+  // (Vercel → Railway). Backend CORS is configured with allow_credentials=True.
   useEffect(() => {
-    const ctrl = new AbortController();
-    fetch(`${BACKEND_URL}/alerts`, { signal: ctrl.signal })
-      .then((res) => res.ok ? res.json() : { alerts: [] })
-      .then((data) => setServiceAlerts(data.alerts || []))
-      .catch(() => {});
-    return () => ctrl.abort();
+    fetch(`${BACKEND_URL}/ping`, { credentials: "include" }).catch(() => {});
   }, []);
-
-  // RTL support — flip document direction when an RTL language is selected.
-  useEffect(() => {
-    const lang = i18n.resolvedLanguage ?? i18n.language;
-    document.documentElement.dir = RTL_LANGS.has(lang) ? "rtl" : "ltr";
-    document.documentElement.lang = lang;
-  }, [i18n.resolvedLanguage, i18n.language]);
-
-  function handleAlertDismiss(alertId) {
-    setDismissedAlertIds((prev) => {
-      const next = new Set(prev);
-      next.add(alertId);
-      try {
-        sessionStorage.setItem("dismissed_alert_ids", JSON.stringify([...next]));
-      } catch {}
-      return next;
-    });
-  }
 
   function handleSaveByokKey(key) {
     setByokKey(key);
@@ -244,11 +155,6 @@ export default function App() {
   // Auto-clear BYOK key after idle (BUG-014) — logic lives in useByokIdleClear.
   useByokIdleClear(byokKey, setByokKey);
 
-  // Photo state — managed entirely within handleSubmit via photoFadeTimer ref
-  const [photoMounted, setPhotoMounted] = useState(false);
-  const [photoFading, setPhotoFading] = useState(false);
-  const [photoKey, setPhotoKey] = useState(0);  // increment to force new random photo
-  const photoFadeTimer = useRef(null);
   const abortRef = useRef(null);
   // Incremented on every new search so RouteCard instances are remounted,
   // resetting their expanded state to the isFirst default.
@@ -292,6 +198,11 @@ export default function App() {
       {
         method: "POST",
         headers,
+        // Carries the FEAT-001 session cookie so /recommend counts as part
+        // of the same session that /ping started. Without this, /recommend
+        // would create a fresh session every call and bounce-rate would
+        // be permanently 100%.
+        credentials: "include",
         body: JSON.stringify({
           origin:       originStr,
           destination:  destinationStr,
@@ -325,14 +236,6 @@ export default function App() {
     return routes.length;
   }
 
-  function fadePhoto() {
-    setPhotoFading(true);
-    photoFadeTimer.current = setTimeout(() => {
-      setPhotoMounted(false);
-      setPhotoFading(false);
-    }, PHOTO_FADE_MS);
-  }
-
   async function handleReroute() {
     if (!userPosition) return;
     const gpsOrigin = `${userPosition.lat.toFixed(6)},${userPosition.lng.toFixed(6)}`;
@@ -345,22 +248,15 @@ export default function App() {
     setSelectedRouteIndex(0);
     searchIdRef.current += 1;
 
-    if (photoFadeTimer.current) clearTimeout(photoFadeTimer.current);
-    setPhotoKey((k) => k + 1);
-    setPhotoMounted(true);
-    setPhotoFading(false);
-
     setLoading(true);
     setError("");
     setResult(null);
 
     try {
       await callRecommendAPI(gpsOrigin, destination.trim());
-      fadePhoto();
     } catch (err) {
       if (err.name === "AbortError") return;
       setError(err.message || t("error_generic"));
-      fadePhoto();
     } finally {
       setLoading(false);
     }
@@ -369,7 +265,6 @@ export default function App() {
 
   useEffect(() => {
     return () => {
-      if (photoFadeTimer.current) clearTimeout(photoFadeTimer.current);
       if (abortRef.current) abortRef.current.abort();
     };
   }, []);
@@ -383,13 +278,8 @@ export default function App() {
     if (abortRef.current) abortRef.current.abort();
     abortRef.current = new AbortController();
 
-    if (photoFadeTimer.current) clearTimeout(photoFadeTimer.current);
     setSelectedRouteIndex(0);
     searchIdRef.current += 1;
-
-    setPhotoKey((k) => k + 1);
-    setPhotoMounted(true);
-    setPhotoFading(false);
 
     setLoading(true);
     setError("");
@@ -397,7 +287,6 @@ export default function App() {
 
     try {
       const routeCount = await callRecommendAPI(fromStr, toStr);
-      fadePhoto();
       pushUrlState(fromStr, toStr);
       if (preferredRouteIndex > 0 && routeCount > preferredRouteIndex) {
         setSelectedRouteIndex(preferredRouteIndex);
@@ -405,25 +294,18 @@ export default function App() {
     } catch (err) {
       if (err.name === "AbortError") return;
       setError(err.message || t("error_generic"));
-      fadePhoto();
     } finally {
       setLoading(false);
     }
   }
 
-  // Parse share URL params on mount and auto-submit the pre-filled search.
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const from = params.get("from");
-    const to = params.get("to");
-    const routeIndex = parseInt(params.get("route") ?? "0", 10) || 0;
-    if (from && to && !looksHostile(from) && !looksHostile(to)) {
-      setOrigin(from);
-      setDestination(to);
-      setIsSharedLink(true);
-      performSearch(from, to, routeIndex);
-    }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Auto-submit a search when the URL contains valid ?from / ?to params (TD-FE-006).
+  useShareLink(({ from, to, routeIndex }) => {
+    setOrigin(from);
+    setDestination(to);
+    setIsSharedLink(true);
+    performSearch(from, to, routeIndex);
+  });
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -449,60 +331,15 @@ export default function App() {
       <div className="layout layout--split">
         <SideRail activeTab={activeTab} onTabChange={handleTabChange} />
         <div className="panel-cards paper-grain">
-          <header className="header">
-            <div className="masthead-folio">
-              <span className="masthead-folio-date">{MASTHEAD_DATE}</span>
-              <span className="masthead-folio-vol">{MASTHEAD_VOL}</span>
-              {result && result.routes.length > 0 && (
-                <SignalLamp ariaLabel={t("psb_live_data")} className="masthead-signal" />
-              )}
-            </div>
-            <div className="masthead-rule" aria-hidden="true" />
-            <div className="masthead-title-row">
-              <Wordmark />
-            </div>
-            <div className="masthead-controls">
-              <button
-                className={`btn-ghost-icon${byokKey ? " btn-ghost-icon--active" : ""}`}
-                onClick={() => setSettingsOpen((v) => !v)}
-                aria-label={byokKey ? t("aria_settings_active") : t("aria_settings")}
-                title={byokKey ? t("aria_settings_active") : t("aria_settings")}
-              >
-                ⚙
-              </button>
-              <button
-                type="button"
-                className={`btn-ghost-icon${showSavedRoutes ? " btn-ghost-icon--active" : ""}`}
-                onClick={() => setShowSavedRoutes((v) => !v)}
-                aria-label={t("fav_saved_routes_heading")}
-                title={t("fav_saved_routes_heading")}
-              >
-                ⭐
-              </button>
-              <select
-                className="masthead-select"
-                value={transitMode}
-                onChange={(e) => setTransitMode(e.target.value)}
-                aria-label={t("aria_transit_mode")}
-              >
-                <option value="All">{t("mode_all")}</option>
-                <option value="Train">{t("mode_train")}</option>
-                <option value="Bus">{t("mode_bus")}</option>
-                <option value="Walk">{t("mode_walk")}</option>
-              </select>
-              <select
-                className="masthead-select"
-                value={i18n.resolvedLanguage ?? i18n.language}
-                onChange={(e) => i18n.changeLanguage(e.target.value)}
-                aria-label={t("aria_language")}
-              >
-                {SUPPORTED.map((code) => (
-                  <option key={code} value={code}>{LANGUAGE_NAMES[code]}</option>
-                ))}
-              </select>
-            </div>
-            <p className="masthead-tagline">{t("tagline")}</p>
-          </header>
+          <Masthead
+            liveDataActive={!!(result && result.routes.length > 0)}
+            byokActive={!!byokKey}
+            showSavedRoutes={showSavedRoutes}
+            transitMode={transitMode}
+            onTransitModeChange={setTransitMode}
+            onToggleSettings={() => setSettingsOpen((v) => !v)}
+            onToggleSavedRoutes={() => setShowSavedRoutes((v) => !v)}
+          />
 
           {settingsOpen && (
             <SettingsPanel
@@ -713,6 +550,7 @@ export default function App() {
                           )}
                           <RouteCard
                             route={route}
+                            transitLines={routeTransitLines[i]}
                             index={i}
                             isFirst={i === 0}
                             isSelected={i === selectedRouteIndex}
@@ -744,9 +582,6 @@ export default function App() {
         </div>
 
         <div className="panel-map">
-          {photoMounted && (
-            <TransitPhoto key={photoKey} fading={photoFading} />
-          )}
           <Suspense fallback={null}>
             <MapView
               route={result?.routes?.[selectedRouteIndex] ?? null}

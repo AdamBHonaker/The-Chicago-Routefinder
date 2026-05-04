@@ -1,0 +1,22 @@
+
+/* ── Map markers ──────────────────────────────────────────────────────────── */
+
+/* Belt-and-suspenders fallback for reduced-motion on the live position pulse.
+   The preferred path is not rendering <animate> nodes at all (see LivePositionMarker.jsx),
+   since animation-play-state does not reliably pause SMIL in all browsers. */
+@media (prefers-reduced-motion: reduce) {
+  .marker-live-position animate {
+    animation-play-state: paused !important;
+  }
+}
+
+/* Feature TapRecentre — 44×44 transparent hit area around the 36×36 LivePositionMarker SVG.
+   Extends 4 px past the SVG on each side so the marker is tappable without a precise hit. */
+.marker-live-position-wrapper {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}

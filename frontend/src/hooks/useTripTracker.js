@@ -57,6 +57,12 @@ export function useTripTracker({ result, selectedRouteIndex }) {
       setTripGeoError(true);
       return;
     }
+    // Defensive: clear any prior watch so a re-entrant startTrip cannot leak
+    // a watchPosition handler whose ID we'd otherwise lose track of.
+    if (watchIdRef.current !== null) {
+      navigator.geolocation.clearWatch(watchIdRef.current);
+      watchIdRef.current = null;
+    }
     watchIdRef.current = navigator.geolocation.watchPosition(
       (pos) => {
         setTripGeoError(false);

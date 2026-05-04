@@ -5,7 +5,9 @@ An AI-powered, real-time Chicago Transit Authority (CTA) route recommendation ap
 ## What it does
 
 ### Core routing
+
 A user enters their origin and destination. The app:
+
 1. Resolves both locations to nearby CTA stops via Google Maps geocoding, with autocomplete suggestions covering train stations, neighborhoods, and bus stops
 2. Runs a routing engine (GTFS + NetworkX + OSMnx) to calculate train, bus, and intermodal options including walking legs and transfers — with street-network turn-by-turn walk directions and long/short block classification
 3. Fetches live CTA train and bus arrival times to compute real wait times, including live arrivals at transfer stops
@@ -14,6 +16,7 @@ A user enters their origin and destination. The app:
 6. Shows an interactive map with the route drawn on OpenFreeMap Liberty tiles, including transit photos for featured stops
 
 ### Features
+
 - **Live weather** — NWS weather strip (temperature, feels-like, precipitation badge, wind gusts, NWS alerts) above results; walk times automatically penalized for rain, snow, ice, extreme cold, and high gusts; Claude weighted to favor lower-exposure routes on bad-weather days
 - **Service alerts** — Collapsible CTA service alerts bar above the search form with severity badges; affected route legs flagged with a ⚠ badge on route cards
 - **Walk mode** — A dedicated Walk transit mode that skips all CTA calls and returns a street-network walking route with turn-by-turn directions and a map polyline
@@ -42,23 +45,28 @@ A user enters their origin and destination. The app:
 ### Required environment variables
 
 **Backend** (`backend/.env`) — required:
+
 - `ANTHROPIC_API_KEY` — Anthropic API key for Claude
 - `CTA_TRAIN_API_KEY` — CTA Train Tracker API key
 - `CTA_BUS_API_KEY` — CTA Bus Tracker API key
 - `GOOGLE_MAPS_API_KEY` — Google Maps Geocoding API key
 
 **Backend** — optional (production tuning):
+
 - `ALLOWED_ORIGINS` — Comma-separated CORS allowlist (production-critical; defaults to `*` in dev)
 - `BYOK_ENABLED` — `true`/`false` toggle for the Bring-Your-Own-Key feature (defaults disabled)
 - `RATE_LIMIT_ENABLED` — `true`/`false` toggle for the per-IP `/recommend` limiter (defaults disabled)
 - `RATE_LIMIT_RPM`, `RATE_LIMIT_RPH` — Rate-limit thresholds (defaults: 10 req/min, 50 req/hour)
 - `CLAUDE_SIMPLE_MODEL` — Override for the Haiku-class model (default `claude-haiku-4-5-20251001`)
 - `CLAUDE_COMPLEX_MODEL` — Override for the Sonnet-class model (default `claude-sonnet-4-6`)
-- `DAU_ADMIN_TOKEN` — Bearer token protecting `GET /admin/dau`
+- `DAU_ADMIN_TOKEN` — Bearer token protecting all `GET /admin/*` analytics endpoints
+- `DAILY_SALT` — Daily-rotating HMAC salt used by the DAU + sessions counters (production-required)
+- `MAXMIND_LICENSE_KEY` — Free MaxMind license key (Railway *Build Argument*, not a runtime env var). Without it the Dockerfile skips the GeoLite2-City download and the FEAT-003 geography panel reads `—`.
 - `CTA_TRAIN_API_URL`, `CTA_BUS_API_URL` — Override CTA API base URLs (used by `active_routes.py`)
-- `STREET_GRAPH_URL` — Release-asset URL the Dockerfile fetches `street_graph.graphml` from at build time
+- `STREET_GRAPH_URL` — Release-asset URL the Dockerfile fetches `street_graph_igraph.pkl` from at build time
 
 **Frontend** (`frontend/.env.local`):
+
 - `VITE_BACKEND_URL` — Backend URL (e.g. `http://localhost:8000` for local dev; must include `https://` in production)
 
 ### Quick start
@@ -67,7 +75,8 @@ A user enters their origin and destination. The app:
 # Backend
 cd backend
 pip install -r requirements.txt
-python fetch_gtfs.py          # download CTA GTFS data (street graph is pre-built via Git LFS)
+python fetch_gtfs.py          # download CTA GTFS data
+python fetch_street_graph.py  # build the OSMnx street graph (one-time, ~3–10 min)
 uvicorn main:app --reload
 
 # Frontend (separate terminal)
@@ -89,6 +98,14 @@ The FastAPI server (`backend/main.py`) exposes:
 | `GET /alerts` | CTA service alerts feed |
 | `GET /stop-arrivals` | Live arrivals for the home-screen pinned stops board |
 | `GET /admin/dau` | Daily-unique-user counts (protected by `DAU_ADMIN_TOKEN` — internal/operator only) |
+| `GET /admin/geography` | Per-day per-city visitor counts + Chicago-metro rollup (FEAT-003, `DAU_ADMIN_TOKEN`) |
+| `GET /admin/sessions` | Per-day session aggregates: count, total duration, bounces, derived avg-duration + bounce-rate (FEAT-001, `DAU_ADMIN_TOKEN`) |
+| `GET /admin/hourly` | Per-day 24-int `/recommend` histogram in Chicago tz (FEAT-004, `DAU_ADMIN_TOKEN`) |
+| `GET /admin/devices` | Per-day mobile/tablet/desktop/bot/unknown bucket counts (FEAT-005, `DAU_ADMIN_TOKEN`) |
+| `GET /admin/referrers` | Per-day direct/search/social/other bucket counts + per-hostname `other` long-tail table (FEAT-008, `DAU_ADMIN_TOKEN`) |
+| `GET /stats` | **Public** dashboard page (HTML). Live engagement numbers — DAU, Chicago metro, sessions/bounce/duration, peak hours, device split, traffic sources. No third-party scripts. (FEAT-009) |
+| `GET /stats/{dau,geography,sessions,hourly,devices,referrers}` | Public-safe JSON projections of the corresponding admin endpoints — only the whitelisted fields per [backend/public_stats.py](backend/public_stats.py) leave the server. |
+| `GET /privacy` | Plain-text privacy notes shown via the `/stats` footer link. |
 
 ## Utility scripts
 
@@ -101,12 +118,17 @@ Standalone scripts that run independently of the server:
 | `backend/fetch_station_exits.py` | Refresh `backend/station_exits.json` (per-station exit metadata used by Feature A train-station exit guidance). |
 | `backend/active_routes.py` | **Print all active CTA bus routes and train lines right now.** Uses Bus Tracker `/getroutes` (returns only in-service routes) and Train Tracker `/ttpositions` (active = has live train positions). Useful for debugging, data exploration, or verifying API keys. Requires `CTA_TRAIN_API_KEY` and `CTA_BUS_API_KEY` in `backend/.env`. |
 | `backend/scripts/check_dau.py` | **Fetch daily unique visitor counts from the production backend.** Usage: `python backend/scripts/check_dau.py <DAU_ADMIN_TOKEN>` |
+| `backend/scripts/check_geography.py` | **Per-day Chicago-metro share + per-city table** from `/admin/geography`. Usage: `python backend/scripts/check_geography.py <DAU_ADMIN_TOKEN>` |
+| `backend/scripts/check_sessions.py` | **Per-day sessions / avg duration / bounce rate** from `/admin/sessions`. Usage: `python backend/scripts/check_sessions.py <DAU_ADMIN_TOKEN>` |
+| `backend/scripts/check_hourly.py` | **Per-day hour-of-day ASCII bar chart** from `/admin/hourly`. Usage: `python backend/scripts/check_hourly.py <DAU_ADMIN_TOKEN>` |
+| `backend/scripts/check_devices.py` | **Per-day device-class table** from `/admin/devices`. Usage: `python backend/scripts/check_devices.py <DAU_ADMIN_TOKEN>` |
+| `backend/scripts/check_referrers.py` | **Per-day traffic-source breakdown + top-10 `other` hostnames** from `/admin/referrers`. Usage: `python backend/scripts/check_referrers.py <DAU_ADMIN_TOKEN>` |
 
 ## Operational notes
 
 - **Google Maps geocoding cap.** `backend/gtfs_loader.py` enforces a temporary monthly safety cap of 9,500 calls/month against the Google Maps Geocoding API to stay inside the free tier. The cap is opt-out tuning; remove or raise it via `docs/TODO.md` once billing is wired up.
 - **Rate limiting.** OFF by default. Set `RATE_LIMIT_ENABLED=true` (with optional `RATE_LIMIT_RPM` / `RATE_LIMIT_RPH` overrides) before opening up `/recommend` to public traffic.
-- **Street graph hosting.** `backend/street_graph.graphml` is committed via Git LFS *and* hosted as a GitHub Release asset (downloaded at Docker build time). The runtime loads `street_graph_igraph.pkl` first and falls back to the graphml; if neither is present, walk routing falls back to Haversine estimates.
+- **Street graph hosting.** Both `backend/street_graph.graphml` and `backend/street_graph_igraph.pkl` are gitignored. The pkl is hosted as an asset on the `street-graph` GitHub Release and pulled at Docker build time (see `backend/Dockerfile`). For local development, run `python backend/fetch_street_graph.py` to build both files from OpenStreetMap. The runtime loads the pkl first and falls back to the graphml; if neither is present, walk routing falls back to Haversine estimates.
 
 ## Project documentation
 
@@ -116,3 +138,5 @@ Standalone scripts that run independently of the server:
 - [docs/TODO.md](docs/TODO.md) — Tasks requiring human action (accounts, API keys, deployment steps)
 - [docs/TECH_DEBT.md](docs/TECH_DEBT.md) — Known technical debt items
 - [docs/EFFICIENCY.md](docs/EFFICIENCY.md) — Optimization notes and efficiency improvements
+- [docs/PRIVACY.md](docs/PRIVACY.md) — Privacy notes for the analytics suite (DAU, geography, sessions, hourly, devices, referrers, public dashboard)
+- [docs/ANALYTICS_MAINTENANCE.md](docs/ANALYTICS_MAINTENANCE.md) — Per-feature analytics-suite maintenance notes (dependency upkeep, GeoLite2 refresh cadence, panel-add/redact procedure)

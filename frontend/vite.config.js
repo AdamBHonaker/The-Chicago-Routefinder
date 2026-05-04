@@ -77,15 +77,6 @@ export default defineConfig({
               },
             },
           },
-          {
-            // Transit photos: serve from cache if available, update in background
-            urlPattern: /\/transit-photos\//i,
-            handler: "StaleWhileRevalidate",
-            options: {
-              cacheName: "transit-photos",
-              expiration: { maxEntries: 30, maxAgeSeconds: 60 * 60 * 24 * 30 },
-            },
-          },
         ],
       },
     }),

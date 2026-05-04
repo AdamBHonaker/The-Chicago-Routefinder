@@ -43,6 +43,18 @@ export function removeMarker(ref) {
   ref.current = null;
 }
 
+function shallowEqualProps(a, b) {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const k of aKeys) {
+    if (a[k] !== b[k]) return false;
+  }
+  return true;
+}
+
 export function useMapMarker(map, Component, props, lngLat, options = {}) {
   const { className, onMount } = options;
   const ref = useRef(null);
@@ -53,6 +65,12 @@ export function useMapMarker(map, Component, props, lngLat, options = {}) {
   propsRef.current = props;
   const onMountRef = useRef(onMount);
   onMountRef.current = onMount;
+  // Tracks the prop bag last passed to root.render so we can skip the JSX
+  // allocation + reconciliation when nothing has changed (OPT-FE-101). Parent
+  // re-renders fire on every GPS tick during a trip; without this guard each
+  // tick allocated fresh JSX for OriginMarker and DestinationMarker even
+  // though their props were stable.
+  const lastRenderedPropsRef = useRef(null);
 
   const hasCoords = Array.isArray(lngLat) && lngLat.length === 2;
 
@@ -66,6 +84,7 @@ export function useMapMarker(map, Component, props, lngLat, options = {}) {
     if (className) el.className = className;
     const root = ReactDOM.createRoot(el);
     root.render(<Component {...propsRef.current} />);
+    lastRenderedPropsRef.current = propsRef.current;
     const marker = new maplibregl.Marker({ element: el, anchor: "center" })
       .setLngLat(lngLat)
       .addTo(map);
@@ -76,6 +95,7 @@ export function useMapMarker(map, Component, props, lngLat, options = {}) {
       marker.remove();
       root.unmount();
       ref.current = null;
+      lastRenderedPropsRef.current = null;
     };
     // Component/className are construction-time; props/onMount tracked via refs;
     // lngLat handled by the position effect below.
@@ -90,12 +110,15 @@ export function useMapMarker(map, Component, props, lngLat, options = {}) {
     }
   }, [lng, lat]);
 
-  // Props updates — re-render the React subtree. Runs every parent render;
-  // React's reconciler no-ops when the rendered output hasn't changed.
+  // Props updates — re-render the React subtree only when the prop bag has
+  // actually changed (shallow compare). Skipping the no-op render avoids per-
+  // tick JSX allocation + reconciliation on a separate React root during
+  // active trips, when the parent re-renders at GPS rate.
   useEffect(() => {
-    if (ref.current) {
-      ref.current.root.render(<Component {...props} />);
-    }
+    if (!ref.current) return;
+    if (shallowEqualProps(lastRenderedPropsRef.current, props)) return;
+    ref.current.root.render(<Component {...props} />);
+    lastRenderedPropsRef.current = props;
   });
 
   return ref;

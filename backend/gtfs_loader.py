@@ -257,19 +257,12 @@ _geocode_cache: dict[str, tuple[float, float] | None] = _load_geocode_cache()
 # so that pre-existing cache files are never silently cleared on first upgrade.
 _geocode_ages: dict[str, float] = _load_geocode_ages()
 
-# Apply age-based eviction at startup so stale entries never survive a restart.
+# Age-based eviction settings.
 _GEOCODE_MAX_AGE_SECONDS: float = _cfg.GEOCODE_CACHE_MAX_AGE_DAYS * 24 * 3600
-_startup_evict_cutoff = time.time() - _GEOCODE_MAX_AGE_SECONDS
-_startup_evicted = [k for k, ts in _geocode_ages.items() if ts < _startup_evict_cutoff]
-for _k in _startup_evicted:
-    _geocode_cache.pop(_k, None)
-    _geocode_ages.pop(_k, None)
-if _startup_evicted:
-    print(
-        f"[gtfs_loader] Startup eviction removed {len(_startup_evicted)} geocode "
-        f"entries older than {_cfg.GEOCODE_CACHE_MAX_AGE_DAYS} days"
-    )
-del _startup_evict_cutoff, _startup_evicted  # clean up loop vars
+
+# Apply age-based eviction at startup so stale entries never survive a restart.
+# Safe to call without _geocode_lock here — no other threads exist at import time.
+_evict_old_geocode_entries()
 
 # Entries added since the last journal append. Always mutated under _geocode_lock.
 _geocode_pending: dict[str, tuple[float, float] | None] = {}
@@ -924,20 +917,27 @@ def find_nearest_bus_stops(
 ) -> list[dict]:
     """
     Return the closest bus stops within reach, each annotated with real
-    street-network walk_minutes.  Expands search radius progressively
-    (0.25 → 0.5 → 0.75 → 1.0 miles) until at least one stop is found,
-    matching the pattern used for train stations.
+    street-network walk_minutes.  Probes the spatial index at the maximum
+    radius once and partitions client-side by ring (0.25 → 0.5 → 0.75 → 1.0)
+    so a sparse area still gets the "expand outward" behavior without
+    re-querying the spatial index multiple times.
     """
-    radii = (0.25, 0.5, 0.75, 1.0)
-    # Honor max_distance_miles as a ceiling — only try radii up to it, and
-    # ensure max_distance_miles itself is the final attempt.
-    attempts = [r for r in radii if r <= max_distance_miles]
-    if not attempts or attempts[-1] < max_distance_miles:
-        attempts.append(max_distance_miles)
+    rings = [r for r in (0.25, 0.5, 0.75, 1.0) if r <= max_distance_miles]
+    if not rings or rings[-1] < max_distance_miles:
+        rings.append(max_distance_miles)
+    max_radius = rings[-1]
 
+    # One spatial query at the largest radius. The grid cost dominates over
+    # the per-stop distance test we'll re-do in the partition step.
+    all_hits = _candidates_within("bus", lat, lon, max_radius)
+    if not all_hits:
+        return []
+
+    # Walk outward through the rings until we find at least one stop. This
+    # preserves the original "prefer closest, expand only if empty" behaviour.
     hits: list[tuple[float, dict]] = []
-    for radius in attempts:
-        hits = _candidates_within("bus", lat, lon, radius)
+    for radius in rings:
+        hits = [item for item in all_hits if item[0] <= radius]
         if hits:
             break
 

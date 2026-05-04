@@ -51,6 +51,9 @@ const KEEP_ENGLISH = new Set([
   'photo_caption_wrigley_addison',
   // NWS (National Weather Service) is a US proper noun; headlines come from the API in English.
   'weather_nws_alert',
+  // Compass abbreviations — single/double letters render identically across most languages.
+  'compass_n', 'compass_ne', 'compass_e', 'compass_se',
+  'compass_s', 'compass_sw', 'compass_w', 'compass_nw',
 ]);
 
 // Keys with non-obvious translation rules.
@@ -101,13 +104,14 @@ function extractJSON(text) {
 async function translateLocale(locale, enData, localeData) {
   const langName = LOCALE_NAMES[locale] ?? locale;
 
-  // Identify keys that are missing from the locale file or whose value is identical
-  // to English (copy-pasted placeholder, not yet translated).
+  // A key is untranslated only if it is absent from the locale file. Trust any value
+  // already present — many short labels (loanwords, abbreviations) legitimately match
+  // English, and re-flagging them on every run causes infinite re-translation.
   const untranslated = {};
   for (const [key, enVal] of Object.entries(enData)) {
     if (key === '_comment') continue;
     if (KEEP_ENGLISH.has(key)) continue;
-    if (!(key in localeData) || localeData[key] === enVal) untranslated[key] = enVal;
+    if (!(key in localeData)) untranslated[key] = enVal;
   }
 
   if (Object.keys(untranslated).length === 0) {
@@ -201,10 +205,10 @@ async function main() {
     const filePath = `${LOCALES_DIR}/${locale}/translation.json`;
     let t;
     try { t = JSON.parse(readFileSync(filePath, 'utf8')); } catch { continue; }
-    const stillEnglish = Object.keys(enData).filter(
-      k => k !== '_comment' && !KEEP_ENGLISH.has(k) && (!(k in t) || t[k] === enData[k])
+    const missing = Object.keys(enData).filter(
+      k => k !== '_comment' && !KEEP_ENGLISH.has(k) && !(k in t)
     );
-    if (stillEnglish.length) console.warn(`  ${locale}: still untranslated or missing: ${stillEnglish.join(', ')}`);
+    if (missing.length) console.warn(`  ${locale}: missing keys: ${missing.join(', ')}`);
   }
 }
 

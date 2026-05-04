@@ -28,14 +28,25 @@ from utils import CHICAGO_TZ
 # ---------------------------------------------------------------------------
 # Holiday set — generated programmatically from the `holidays` package.
 # Covers US federal + Illinois state holidays for current year ± 5 years.
-# No manual annual update required.
+# Built lazily on first lookup and recomputed when the year rolls over so
+# long-running servers don't keep using a stale set after January 1.
 # ---------------------------------------------------------------------------
-def _build_holiday_set() -> Set[str]:
-    current_year = datetime.now(tz=CHICAGO_TZ).year
-    il = _holidays_pkg.US(state="IL", years=range(current_year - 1, current_year + 6))
+def _build_holiday_set(year: int) -> Set[str]:
+    il = _holidays_pkg.US(subdiv="IL", years=range(year - 1, year + 6))
     return {d.strftime("%Y-%m-%d") for d in il.keys()}
 
-_HOLIDAYS: Set[str] = _build_holiday_set()
+
+_HOLIDAYS_YEAR: int | None = None
+_HOLIDAYS_CACHE: Set[str] = set()
+
+
+def _get_holidays() -> Set[str]:
+    global _HOLIDAYS_YEAR, _HOLIDAYS_CACHE
+    current_year = datetime.now(tz=CHICAGO_TZ).year
+    if _HOLIDAYS_YEAR != current_year:
+        _HOLIDAYS_CACHE = _build_holiday_set(current_year)
+        _HOLIDAYS_YEAR = current_year
+    return _HOLIDAYS_CACHE
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -107,7 +118,7 @@ def classify_time_period(
     holidays may be provided to override the built-in static set.
     """
     if holidays is None:
-        holidays = _HOLIDAYS
+        holidays = _get_holidays()
 
     # Normalise to Chicago local time
     if dt.tzinfo is not None and dt.tzinfo.utcoffset(dt) is not None:

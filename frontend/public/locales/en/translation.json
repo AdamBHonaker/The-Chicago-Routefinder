@@ -130,11 +130,6 @@
   "psb_refresh": "Refresh arrivals",
   "psb_unpin_stop": "Unpin stop",
   "settings_btn_close": "Close",
-  "photo_caption_red_line_howard": "Red Line — Howard",
-  "photo_caption_loop_elevated": "The Loop — Elevated Track",
-  "photo_caption_blue_line_ohare": "Blue Line — O'Hare",
-  "photo_caption_state_lake": "State/Lake — The Loop",
-  "photo_caption_wrigley_addison": "Addison — Wrigley Field",
   "weather_label": "Weather",
   "step_through": "through",
   "path_type_crosswalk": "the crosswalk",
@@ -176,5 +171,12 @@
   "caps_bookmarks": "Bookmarks",
   "caps_stops": "Stops",
   "caps_advisories": "Advisories",
-  "alerts_tab_heading": "Notices & Delays"
+  "alerts_tab_heading": "Notices & Delays",
+  "transfer_marker_kicker": "TRANSFER",
+  "transfer_marker_aria": "Transfer at {{station}}",
+  "transfer_marker_aria_passed": "Passed transfer at {{station}}",
+  "footprint_marker_aria_walk_to_transit": "Boarding at {{station}}",
+  "footprint_marker_aria_walk_to_transit_passed": "Passed boarding at {{station}}",
+  "footprint_marker_aria_transit_to_walk": "Alighting at {{station}}",
+  "footprint_marker_aria_transit_to_walk_passed": "Passed alighting at {{station}}"
 }

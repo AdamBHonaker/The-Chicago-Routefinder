@@ -1,0 +1,103 @@
+/* ── Design tokens ───────────────────────────────────────────────────────── */
+
+:root {
+  /* Paper stock */
+  --paper:        #f2ece0;
+  --paper-bright: #fffbef;
+  --paper-folio:  #e9e1d1;
+
+  /* Ink */
+  --ink:          #171310;
+  --ink-soft:     #4a3f32;
+  --mute:         #7a6a54;
+  --mute-fog:     #a89a82;
+
+  /* Accents (semantic) */
+  --rust:         #9c2a1a;   /* consequence */
+  --navy:         #1a4d6f;   /* notice */
+  --field:        #1f6d3b;   /* clear */
+
+  /* Cartographic */
+  --lake:         #cedde2;
+  --river:        #cbd4c5;
+
+  /* Explicit rule color (used by all border-style rule tokens below) */
+  --rule-color:   #1a1510;
+
+  /* CTA line colors — mirrors LINE_COLORS in src/lineColors.js (canonical) */
+  --line-red:     #c60c30;
+  --line-blue:    #00a1de;
+  --line-brown:   #62361b;
+  --line-green:   #009b3a;
+  --line-orange:  #f9461c;
+  --line-purple:  #522398;
+  --line-pink:    #e27ea6;
+  --line-yellow:  #f9e300;
+
+  /* Type */
+  --serif:  "Fraunces", "GT Sectra", "Playfair Display", Georgia, serif;
+  --sans:   "Inter", -apple-system, system-ui, sans-serif;
+  --mono:   "JetBrains Mono", "IBM Plex Mono", ui-monospace, monospace;
+
+  /* Type scale (D2 spec) */
+  --fs-display:    48px;   --lh-display:    0.95;   --ls-display:  -0.8px;
+  --fs-headline:   28px;   --lh-headline:   1.05;   --ls-headline: -0.6px;
+  --fs-subhead:    20px;   --lh-subhead:    1.25;
+  --fs-body:       15px;   --lh-body:       1.55;
+  --fs-body-sm:    14px;   --lh-body-sm:    1.5;
+  --fs-caps:       10px;   --lh-caps:       1.2;    --ls-caps: 2px;
+  --fs-mono:       13px;   --lh-mono:       1.3;
+  /* Drop-cap duration sizes (D2 spec) — italic Fraunces 700, lh 0.82 */
+  --drop-cap-desktop: 52px;   /* route-card, desktop column */
+  --drop-cap-mobile:  72px;   /* route-card, mobile/hero */
+  --drop-cap-hero:    96px;   /* live-trip countdown */
+
+  /* Type weights (D2 spec) */
+  --fw-display-italic: 500;
+  --fw-display:        700;
+  --fw-headline:       700;
+  --fw-body:           400;
+  --fw-caps:           700;
+  --fw-mono:           500;
+
+  /* Rules — D2 system: hairline (mute-fog), rule (1px ink), rule-thick (2px ink), rule-double (5px) */
+  --rule:        1px solid var(--rule-color);
+  --rule-thick:  2px solid var(--rule-color);
+  --rule-double: 5px double var(--rule-color);
+  --hairline:    1px solid var(--mute-fog);
+  --dashed:      1px dashed var(--mute-fog);
+
+  /* Spacing scale (multiples of 2) */
+  --sp-1:  2px;
+  --sp-2:  4px;
+  --sp-3:  8px;
+  --sp-4:  12px;
+  --sp-5:  16px;
+  --sp-6:  22px;
+  --sp-7:  32px;
+  --sp-8:  48px;
+  --sp-9:  72px;
+
+  /* Radii */
+  --r-0: 0;
+  --r-1: 2px;   /* line pills only */
+
+  /* Motion */
+  --ease-out:   cubic-bezier(.2,.8,.2,1);
+  --dur-quick:  120ms;
+  --dur-base:   220ms;
+  --dur-slow:   320ms;
+
+  /* Opacity scale */
+  --opacity-hover: 0.82;  /* hover / active states */
+  --opacity-soft:  0.55;  /* subtle dimming */
+  --opacity-mute:  0.45;  /* disabled / inactive */
+
+  /* Z-index scale */
+  --z-base:        1;    /* local stacking / establish context */
+  --z-map-overlay: 5;    /* map info panels (legend, train card) */
+  --z-map-ctrl:    10;   /* map controls and photo layer */
+  --z-dropdown:    100;  /* autocomplete dropdown */
+  --z-nav:         200;  /* fixed tab bar */
+  --z-modal:       500;  /* modal overlay */
+}

@@ -1,0 +1,204 @@
+/* ── Line pills (LinePill component) ─────────────────────────────────────── */
+
+.lin-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--sans);
+  font-weight: 900;
+  letter-spacing: 1px;
+  border-radius: 2px;
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.25);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.lin-pill--sm { height: 20px; min-width: 22px; font-size: 9px;  padding: 0 6px;  overflow: hidden; }
+.lin-pill--md { height: 26px; min-width: 26px; font-size: 11px; padding: 0 8px;  overflow: hidden; }
+.lin-pill--lg { height: 34px; min-width: 34px; font-size: 13px; padding: 0 10px; }
+
+/* ── Signal lamp ─────────────────────────────────────────────────────────── */
+
+@keyframes flicker {
+  0%, 100% { opacity: 1 }
+  45%       { opacity: 1 }
+  50%       { opacity: 0.35 }
+  55%       { opacity: 0.9 }
+  60%       { opacity: 0.5 }
+  65%       { opacity: 1 }
+}
+
+.signal-lamp {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--rust);
+  box-shadow: 0 0 6px var(--rust), 0 0 0 1.5px var(--paper);
+  animation: flicker 3.4s infinite step-end;
+  flex-shrink: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Pause the flicker but keep the lamp visible — Principle IV: lamps, not sirens. */
+  .signal-lamp { animation: none; opacity: 1; }
+}
+
+.signal-lamp-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.signal-lamp__label {
+  font-family: var(--sans);
+  font-size: var(--fs-caps);
+  font-weight: 700;
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--mute);
+}
+
+@keyframes radar-pulse {
+  0%   { box-shadow: 0 0 0 0   rgba(156,42,26,0.65); }
+  60%  { box-shadow: 0 0 0 8px rgba(156,42,26,0);    }
+  100% { box-shadow: 0 0 0 0   rgba(156,42,26,0);    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .leg-active .itinerary-dot { animation: none; }
+}
+
+/* ── Special dispatch ─────────────────────────────────────────────────────── */
+
+/* Printed-broadside frame: 3px double outer border + 1px inner rectangle
+ * offset 4px in. Both rules use the explicit rule color (--rule-color = #1a1510).
+ * Severity (--major / --minor / --advisory) only changes the kicker color;
+ * the frame is identical on all three so the editorial weight stays consistent. */
+.special-dispatch {
+  position: relative;
+  border: 3px double var(--rule-color);
+  padding: 12px 14px;
+  background-color: var(--paper-bright);
+  background-image:
+    radial-gradient(rgba(26,21,16,0.035) 1px, transparent 1px),
+    radial-gradient(rgba(26,21,16,0.025) 1px, transparent 1px);
+  background-size: 3px 3px, 7px 7px;
+  background-position: 0 0, 1px 2px;
+}
+
+.special-dispatch::before {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border: 1px solid rgba(26,21,16,0.18);
+  pointer-events: none;
+}
+
+.special-dispatch__header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-2);
+}
+
+.special-dispatch__kicker {
+  font-family: var(--sans);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+/* When kicker is standalone (no __header), add block spacing */
+.special-dispatch > .special-dispatch__kicker {
+  display: block;
+  margin-bottom: 4px;
+}
+
+/* Severity → kicker color (D2 spec):
+ *   major    = rust (consequence, delay)
+ *   minor    = mute (gray ink, low-impact)
+ *   advisory = navy (planned/notice)
+ * The frame itself is identical on all three; only the kicker color changes. */
+.special-dispatch--major    .special-dispatch__kicker { color: var(--rust); }
+.special-dispatch--minor    .special-dispatch__kicker { color: var(--mute); }
+.special-dispatch--advisory .special-dispatch__kicker { color: var(--navy); }
+
+.special-dispatch__routes {
+  font-family: var(--mono);
+  font-size: var(--fs-mono);
+  color: var(--mute);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.special-dispatch__dismiss {
+  background: none;
+  border: none;
+  color: var(--mute-fog);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 var(--sp-1);
+  flex-shrink: 0;
+  min-width: 24px;
+  min-height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color var(--dur-quick) var(--ease-out);
+}
+.special-dispatch__dismiss:hover { color: var(--rust); }
+
+.special-dispatch__body {
+  font-family: var(--serif);
+  font-size: 13px;
+  font-style: italic;
+  line-height: 1.45;
+  color: var(--ink-soft);
+  margin: 0;
+}
+
+.special-dispatch__desc {
+  font-family: var(--serif);
+  font-size: 12px;
+  color: var(--mute);
+  margin: var(--sp-2) 0 0;
+  line-height: 1.45;
+}
+
+.special-dispatch__actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+/* Arrived toast — fixed top-centre overlay, visible on any tab */
+@keyframes arrived-toast-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.special-dispatch--arrived {
+  position: fixed;
+  top: var(--sp-4);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9000;
+  min-width: 220px;
+  max-width: min(420px, calc(100vw - 2 * var(--sp-4)));
+  cursor: pointer;
+  animation: arrived-toast-in var(--dur-base) var(--ease-out) both;
+}
+
+.special-dispatch--arrived .special-dispatch__kicker { color: var(--rust); }
+
+@media (prefers-reduced-motion: reduce) {
+  .special-dispatch--arrived { animation: none; }
+}

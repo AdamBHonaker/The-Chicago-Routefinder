@@ -69,6 +69,17 @@ _edge_lengths: "np.ndarray | None" = None
 _graph_load_failed: bool = False
 _lcc_vertex_ids: "np.ndarray | None" = None
 
+# Coordinate snap precision for cache keys. 5 decimals ≈ 1.1 m at Chicago's
+# latitude — well below the precision GTFS / geocoded coords need to land on
+# the same nearest-node. Snapping at the cache boundary collapses near-identical
+# inputs (e.g. 41.87901 vs 41.87902) onto a single cache entry, turning the
+# raw-float caches that previously almost never hit into effective ones.
+_COORD_SNAP_DECIMALS: int = 5
+
+
+def _snap(v: float) -> float:
+    return round(v, _COORD_SNAP_DECIMALS)
+
 
 # ---------------------------------------------------------------------------
 # Module-level helpers (moved out of cached inner functions)
@@ -76,7 +87,10 @@ _lcc_vertex_ids: "np.ndarray | None" = None
 
 def _cardinal(lat1: float, lon1: float, lat2: float, lon2: float) -> str:
     dlat = lat2 - lat1
-    dlon = lon2 - lon1
+    # Scale longitude by cos(mean latitude) so equal real-world east/north
+    # distances produce equal planar deltas — without this, Chicago's ~42°N
+    # latitude over-weights east/west by ~25 % and biases the bearing.
+    dlon = (lon2 - lon1) * math.cos(math.radians((lat1 + lat2) / 2))
     deg = math.degrees(math.atan2(dlon, dlat)) % 360
     dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
     return dirs[round(deg / 45) % 8]
@@ -240,9 +254,12 @@ def _load_graph() -> "ig.Graph | None":
                 def _hw_str(raw) -> str:
                     if isinstance(raw, list): return raw[0] if raw else ""
                     return (raw or "").strip()
+                # Bulk attribute access — single G.es["highway"] read avoids
+                # building a fresh attributes() dict per edge.
+                highways = G.es["highway"]
                 exclude_ids = [
-                    e.index for e in G.es
-                    if _hw_str(e.attributes().get("highway")) in _EXCLUDED_HIGHWAY_TYPES
+                    i for i, hw in enumerate(highways)
+                    if _hw_str(hw) in _EXCLUDED_HIGHWAY_TYPES
                 ]
                 if exclude_ids:
                     G.delete_edges(exclude_ids)
@@ -274,17 +291,19 @@ def _load_graph() -> "ig.Graph | None":
                 print(f"[walking] to_undirected skipped ({type(und_err).__name__}: {und_err}) — directed routing in use")
 
         try:
-            # Single pass over vertices for both coordinate arrays
-            coords = np.array([(v["x"], v["y"]) for v in G.vs], dtype=np.float64)
-            lons = coords[:, 0]
-            lats = coords[:, 1]
+            # Bulk attribute access — G.vs["x"] and G.vs["y"] each return a list
+            # in one C call, far cheaper than per-vertex dict lookup.
+            lons = np.asarray(G.vs["x"], dtype=np.float64)
+            lats = np.asarray(G.vs["y"], dtype=np.float64)
             _vertex_lats = lats
             _vertex_lons = lons
 
             # Precompute edge lengths once; None lengths become 0.0
-            _edge_lengths = np.array(
-                [e["length"] if e["length"] is not None else 0.0 for e in G.es],
+            raw_lengths = G.es["length"]
+            _edge_lengths = np.fromiter(
+                (l if l is not None else 0.0 for l in raw_lengths),
                 dtype=np.float64,
+                count=len(raw_lengths),
             )
 
             # Restrict spatial index to the largest weakly-connected component so that
@@ -309,9 +328,13 @@ def _load_graph() -> "ig.Graph | None":
     return _graph_cache
 
 
-@lru_cache(maxsize=2048)
 def _get_nearest_node(lat: float, lon: float) -> "int | None":
     """Return the nearest LCC vertex index; None if graph unavailable or point is >1 km from any vertex."""
+    return _get_nearest_node_cached(_snap(lat), _snap(lon))
+
+
+@lru_cache(maxsize=2048)
+def _get_nearest_node_cached(lat: float, lon: float) -> "int | None":
     if _load_graph() is None:
         return None
     try:
@@ -328,7 +351,6 @@ def _get_nearest_node(lat: float, lon: float) -> "int | None":
         return None
 
 
-@lru_cache(maxsize=512)
 def _get_shortest_path(
     origin_lat: float,
     origin_lon: float,
@@ -343,6 +365,19 @@ def _get_shortest_path(
     share this cache so the expensive Dijkstra run happens at most once per unique
     origin/destination pair per process lifetime.
     """
+    return _get_shortest_path_cached(
+        _snap(origin_lat), _snap(origin_lon),
+        _snap(dest_lat),   _snap(dest_lon),
+    )
+
+
+@lru_cache(maxsize=512)
+def _get_shortest_path_cached(
+    origin_lat: float,
+    origin_lon: float,
+    dest_lat: float,
+    dest_lon: float,
+) -> "tuple[tuple[int, ...], tuple[int, ...]] | None":
     G = _load_graph()
     if G is None:
         return None
@@ -369,7 +404,6 @@ def _get_shortest_path(
         return None
 
 
-@lru_cache(maxsize=256)
 def walk_minutes(
     origin_lat: float,
     origin_lon: float,
@@ -382,6 +416,10 @@ def walk_minutes(
 
     Falls back to a straight-line Haversine estimate if routing fails
     (e.g., a point falls outside the graph's bounding box).
+
+    No lru_cache wrapper — _get_shortest_path is already cached at the
+    Dijkstra level, and the post-processing (one numpy sum) is cheaper than
+    the cache bookkeeping for a 256-entry float-keyed dict.
     """
     try:
         path = _get_shortest_path(origin_lat, origin_lon, dest_lat, dest_lon)
@@ -396,7 +434,6 @@ def walk_minutes(
         return _haversine_walk_minutes(origin_lat, origin_lon, dest_lat, dest_lon)
 
 
-@lru_cache(maxsize=256)
 def _walk_directions_impl(
     origin_lat: float,
     origin_lon: float,
@@ -491,7 +528,6 @@ def walk_directions(
     return list(steps[:_WALK_DIRECTIONS_MAX_STEPS])
 
 
-@lru_cache(maxsize=256)
 def _walk_path_impl(
     origin_lat: float,
     origin_lon: float,

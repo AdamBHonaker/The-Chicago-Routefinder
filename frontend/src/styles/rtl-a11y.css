@@ -1,0 +1,45 @@
+
+/* ── RTL layout overrides ────────────────────────────────────────────────── */
+/* Applied when Arabic, Urdu, or Pashto is selected via [dir="rtl"] on <html>. */
+
+[dir="rtl"] .masthead-folio {
+  flex-direction: row-reverse;
+}
+
+[dir="rtl"] .masthead-title-row {
+  flex-direction: row-reverse;
+}
+
+/* Tab bar uses logical flex — reverses automatically with dir="rtl" */
+
+[dir="rtl"] .route-card-header {
+  flex-direction: row-reverse;
+}
+
+/* .leg uses CSS grid with logical column order; `direction: rtl` inherited
+ * from [dir="rtl"] flips the visual column order automatically. text-align: end
+ * on .leg-minutes follows suit. */
+[dir="rtl"] .leg-walk-body {
+  align-items: flex-end;
+}
+
+/* .leg-steps border/padding use logical properties — no RTL override needed */
+
+/* .alert-item border RTL handled via border-inline-start (logical property) */
+
+/* .settings-sheet uses logical properties — no RTL override needed */
+/* .settings-byok-actions uses logical gap — no RTL override needed */
+
+/* .form label RTL handled via logical flex + padding-inline-start on sub-elements */
+
+/* ── High-contrast accessibility override ────────────────────────────────── */
+/* Thickens hairlines from mute-fog to ink so borders remain visible on       */
+/* high-contrast displays and in Windows Contrast Themes.                     */
+
+@media (prefers-contrast: more) {
+  :root {
+    --hairline: 2px solid var(--ink);
+    --dashed:   1px dashed var(--ink);
+    --mute-fog: var(--mute);
+  }
+}

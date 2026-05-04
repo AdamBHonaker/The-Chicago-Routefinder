@@ -1,0 +1,280 @@
+
+/* ── Form ────────────────────────────────────────────────────────────────── */
+
+.form {
+  background-color: var(--paper-bright);
+  border: var(--rule);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.form label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 10px;
+}
+
+.form label > span {
+  width: 80px;
+  flex-shrink: 0;
+  font-family: var(--serif);
+  font-size: 14px;
+  font-style: italic;
+  color: var(--mute);
+  line-height: 1.2;
+}
+
+.form label > .field-wrapper {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Geo and save sub-elements wrap to a new line, indented under the input */
+.form label > .geo-btn-row,
+.form label > .geo-denied-banner,
+.form label > .label-save-panel {
+  width: 100%;
+  padding-inline-start: 90px;
+}
+
+.form input {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding-block: 12px;
+  padding-inline-start: 0;
+  padding-inline-end: 2.5rem;
+  font-family: var(--serif);
+  font-size: 19px;
+  font-weight: 600;
+  color: var(--ink);
+  outline: none;
+  width: 100%;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.form input:focus {
+  background: rgba(23,19,16,0.025);
+}
+
+.form input::placeholder {
+  color: var(--mute-fog);
+  font-style: italic;
+  font-weight: 400;
+  font-size: 14px;
+}
+
+/* Hide the native clear button on search inputs */
+.form input[type="search"]::-webkit-search-cancel-button {
+  display: none;
+}
+
+.form > button[type="submit"] {
+  margin-top: 14px;
+  background: var(--ink);
+  color: var(--paper);
+  border: none;
+  border-radius: 0;
+  padding: 14px 20px;
+  font-family: var(--serif);
+  font-size: 15px;
+  font-weight: 600;
+  font-style: italic;
+  cursor: pointer;
+  width: 100%;
+  min-height: 48px;
+  transition: opacity var(--dur-quick) var(--ease-out);
+}
+
+.form > button[type="submit"]:hover:not(:disabled) {
+  opacity: var(--opacity-hover);
+}
+
+.form > button[type="submit"]:active:not(:disabled) {
+  opacity: 0.68;
+}
+
+.form > button[type="submit"]:disabled {
+  opacity: var(--opacity-mute);
+  cursor: not-allowed;
+}
+
+.swap-row {
+  border-top: var(--dashed);
+  padding: 4px 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  margin: 0;
+}
+
+.swap-btn {
+  background: transparent;
+  border: var(--hairline);
+  border-radius: 0;
+  color: var(--mute);
+  cursor: pointer;
+  font-family: var(--serif);
+  font-size: 15px;
+  line-height: 1;
+  min-height: 28px;
+  min-width: 28px;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color var(--dur-quick) var(--ease-out), border-color var(--dur-quick) var(--ease-out);
+}
+
+.swap-btn:hover {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+
+.swap-btn:active {
+  color: var(--ink);
+  border-color: var(--ink);
+  background: var(--paper-folio);
+}
+
+/* ── Error ───────────────────────────────────────────────────────────────── */
+
+.error {
+  background: var(--paper-bright);
+  border: 1px solid var(--rust);
+  border-radius: 0;
+  padding: 1rem 1.25rem;
+  font-family: var(--serif);
+  font-size: 0.9rem;
+  font-style: italic;
+  color: var(--rust);
+  line-height: 1.5;
+}
+
+.data-warning {
+  font-family: var(--serif);
+  font-size: 0.8rem;
+  font-style: italic;
+  color: var(--mute);
+  margin-top: 0.4rem;
+}
+
+/* ── Inline route alerts (in results area) ───────────────────────────────── */
+
+.alerts-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.alert-item {
+  border-inline-start: 2px solid var(--mute-fog);
+  padding: var(--sp-2) var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.alert-item--major { border-color: var(--rust); }
+.alert-item--minor { border-color: var(--mute); }
+
+.alert-headline {
+  font-family: var(--serif);
+  font-size: var(--fs-body-sm);
+  font-style: italic;
+  color: var(--ink-soft);
+  line-height: 1.4;
+}
+
+.alert-item--major .alert-headline { color: var(--rust); }
+
+.alert-impact {
+  font-family: var(--sans);
+  font-size: var(--fs-caps);
+  font-weight: 700;
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--mute);
+}
+
+.alerts-more {
+  font-family: var(--serif);
+  font-size: var(--fs-body-sm);
+  font-style: italic;
+  color: var(--mute);
+  margin: var(--sp-1) 0 0;
+}
+
+.alerts-more a {
+  color: var(--navy);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.alerts-more a:hover {
+  color: var(--ink);
+}
+
+/* ── Loading skeleton ────────────────────────────────────────────────────── */
+
+@keyframes plot-rule {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 0.4; }
+  50%      { opacity: 0.7; }
+}
+
+.skeleton-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.skeleton-plotting {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 22px;
+  font-weight: 500;
+  letter-spacing: -0.4px;
+  color: var(--ink);
+  margin: 0;
+  line-height: 1;
+}
+
+.plot-rule {
+  position: relative;
+  height: 1px;
+  width: 100%;
+  overflow: hidden;
+}
+.plot-rule::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--ink);
+  animation: plot-rule 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .plot-rule::before { animation: none; transform: translateX(0); }
+  .skeleton-ghost-line { animation: none; opacity: var(--opacity-soft); }
+}
+
+.skeleton-ghost-line {
+  height: 9px;
+  background: var(--mute-fog);
+  opacity: var(--opacity-soft);
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+.skeleton-ghost-line--long   { width: 100%; }
+.skeleton-ghost-line--medium { width: 68%; }
+.skeleton-ghost-line--short  { width: 44%; }
+

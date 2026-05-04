@@ -15,6 +15,21 @@ export const LINE_COLORS = {
   Yellow: "#f9e300",
 };
 
+// Maps the raw CTA Train Tracker `rt` code (as returned by the backend's
+// /stop-arrivals endpoint in each train arrival's `route` field) to the
+// canonical "<Color> Line" name used by LINE_COLORS / LINE_ABBREVS / pills.
+// Source: backend/cta_client.py:LINE_NAMES.
+export const TRAIN_LINE_CODE_TO_NAME = {
+  Red:  "Red Line",
+  Blue: "Blue Line",
+  Brn:  "Brown Line",
+  G:    "Green Line",
+  Org:  "Orange Line",
+  P:    "Purple Line",
+  Pink: "Pink Line",
+  Y:    "Yellow Line",
+};
+
 // Accepts either bare ("Red") or backend-style ("Red Line"). Returns bare.
 function normalizeLine(line) {
   if (!line) return line;

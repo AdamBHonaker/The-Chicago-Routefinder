@@ -120,10 +120,11 @@ export const LEG_ADVANCE_RADIUS_VEHICLE_M = 150;
 export const WALK_STEP_PROXIMITY_M        = 30;
 
 // ---------------------------------------------------------------------------
-// Photo fade-out duration (TD-108).
-// Must match the CSS transition duration on `.transit-photo--fading` in App.css.
+// Walk-speed multipliers used to scale walk-leg minutes in /recommend requests.
+// Standard is the sentinel 1.0 — call sites omit walk_speed at standard speed
+// so the backend skips the no-op rescale.
 // ---------------------------------------------------------------------------
-export const PHOTO_FADE_MS = 1000;
+export const WALK_SPEED_FACTORS = { slow: 0.75, standard: 1.0, brisk: 1.25 };
 
 // ---------------------------------------------------------------------------
 // Share button reset delay — how long the "Copied" state shows before

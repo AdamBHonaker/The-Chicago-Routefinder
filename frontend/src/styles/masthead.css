@@ -1,0 +1,140 @@
+
+/* ── Masthead ────────────────────────────────────────────────────────────── */
+
+.header {
+  padding: var(--sp-4) var(--sp-6);
+  background: var(--paper);
+  border-bottom: var(--rule-thick);
+  flex-shrink: 0;
+}
+
+.masthead-folio {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--sp-3);
+}
+
+.masthead-folio-date,
+.masthead-folio-vol {
+  font-family: var(--sans);
+  font-size: var(--fs-caps);
+  font-weight: 700;
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--mute);
+  line-height: var(--lh-caps);
+}
+
+.masthead-rule {
+  height: 2px;
+  background: var(--ink);
+  margin-bottom: var(--sp-4);
+}
+
+.masthead-title-row {
+  margin-bottom: var(--sp-2);
+}
+
+/* Two-line stacked wordmark (D2 spec). Line 1 italic 500, line 2 roman 700,
+ * trailing period in rust. Same 38px treatment on mobile and desktop home
+ * masthead. The --lg variant (64px) is for the cover hero and 404 page. */
+.masthead-title {
+  font-family: var(--serif);
+  font-size: 38px;
+  letter-spacing: -1.2px;
+  line-height: 0.95;
+  margin: 0;
+}
+
+.masthead-title--lg {
+  font-size: 64px;
+}
+
+.masthead-title-italic,
+.masthead-title-roman {
+  display: block;
+}
+
+.masthead-title-italic {
+  font-weight: 500;
+  font-style: italic;
+}
+
+.masthead-title-roman {
+  font-weight: 700;
+  font-style: normal;
+  margin-top: 2px;
+}
+
+.masthead-period {
+  color: var(--rust);
+}
+
+.masthead-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+  margin-bottom: var(--sp-3);
+}
+
+.btn-ghost-icon {
+  background: transparent;
+  border: var(--hairline);
+  color: var(--ink);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: 15px;
+  cursor: pointer;
+  border-radius: var(--r-0);
+  line-height: 1;
+  min-width: 32px;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--dur-quick) var(--ease-out);
+}
+
+.btn-ghost-icon:hover {
+  background: var(--paper-folio);
+}
+
+.btn-ghost-icon--active {
+  border-color: var(--ink);
+  background: var(--paper-folio);
+}
+
+.masthead-select {
+  background: transparent;
+  border: var(--hairline);
+  color: var(--ink);
+  padding: var(--sp-2) var(--sp-3);
+  font-family: var(--sans);
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  cursor: pointer;
+  border-radius: var(--r-0);
+  outline: none;
+  appearance: none;
+  -webkit-appearance: none;
+  /* Prevent iOS zoom on tap */
+  font-size: max(var(--fs-caps), 16px);
+  transition: background var(--dur-quick) var(--ease-out);
+}
+
+.masthead-select:hover,
+.masthead-select:focus {
+  background: var(--paper-folio);
+}
+
+.masthead-tagline {
+  font-family: var(--serif);
+  font-size: 12px;
+  font-style: italic;
+  color: var(--mute);
+  line-height: 1.4;
+  margin: 0;
+}

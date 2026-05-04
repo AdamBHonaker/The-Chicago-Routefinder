@@ -150,25 +150,25 @@ class TestCheckRateLimit:
         _rate_store.pop(self.TEST_IP, None)
 
     def test_disabled_always_allows(self):
-        with patch("main._RATE_LIMIT_ENABLED", False):
+        with patch("rate_limit._RATE_LIMIT_ENABLED", False):
             assert _check_rate_limit(self.TEST_IP) is True
 
     def test_disabled_allows_many_calls(self):
-        with patch("main._RATE_LIMIT_ENABLED", False):
+        with patch("rate_limit._RATE_LIMIT_ENABLED", False):
             for _ in range(20):
                 assert _check_rate_limit(self.TEST_IP) is True
 
     def test_enabled_first_call_allowed(self):
-        with patch("main._RATE_LIMIT_ENABLED", True), \
-             patch("main._RATE_LIMIT_RPM", 10), \
-             patch("main._RATE_LIMIT_RPH", 50):
+        with patch("rate_limit._RATE_LIMIT_ENABLED", True), \
+             patch("rate_limit._RATE_LIMIT_RPM", 10), \
+             patch("rate_limit._RATE_LIMIT_RPH", 50):
             assert _check_rate_limit(self.TEST_IP) is True
 
     def test_enabled_blocks_at_minute_cap(self):
         """After RPM requests in the last 60 seconds, the next is rejected."""
-        with patch("main._RATE_LIMIT_ENABLED", True), \
-             patch("main._RATE_LIMIT_RPM", 3), \
-             patch("main._RATE_LIMIT_RPH", 100):
+        with patch("rate_limit._RATE_LIMIT_ENABLED", True), \
+             patch("rate_limit._RATE_LIMIT_RPM", 3), \
+             patch("rate_limit._RATE_LIMIT_RPH", 100):
             _rate_store.pop(self.TEST_IP, None)
             # Seed the window with 3 recent timestamps
             now = time.monotonic()
@@ -177,9 +177,9 @@ class TestCheckRateLimit:
 
     def test_enabled_blocks_at_hour_cap(self):
         """After RPH requests in the last hour, the next is rejected."""
-        with patch("main._RATE_LIMIT_ENABLED", True), \
-             patch("main._RATE_LIMIT_RPM", 100), \
-             patch("main._RATE_LIMIT_RPH", 3):
+        with patch("rate_limit._RATE_LIMIT_ENABLED", True), \
+             patch("rate_limit._RATE_LIMIT_RPM", 100), \
+             patch("rate_limit._RATE_LIMIT_RPH", 3):
             _rate_store.pop(self.TEST_IP, None)
             now = time.monotonic()
             # 3 timestamps spread over the hour — passes per-minute cap, fails hourly
@@ -190,9 +190,9 @@ class TestCheckRateLimit:
 
     def test_old_timestamps_evicted_before_check(self):
         """Requests older than 1 hour are pruned and don't count toward the cap."""
-        with patch("main._RATE_LIMIT_ENABLED", True), \
-             patch("main._RATE_LIMIT_RPM", 2), \
-             patch("main._RATE_LIMIT_RPH", 3):
+        with patch("rate_limit._RATE_LIMIT_ENABLED", True), \
+             patch("rate_limit._RATE_LIMIT_RPM", 2), \
+             patch("rate_limit._RATE_LIMIT_RPH", 3):
             _rate_store.pop(self.TEST_IP, None)
             now = time.monotonic()
             # Two very stale timestamps (> 1 hour ago)

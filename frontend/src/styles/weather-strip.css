@@ -1,0 +1,64 @@
+
+/* ── Weather strip ────────────────────────────────────────────────────────
+ * NOT in D2 design system v1; proposed for v2.
+ * Composition follows D2 vocabulary:
+ *   - paper background, hairline rules top/bottom
+ *   - mono temperature (--fs-mono, tabular-nums)
+ *   - italic serif condition copy
+ *   - sans caps label (--fs-caps, --ls-caps)
+ *   - rust alert sub-line on severe weather
+ * Maintainer: keep in lockstep with D2 tokens. Do not introduce one-off
+ * colors or fonts here without updating the design system in lockstep.
+ */
+
+.weather-strip {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-6);
+  border-top: var(--hairline);
+  border-bottom: var(--hairline);
+  background: var(--paper);
+}
+
+.weather-strip__main {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+}
+
+.weather-strip__temp {
+  font-family: var(--mono);
+  font-size: var(--fs-mono);
+  font-weight: 600;
+  color: var(--ink);
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.weather-strip__condition {
+  font-family: var(--serif);
+  font-size: var(--fs-body-sm);
+  font-style: italic;
+  color: var(--ink-soft);
+  flex: 1;
+}
+
+.weather-strip__label {
+  font-family: var(--sans);
+  font-size: var(--fs-caps);
+  font-weight: 700;
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--mute);
+  flex-shrink: 0;
+}
+
+.weather-strip__alert {
+  font-family: var(--serif);
+  font-size: var(--fs-body-sm);
+  font-style: italic;
+  color: var(--rust);
+  margin: 0;
+  line-height: 1.4;
+}

@@ -101,4 +101,44 @@ with open(fname + ".sha256", "w") as f:
 print(f"{fname}.sha256: {h.hexdigest()}")
 PYEOF
 
+# FEAT-003: download MaxMind GeoLite2-City DB at build time. Free tier requires
+# a license key (https://www.maxmind.com/en/geolite2/signup). Pass via Railway
+# Build Argument: MAXMIND_LICENSE_KEY=<key>. If unset, the build proceeds
+# without the DB and geography counting silently no-ops at runtime.
+# Refreshed monthly: MaxMind updates on Tuesdays — redeploy at least monthly.
+ARG MAXMIND_LICENSE_KEY=""
+RUN python3 - <<'PYEOF'
+import os, sys, tarfile, urllib.request, io
+
+key = os.environ.get("MAXMIND_LICENSE_KEY", "").strip()
+if not key:
+    print("[geoip] MAXMIND_LICENSE_KEY not set — skipping GeoLite2-City download.")
+    sys.exit(0)
+
+url = (
+    "https://download.maxmind.com/app/geoip_download"
+    f"?edition_id=GeoLite2-City&license_key={key}&suffix=tar.gz"
+)
+print("[geoip] Downloading GeoLite2-City ...")
+with urllib.request.urlopen(url) as r:
+    blob = r.read()
+print(f"[geoip] {len(blob):,} bytes; extracting ...")
+with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as t:
+    member = next((m for m in t.getmembers() if m.name.endswith("GeoLite2-City.mmdb")), None)
+    if member is None:
+        print("[geoip] ERROR: GeoLite2-City.mmdb not found in archive")
+        sys.exit(1)
+    f = t.extractfile(member)
+    if f is None:
+        print("[geoip] ERROR: extractfile returned None")
+        sys.exit(1)
+    with open("/app/GeoLite2-City.mmdb", "wb") as out:
+        out.write(f.read())
+size = os.path.getsize("/app/GeoLite2-City.mmdb")
+print(f"[geoip] /app/GeoLite2-City.mmdb: {size:,} bytes")
+if size < 1_000_000:
+    print("[geoip] ERROR: DB suspiciously small")
+    sys.exit(1)
+PYEOF
+
 CMD ["sh", "-c", "python fetch_gtfs.py && uvicorn main:app --host 0.0.0.0 --port $PORT --no-access-log --log-level warning"]

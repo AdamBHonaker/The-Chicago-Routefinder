@@ -36,21 +36,25 @@ Accuracy is essential. The routing engine must:
 
 ## Tech Stack
 
-**Frontend**
+### Frontend
+
 - React (PWA)
 - HTML, CSS, JavaScript
 - MapLibre GL JS v4 — map rendering (v5 had WebGL2 init issues in React StrictMode; pinned to v4.7.1)
 - OpenFreeMap Liberty — vector tile style (free, no API key; Positron style dropped — had null-typed expression errors in MapLibre v4/v5)
 
-**Backend**
+### Backend
+
 - Python
 - FastAPI (server connecting routing engine to React frontend)
 
-**Hosting**
+### Hosting
+
 - Railway (backend, free tier)
 - Vercel (frontend, free tier)
 
-**Routing Engine (Python libraries)**
+### Routing Engine (Python libraries)
+
 - `networkx` — graph-based route calculation
 - `osmnx` — walking distance via real street network data
 - `igraph` — C-backed graph library used by `walking.py` for the street routing graph; ~10× lower RAM than NetworkX
@@ -61,7 +65,8 @@ Accuracy is essential. The routing engine must:
 
 > Note: CTA GTFS data is parsed directly with Python's built-in `csv` module (streaming). `gtfs_kit`, `pandas`, and `shapely` were considered during planning but are not used.
 
-**AI Integration**
+### AI Integration
+
 - `anthropic>=0.50` (official Python SDK) — Claude API calls from backend
 - Model: `claude-sonnet-4-6` by default; `claude-haiku-4-5-20251001` for simple single-option/single-leg queries. Both model IDs are overridable via `CLAUDE_COMPLEX_MODEL` / `CLAUDE_SIMPLE_MODEL` Railway env vars.
 - **Prompt caching**: static system instruction passed as a `system` block with `cache_control: {"type": "ephemeral"}` — Anthropic caches it server-side for 5 minutes, reducing input token spend per request.
@@ -76,22 +81,26 @@ No database required. User accounts are not planned; saved locations, routes, an
 
 ## Data Sources
 
-**Static**
+### Static
+
 - CTA GTFS data — free download from transitchicago.com (stops, routes, schedules, transfer points)
 
-**Live**
+### Live
+
 - CTA Train Tracker API — real-time train arrivals (free, requires API key)
 - CTA Bus Tracker API — real-time bus arrivals (free, separate API key)
 - CTA Alerts API — service disruptions and delays (free, no key)
 - NWS (National Weather Service) — live weather context (free, no key)
 
-**Walking Distance**
+### Walking Distance
+
 - OSMnx (required) — real street-network walking times; not interchangeable with Google Maps
 
 ---
 
 ## API Keys Needed
-*(All obtained and configured)*
+
+(All obtained and configured.)
 
 - CTA Train Tracker API key — transitchicago.com ✅
 - CTA Bus Tracker API key — transitchicago.com ✅
@@ -119,6 +128,7 @@ No database required. User accounts are not planned; saved locations, routes, an
 - Early stage expectation: $50–200/month out of pocket before ad revenue catches up
 
 **Cost reduction strategies (all implemented):**
+
 - Claude Haiku for simple queries ✅ — single-option or single-leg routes use Haiku; all others use Sonnet
 - AI Toggle ✅ — Claude opt-in, off by default; zero token spend when disabled
 - Response caching ✅ — 120s TTL, 500-entry LRU cache; repeat queries skip all upstream I/O; hit/miss logged every 100 requests
@@ -134,9 +144,11 @@ No database required. User accounts are not planned; saved locations, routes, an
 This is the single canonical reference for all ad/monetization decisions. The implementation plan in `FEATURE_IMPLEMENTATION_PLANS.md` → Feature Monetization follows from these decisions.
 
 ### Philosophy
+
 Preserving The Chicago Routefinder editorial design system is the top priority. An ad that looks out of place is worse than no ad — it signals low quality and hurts retention. Every monetization decision is filtered through this constraint first.
 
 ### Phase 1 — House Ads (current focus)
+
 - **What:** A static `<a>` banner at the bottom of the results panel. Inline React component (`AdSlot`), no external scripts, no cookies, no third-party dependencies.
 - **Styling:** Paper background (`--paper`), `--mute-fog` hairline top-divider, ink text (`--ink`). Must look like a contextual tip, not a foreign element. The Chicago Routefinder editorial aesthetic must be completely preserved.
 - **Placement:** Below the last RouteCard, inside the left panel. Never shown on empty/loading state.
@@ -145,16 +157,21 @@ Preserving The Chicago Routefinder editorial design system is the top priority. 
 - **Affiliate program:** Amazon Associates is the practical starting point. Apply at affiliate-program.amazon.com with the live app URL.
 
 ### Phase 2 — Developer-Friendly Ad Networks (deferred)
+
 Revisit after reaching meaningful traffic. Both require applying with a live site and have minimum traffic/content requirements.
+
 - **EthicalAds** (ethicalads.io) — text-only, developer/tech audience, no behavioral tracking. Closest to house-ad aesthetics of any network. Preferred if a network is ever adopted.
 - **Carbon Ads** (carbonads.com) — similar positioning, slightly more design-heavy. Second choice.
 
 ### Google AdSense — Explicitly Deferred
+
 Auto-placed display ads cannot be reliably constrained to The Chicago Routefinder visual language. The risk of visual regression outweighs the revenue upside at current traffic levels. Only revisit if:
+
 - Revenue is critically needed AND
 - AdSense offers layout/style controls sufficient to guarantee the ad looks native
 
 ### Affiliate Product Reference (House Ad Candidates)
+
 Content strategy: contextual, local, utility-focused items that solve real Chicago commuter pain points.
 
 | Category | Top Picks | Chicago Pain Point |
@@ -198,6 +215,7 @@ Content strategy: contextual, local, utility-focused items that solve real Chica
 **Primary competitors:** Google Maps, Apple Maps, Ventra app, Transit app
 
 **Key differentiators:**
+
 - Eliminates decision fatigue — gives one clear recommendation with reasoning, not a list of options
 - Conversational AI explanation of WHY a route is best, not just what it is
 - Cleaner surfacing of real-time CTA data vs competitors
@@ -223,7 +241,6 @@ All phases through 6.5 are complete (deploy live since 2026-04-14; Weather & Cro
 See [`docs/archive/FEATURE_HISTORY.md`](archive/FEATURE_HISTORY.md) for the full record of all 42 completed features.
 
 ---
-
 
 ## Known Pending Items
 
@@ -253,10 +270,11 @@ Open bugs: [`docs/BUGS.md`](BUGS.md) · Technical debt: [`docs/TECH_DEBT.md`](TE
 | `CLAUDE_SIMPLE_MODEL` | Railway | Default `claude-haiku-4-5-20251001` |
 | `APP_ENV` | Railway | `production` for DAU tracking |
 | `DAILY_SALT` | Railway | Random secret for DAU HMAC hashing |
-| `DAU_ADMIN_TOKEN` | Railway | Protects `GET /admin/dau` endpoint |
+| `DAU_ADMIN_TOKEN` | Railway | Protects `GET /admin/dau` and `GET /admin/geography` |
 | `GITHUB_TOKEN` | Railway build arg | PAT with Contents:Read — needed for Dockerfile to pull street graph from GitHub Release street-graph-v1 |
+| `MAXMIND_LICENSE_KEY` | Railway build arg | Free MaxMind key — Dockerfile downloads GeoLite2-City.mmdb for FEAT-003 (geography). If unset, geography counting silently no-ops at runtime. |
 
-**DAU persistent volume:** Add a Railway persistent volume mounted at `/app/data` so `dau.json` survives container restarts.
+**Analytics persistent volume:** Add a Railway persistent volume mounted at `/app/data` so the analytics counters (`dau.json`, `geography.json`, `sessions.json`, `hourly.json`, `devices.json`, `referrers.json`) survive container restarts.
 
 ---
 
@@ -269,6 +287,7 @@ Location resolution uses a three-step fallback (implemented in `gtfs_loader.py`)
 3. **Google Maps Geocoding API** — ~100ms, biased to Chicago bounding box (`bounds=41.64,-87.94|42.02,-87.52`) with `components=country:US`
 
 **Implementation notes:**
+
 - `geocode_google(query)` in `gtfs_loader.py` — signature `(query: str) -> tuple[float, float] | None`
 - Results persisted to `geocode_cache.json` (disk cache survives restarts; cache hits are free)
 - API call counter persisted to `geocode_counter.json` — resets each calendar month
@@ -279,7 +298,7 @@ Location resolution uses a three-step fallback (implemented in `gtfs_loader.py`)
 
 ## Current File Structure
 
-```
+```text
 CTA-Transit-PWA/
 ├── .gitignore
 ├── README.md
@@ -300,7 +319,14 @@ CTA-Transit-PWA/
 │   └── PYTHON_TERMINAL_TEST_STARTUP_INSTRUCTIONS.md  ← How to run backend + frontend locally
 ├── backend/
 │   ├── .env                            ← API keys (never commit)
-│   ├── main.py                         ← FastAPI server: /recommend, /health, /autocomplete, /alerts, /weather, /pinned-arrivals, /admin/dau
+│   ├── main.py                         ← FastAPI app wiring + lifespan + /recommend, /health, /ping, /autocomplete, /alerts, /reverse-geocode, /stop-arrivals (admin/stats endpoints live in routes/)
+│   ├── rate_limit.py                   ← Per-IP /recommend RPM/RPH + rolling-24h + geocode-bucket sliding-window limiter; _client_ip extractor
+│   ├── middleware.py                   ← register_middlewares(): request-size cap, security headers, privacy-preserving analytics dispatcher
+│   ├── prompt_builder.py               ← build_prompt() + LANGUAGE_NAMES + crowdedness labels + route/weather/transfer formatting helpers
+│   ├── analytics_store.py              ← Shared persistence skeleton (today_chi/data_file/safe_load_json/atomic_write_json) for the 6 daily-aggregate counters
+│   ├── routes/
+│   │   ├── admin.py                    ← /admin/{dau,geography,sessions,hourly,devices,referrers} APIRouter + DAU_ADMIN_TOKEN gate
+│   │   └── stats.py                    ← /stats, /stats/{dau,geography,sessions,hourly,devices,referrers}, /privacy APIRouter (geocode-bucket rate-limited)
 │   ├── config.py                       ← Central routing constants (16 named values, all env-var overridable)
 │   ├── utils.py                        ← haversine_miles(), SpatialGrid, Chicago bbox constants
 │   ├── gtfs_loader.py                  ← 3-step location resolver + Google Maps geocoding + persistent cache + monthly counter
@@ -311,6 +337,12 @@ CTA-Transit-PWA/
 │   ├── crowdedness.py                  ← Crowdedness estimator: time-period/day-type enums + psgld-first heuristic
 │   ├── route_scoring.py                ← Weather-adjusted ranking weights; prompt-only hint injection
 │   ├── dau.py                          ← HMAC-SHA256 privacy-safe DAU counter; batched writes to /app/data/dau.json
+│   ├── geography.py                    ← FEAT-003: per-day per-city counter via MaxMind GeoLite2-City; privacy floor + Chicago-metro rollup; /app/data/geography.json
+│   ├── sessions.py                     ← FEAT-001: random sid cookie (httpOnly Secure SameSite=Lax, 30-min sliding TTL); idle-finalised session aggregates; /app/data/sessions.json
+│   ├── hourly.py                       ← FEAT-004: per-day 24-int /recommend histogram in Chicago tz; /app/data/hourly.json
+│   ├── devices.py                      ← FEAT-005: ua-parser-driven mobile/tablet/desktop/bot/unknown buckets; raw UA never persisted; /app/data/devices.json
+│   ├── referrers.py                    ← FEAT-008: Referer hostname → direct/search/social/other buckets; path/query stripped pre-storage; /app/data/referrers.json
+│   ├── public_stats.py                 ← FEAT-009: public-safe projection of admin counters + /stats HTML page (no third-party scripts) + /privacy text
 │   ├── fetch_gtfs.py                   ← Script: download/update CTA GTFS data
 │   ├── fetch_street_graph.py           ← Script: build OSMnx street graph + emit igraph pickle
 │   ├── fetch_station_exits.py          ← Script: build station_exits.json from Overpass OSM data
@@ -323,8 +355,8 @@ CTA-Transit-PWA/
 │   ├── geocode_cache.journal           ← Append-only JSONL delta (gitignored)
 │   ├── geocode_counter.json            ← Monthly API call counter (gitignored)
 │   ├── gtfs_data/                      ← Downloaded GTFS files (gitignored)
-│   ├── street_graph.graphml            ← Pre-built OSMnx graph via Git LFS + GitHub Release (est. ~253 MB; Chicago + Evanston bbox)
-│   └── street_graph_igraph.pkl         ← Pre-built igraph pickle (gitignored); preferred over graphml at runtime
+│   ├── street_graph.graphml            ← OSMnx graph source (gitignored, ~227 MB; Chicago + Evanston bbox; built locally by fetch_street_graph.py)
+│   └── street_graph_igraph.pkl         ← igraph runtime pickle (gitignored, ~47 MB; hosted on the "street-graph" GitHub Release, fetched at Docker build); preferred over graphml at runtime
 └── frontend/
     ├── index.html                      ← PWA meta tags, theme color, apple-touch-icon
     ├── package.json
@@ -346,10 +378,10 @@ CTA-Transit-PWA/
     │   ├── utils/
     │   │   ├── fetchWithRetry.js       ← Exponential back-off fetch wrapper (1s/2s/4s for 5xx/network errors)
     │   │   └── tripGeometry.js         ← haversineMeters, pointToSegmentMeters, legEndCoord, distanceToPath
-    │   ├── tests/                      ← Vitest + jsdom frontend test suite (54 tests)
-    │   │   ├── fetchWithRetry.test.js  ← 14 tests
-    │   │   ├── tripGeometry.test.js    ← 26 tests
-    │   │   └── favorites.test.js       ← 14 tests
+    │   ├── tests/                      ← Vitest + jsdom frontend test suite (26 files, 258 tests)
+    │   │   ├── *.test.jsx              ← Component tests for all 16 non-map components
+    │   │   ├── *.test.js               ← Util tests (5) + hook tests (4)
+    │   │   └── setup.js                ← jest-dom matcher registration
     │   ├── components/
     │   │   ├── TransitPhoto.jsx        ← Photo carousel (PHOTOS manifest defined here)
     │   │   ├── RouteCard.jsx           ← Route card with walk legs, transit legs, pin button; React.memo wrapped
@@ -371,34 +403,58 @@ CTA-Transit-PWA/
 
 ## Automated Test Suite
 
-**Backend — Location:** `backend/tests/` (pytest, 155 tests)
+**Combined: 651 tests** — backend 393 (pytest, 18 files) + frontend 258 (Vitest + jsdom, 26 files). All passing as of 2026-05-04.
 
-Run from `backend/` with: `python -m pytest tests/ -v`
+### Run commands
 
-| Test file | Module / layer tested | Tests |
+| Command | What it runs |
+| --- | --- |
+| `python -m pytest` (from repo root) | Full backend suite via `pyproject.toml` config |
+| `python -m pytest backend/tests/test_<name>.py` | Single backend file |
+| `python -m pytest -k <pattern>` | Backend tests matching name pattern |
+| `npm test` (from `frontend/`) | Full frontend suite |
+| `npm test -- --run <pattern>` | Single frontend file or test name |
+
+### Backend coverage (`backend/tests/`)
+
+| Layer | Files | What's covered |
 | --- | --- | --- |
-| `test_utils.py` | `utils.py` — `haversine_miles`, `SpatialGrid` | 19 |
-| `test_transit_graph.py` | `transit_graph.py` — pure functions only | 56 |
-| `test_main_helpers.py` | `main.py` — helpers, Pydantic validators | 51 |
-| `test_gtfs_loader.py` | `gtfs_loader.py` — pure string/dict functions | 21 |
-| `test_endpoints.py` | `/recommend` and `/stop-arrivals` endpoint contract | 8 |
+| **Pure utilities** | `test_utils.py`, `test_crowdedness.py`, `test_dau.py`, `test_route_scoring.py`, `test_weather_service.py` | Haversine, spatial grid, time-period classification, DAU counters, weather parsing, route scoring weights |
+| **GTFS parsing** | `test_gtfs_parsing.py`, `test_gtfs_loader.py` | All `_load_*` functions in `transit_graph.py` exercised against synthetic CSV fixtures; geocoding/neighborhood helpers in `gtfs_loader.py` |
+| **Graph routing** | `test_transit_graph.py`, `test_graph_construction.py` | Pure helpers (bearing, time parse, dedup) + `_path_to_route` and `find_routes` against hand-built fixture graphs |
+| **CTA API client** | `test_cta_client.py` | Train/Bus/Alerts/Routes parsing with mocked `aiohttp.ClientSession`; CTA dict-vs-list quirks, error sentinels, dedup |
+| **FastAPI app** | `test_main_helpers.py`, `test_endpoints.py` | `_cache_key`, rate limiter, prompt builder, `RouteRequest` validators, `/recommend` + `/stop-arrivals` contract via `TestClient` |
+| **Analytics** | `test_devices.py`, `test_geography.py`, `test_hourly.py`, `test_public_stats.py`, `test_referrers.py`, `test_sessions.py` | All FEAT-001/003/004/005/008 modules and the `/stats` projection layer |
 
-**Frontend — Location:** `frontend/src/tests/` (Vitest + jsdom, 54 tests)
+### Frontend coverage (`frontend/src/tests/`)
 
-Run from `frontend/` with: `npm test`
+| Layer | What's covered |
+| --- | --- |
+| **Components (15 of 16)** | All non-map components tested: ErrorBoundary, LabelSavePanel, LinePill, LoadingSkeleton, LocationInput, PinnedStopsBoard, RouteCard, SavedRoutesPanel, ServiceAlertsBar, SettingsPanel, SharedRouteBanner, SideRail, SignalLamp, TwoToneHeading, WeatherStrip, Wordmark. Not covered: `markers/*` (3 files — maplibre-dependent) |
+| **Utils (5 of 5)** | deriveTransferPoints, fetchWithRetry, renderMarkdown, routeUtils, tripGeometry |
+| **Hooks (4 of 7)** | useApiQuery, useByokIdleClear, useFavorites, useLocalStorage. Not covered: useMapMarker, useRouteLayers, useTripTracker (all maplibre/geolocation-dependent) |
+| **Persistence** | favorites.js — save/load round-trip, MAX_ITEMS, dedup |
 
-| Test file | Module tested | Tests |
-| --- | --- | --- |
-| `fetchWithRetry.test.js` | `utils/fetchWithRetry.js` — retry logic, abort, 4xx/5xx | 14 |
-| `tripGeometry.test.js` | `utils/tripGeometry.js` — haversine, point-to-segment, off-route boundary | 26 |
-| `favorites.test.js` | `favorites.js` — save/load round-trip, MAX_ITEMS, duplicates | 14 |
+### Design principles
 
-**Design principles:**
-- No live CTA API calls, no Claude calls, no GTFS file reads during tests
-- `conftest.py` creates header-only GTFS stubs in `backend/gtfs_data/` if feed is absent (CI-safe)
-- `test_endpoints.py` uses `TestClient` + `unittest.mock.patch` to stub the pipeline functions
+- **No live network in tests.** No CTA API calls, no Claude calls, no NWS calls, no live GTFS reads. All I/O patched at the boundary.
+- **Synthetic fixtures over real data.** GTFS parsing tested against 2–5-row CSV fixtures written to `tmp_path`; graph routing tested against hand-built `nx.DiGraph` instances.
+- **`conftest.py` creates header-only GTFS stubs** in `backend/gtfs_data/` if the real feed is absent (CI-safe).
+- **Mocked `aiohttp.ClientSession`** for `cta_client`; mocked `react-i18next` per component test for translation keys.
+- **lru_cache reset between GTFS tests** via autouse fixture so each test sees fresh data.
 
-`pytest>=8.0` is in `backend/requirements.txt`.
+### Configuration
+
+- `pyproject.toml` (repo root) — `pythonpath = ["backend"]`, `testpaths = ["backend/tests"]`, `asyncio_mode = "strict"`. Lets `python -m pytest` work from any cwd.
+- `frontend/vite.config.js` — Vitest config: jsdom environment, `src/tests/**/*.test.{js,jsx}`, setup file.
+- `backend/requirements-dev.txt` — `pytest`, `pytest-asyncio`, `httpx` (for FastAPI `TestClient`), `osmnx`, `psutil`.
+
+### Known coverage gaps (intentional)
+
+- **maplibre-gl-dependent code** — `MapView.jsx`, `markers/*`, `useMapMarker`, `useRouteLayers`, `useTripTracker`. Each would need ~100 lines of brittle WebGL mocks. The right tool is Playwright with a real browser; see [FEATURE_PLANS.md → Consideration — Playwright E2E suite for maplibre + geolocation paths](FEATURE_PLANS.md).
+- **`App.jsx`** — top-level orchestration. Better tested as E2E than unit.
+- **`warm_up()` / live `_build_graph()`** — exercised indirectly via the GTFS-parsing tests of every loader it calls.
+- **`find_bus_transfer_routes`** — large, real-graph-dependent. Defer until the bus-to-bus path becomes a reliability concern.
 
 ---
 
@@ -407,12 +463,11 @@ Run from `frontend/` with: `npm test`
 The app is live on Railway + Vercel. All phases through 6.5 are complete; Feature Heritage, MapMarkers, and NorthExpansion/SouthExpansion shipped 2026-05-01. Feature HeadingTwoTone and Feature ItinerarySpine shipped 2026-05-03, completing the deferred D2 design-system work for panel headings and itinerary leg rows.
 
 **Next steps (in order):**
-1. Source ≥10 transit photos for the map loading panel (see `HUMAN_TODO.md`).
-2. Run UI checks: confirm 40/60 panel ratio on desktop, 300px/350px min-heights on mobile.
-3. (Optional) Add a custom domain in Vercel → Settings → Domains.
-4. **Phase 7:** Monetization (House Ads first) — implement `AdSlot` component. See "Monetization Strategy — Full Decision Record" below.
 
-**Bug status:** 0 🔴 high + 0 🟡 medium + 1 🟢 low (BUG-007 transit photos) — see `BUGS_TO_BE_FIXED.md`.
+1. (Optional) Add a custom domain in Vercel → Settings → Domains.
+2. **Phase 7:** Monetization (House Ads first) — implement `AdSlot` component. See "Monetization Strategy — Full Decision Record" below.
+
+**Bug status:** 0 🔴 high + 0 🟡 medium + 0 🟢 low — see `BUGS_TO_BE_FIXED.md`.
 **Technical debt status:** 0 items open — see `Technical_Debt.md`.
 
 ---

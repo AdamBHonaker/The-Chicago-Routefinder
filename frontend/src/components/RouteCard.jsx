@@ -3,6 +3,8 @@ import { useTranslation } from "react-i18next";
 import { LINE_COLORS, BUS_DIRECTION_COLORS, getRouteColor, SHARE_STATE_RESET_MS } from "../constants.js";
 import LinePill from "./LinePill.jsx";
 import { extractTransitLines } from "../utils/routeUtils.js";
+// extractTransitLines is kept as a fallback for the rare case a caller mounts
+// RouteCard without the precomputed `transitLines` prop (e.g. unit tests).
 
 function formatBlocks(b, blockType, t) {
   if (!blockType) return b === 1 ? `1 ${t("block_singular")}` : `${b} ${t("block_plural")}`;
@@ -177,7 +179,7 @@ function RouteLegs({ legs, initialWait, activeLegIndex, completedSteps, pinnedSt
 }
 
 export default memo(function RouteCard({
-  route, index, isFirst, isSelected, onSelect,
+  route, transitLines: transitLinesProp, index, isFirst, isSelected, onSelect,
   tripActive, activeLegIndex, completedSteps, onStartTrip, onStopTrip,
   tripGeoError, onDismissTripGeoError,
   onVehicle, onToggleVehicle,
@@ -209,6 +211,8 @@ export default memo(function RouteCard({
       await navigator.clipboard.writeText(shareUrl);
       copied = true;
     } catch {
+      // Fallback for non-secure contexts (navigator.clipboard requires HTTPS).
+      // execCommand is deprecated but kept for local http://localhost dev sessions.
       const ta = document.createElement("textarea");
       ta.value = shareUrl;
       ta.style.position = "fixed";
@@ -241,7 +245,13 @@ export default memo(function RouteCard({
       ? t("label_1_transfer")
       : t("label_n_transfers", { count: transfers });
 
-  const transitLines = useMemo(() => extractTransitLines(route.legs), [route.legs]);
+  // Prefer the precomputed array passed by App.jsx (OPT-FE-104). Fall back to
+  // local computation when callers (e.g. tests) mount RouteCard standalone.
+  const transitLinesFallback = useMemo(
+    () => (transitLinesProp ? null : extractTransitLines(route.legs)),
+    [transitLinesProp, route.legs]
+  );
+  const transitLines = transitLinesProp ?? transitLinesFallback;
 
   return (
     <div className={`route-card${isFirst ? " route-card--best paper-grain-bright" : ""}${isSelected ? " route-card--selected" : ""}`}>

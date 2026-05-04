@@ -1,0 +1,54 @@
+
+/* ── Share button on route card ─────────────────────────────────────────── */
+
+.route-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: var(--sp-2) 0;
+}
+
+.share-btn {
+  background: none;
+  border: var(--hairline);
+  color: var(--mute);
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: var(--fs-mono);
+  padding: var(--sp-1) var(--sp-3);
+  min-width: 28px;
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color var(--dur-quick) var(--ease-out),
+              color var(--dur-quick) var(--ease-out);
+}
+
+.share-btn:hover { border-color: var(--ink); color: var(--ink); }
+
+.share-btn--copied {
+  border-color: var(--field);
+  color: var(--field);
+  font-family: var(--serif);
+  font-size: 10px;
+  font-style: italic;
+}
+
+/* ── Shared-link onboarding banner ─────────────────────────────────────── */
+
+.shared-route-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 8px 10px;
+  background: var(--paper-folio);
+  border: var(--hairline);
+  border-inline-start: 2px solid var(--navy);
+  color: var(--ink-soft);
+  font-family: var(--serif);
+  font-size: var(--fs-body-sm);
+  font-style: italic;
+  line-height: 1.4;
+}
+
+.shared-route-banner__text { flex: 1; }

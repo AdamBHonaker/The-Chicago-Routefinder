@@ -12,22 +12,12 @@ No IP address, fingerprint, cookie, or user identifier is ever persisted.
 import asyncio
 import hashlib
 import hmac
-import json
-import logging
 import os
-import tempfile
 import time
-from datetime import datetime
-from pathlib import Path
-from utils import CHICAGO_TZ
 
-# Railway production path; fall back to a local path during development.
-if os.getenv("APP_ENV") == "production":
-    DAU_FILE = Path("/app/data/dau.json")
-else:
-    DAU_FILE = Path(__file__).parent / "data" / "dau.json"
+import analytics_store
 
-DAU_FILE.parent.mkdir(parents=True, exist_ok=True)
+DAU_FILE = analytics_store.data_file("dau.json")
 
 # Daily salt — must be set in Railway env vars (DAILY_SALT).
 # Combined with today's Chicago date string before use as the HMAC key.
@@ -43,32 +33,15 @@ if _DAILY_SALT == "default-insecure-salt" and os.getenv("APP_ENV") == "productio
     )
 
 
-def _today_chi() -> str:
-    return datetime.now(CHICAGO_TZ).strftime("%Y-%m-%d")
+_today_chi = analytics_store.today_chi
 
 
 def _load() -> dict[str, int]:
-    try:
-        with open(DAU_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+    return analytics_store.safe_load_json(DAU_FILE, {})
 
 
 def _save(counts: dict[str, int]) -> None:
-    """Atomic write via temp file + os.replace."""
-    tmp_fd, tmp_path = tempfile.mkstemp(dir=DAU_FILE.parent, suffix=".tmp")
-    fdopen_ok = False
-    try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-            fdopen_ok = True
-            json.dump(counts, f)
-        os.replace(tmp_path, DAU_FILE)
-    except Exception:
-        if not fdopen_ok:
-            os.close(tmp_fd)
-        os.unlink(tmp_path)
-        raise
+    analytics_store.atomic_write_json(DAU_FILE, counts)
 
 
 # Module-level in-memory state — protected by _lock.
@@ -101,6 +74,15 @@ async def record_visit(ip: str) -> None:
     """Hash the IP against today's salt and increment today's unique-visitor count."""
     global _current_day, _seen_hashes, _base_count, _today_hmac_key, _visitors_since_last_flush, _last_flush_time
 
+    # Compute the digest before acquiring the lock to shorten the critical
+    # section. The key bytes embed today's date string, so if `snap_key` still
+    # equals `_today_hmac_key` after we acquire the lock, the precomputed
+    # digest used the authoritative key. On server start (snap_key == b"") or
+    # when a concurrent coroutine rolls the day forward inside the lock,
+    # `snap_key != _today_hmac_key` and we recompute below.
+    snap_key = _today_hmac_key
+    snap_digest = hmac.new(snap_key, ip.encode(), hashlib.sha256).digest() if snap_key else None
+
     async with _lock:
         # Recompute today inside the lock so a coroutine that was queued just
         # before midnight cannot observe a stale date after another coroutine
@@ -126,8 +108,10 @@ async def record_visit(ip: str) -> None:
             _visitors_since_last_flush = 0
             _last_flush_time = time.monotonic()
 
-        # Compute the digest after confirming today is the authoritative date.
-        digest = hmac.new(_today_hmac_key, ip.encode(), hashlib.sha256).digest()
+        if snap_digest is not None and snap_key == _today_hmac_key:
+            digest = snap_digest
+        else:
+            digest = hmac.new(_today_hmac_key, ip.encode(), hashlib.sha256).digest()
 
         if digest in _seen_hashes:
             return  # already counted today

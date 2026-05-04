@@ -21,10 +21,10 @@ east bound is the lakefront. Points outside fall back to Haversine estimates.
 Pace and Metra service areas are out of scope. Bounds are defined in
 `utils.STREET_GRAPH_BBOX_OSMNX`.
 
-NOTE: This file is committed to the repo via Git LFS (backend/street_graph.graphml).
-When Railway (or another CI environment) checks out the repo without pulling LFS
-objects, the file is a small pointer stub. This script detects that case and
-re-downloads the graph from OpenStreetMap automatically.
+NOTE: Both `street_graph.graphml` and `street_graph_igraph.pkl` are gitignored.
+For production, the pkl is uploaded as an asset on the `street-graph` GitHub
+Release and pulled at Docker build time (see backend/Dockerfile). For local
+development, run this script once to build both files from OpenStreetMap.
 """
 
 import os
