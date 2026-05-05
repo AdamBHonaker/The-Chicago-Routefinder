@@ -15,6 +15,7 @@ Chunked plans for upcoming major features, followed by ideas deferred until post
 
 1. Feature Monetization — House Ads (overall Phase 7, sub-phase 1; third-party networks deferred) — **Bolt-On**
 2. Feature PaceMetraCoverage — Pace + Metra service-area expansion of the walking street graph — **Structural** (depends on Pace/Metra being added to the transit graph)
+3. Feature LocaleExpansion — 22 → 76 languages + continent-first language picker + machine-translated review badge + design-system-aligned non-Latin fonts — **Bolt-On**
 
 **Analytics Suite — Privacy-Preserving Reach & Engagement Metrics** — ✅ **Complete 2026-05-04.** All nine features (FEAT-001 through FEAT-009) fully implemented across four build phases. Public dashboard live at `/stats`; admin endpoints at `/admin/*`. Three accompanying Considerations (third-party analytics, DAU reconciliation, GeoIP) all resolved. See [docs/archive/FEATURE_HISTORY.md](archive/FEATURE_HISTORY.md) for the full implementation record and [docs/ANALYTICS_MAINTENANCE.md](ANALYTICS_MAINTENANCE.md) for ongoing maintenance notes.
 
@@ -345,6 +346,355 @@ Today the street-graph bbox covers Chicago city limits + Evanston (Purple Line).
 
 - Pace and/or Metra integrated into the transit graph.
 - Decision on whether to ship one expanded artifact or shard by region.
+
+---
+
+## Feature LocaleExpansion --- 22 → 76 languages + continent picker
+
+### Overview
+
+Expand i18n coverage from 22 to 76 languages (54 net additions; Romanian `ro` already shipped) to serve transit-dependent, low-English-proficiency populations that mainstream apps (Google Maps, Apple Maps, Transit) leave unserved — particularly refugee resettlement communities, smaller Chicago diasporas with strong local presence, and globally-spoken languages that round out global coverage.
+
+The expansion bundles three companion concerns that must ship together to land well:
+
+1. **Discoverability** — 76 languages in a flat dropdown is overwhelming. A **continent-first picker** (6 continent silhouettes → drill down to languages of that region) keeps the surface scannable and reflects diaspora identity better than an alphabetical mega-list.
+2. **Honesty about translation quality** — 8 of the new locales are very low-resource for machine translation (Karen variants, Mongo, Hassaniya Arabic, Bhojpuri, Maithili, Hanifi Rohingya, Assyrian Neo-Aramaic). Each gets a **machine-translated review badge** localized into the target language (never shown in English) plus a feedback affordance so native speakers can flag issues.
+3. **Visual coherence** — new non-Latin scripts must render in fonts that match the **Heritage Organic** design system (Inter / Fraunces / JetBrains Mono pairing). Default Noto Sans fallbacks are the safe baseline but visually generic; font selection deserves design research, not a Google Fonts dump.
+
+**Type: Bolt-On** — frontend-only. No backend changes. The existing `scripts/translate-missing.mjs` pipeline and Vite/i18next plumbing already handle the mechanics.
+
+**Status:** Not started.
+
+**Prerequisites:** None.
+
+---
+
+### Scoping decisions
+
+#### 1. The 54 new locales
+
+| # | Language | Code | Native name | RTL | Script | Low-resource |
+|---|---|---|---|---|---|---|
+| 1 | Haitian Creole | `ht` | Kreyòl ayisyen | — | Latin | — |
+| 2 | Burmese | `my` | မြန်မာ | — | Myanmar | — |
+| 3 | S'gaw Karen | `ksw` | ကညီ | — | Myanmar (Karen) | ✓ |
+| 4 | Karenni / Red Karen | `eky` | ꤊꤛꤢ꤬ꤜꤤ꤭ | — | Kayah Li | ✓ |
+| 5 | Amharic | `am` | አማርኛ | — | Ethiopic | — |
+| 6 | Tigrinya | `ti` | ትግርኛ | — | Ethiopic | — |
+| 7 | Dari | `prs` | دری | RTL | Arabic | — |
+| 8 | Persian (Farsi) | `fa` | فارسی | RTL | Arabic | — |
+| 9 | Bosnian | `bs` | Bosanski | — | Latin | — |
+| 10 | Serbian | `sr` | Српски | — | Cyrillic | — |
+| 11 | Croatian | `hr` | Hrvatski | — | Latin | — |
+| 12 | Lithuanian | `lt` | Lietuvių | — | Latin | — |
+| 13 | Bengali | `bn` | বাংলা | — | Bengali | — |
+| 14 | Assyrian Neo-Aramaic | `aii` | ܣܘܪܬ | RTL | Syriac | ✓ |
+| 15 | Greek | `el` | Ελληνικά | — | Greek | — |
+| 16 | Swahili | `sw` | Kiswahili | — | Latin | — |
+| 17 | Thai | `th` | ไทย | — | Thai | — |
+| 18 | Swedish | `sv` | Svenska | — | Latin | — |
+| 19 | Somali | `so` | Soomaali | — | Latin | — |
+| 20 | Hebrew | `he` | עברית | RTL | Hebrew | — |
+| 21 | Turkish | `tr` | Türkçe | — | Latin | — |
+| 22 | Egyptian Arabic | `arz` | مصرى | RTL | Arabic | — |
+| 23 | Marathi | `mr` | मराठी | — | Devanagari | — |
+| 24 | Telugu | `te` | తెలుగు | — | Telugu | — |
+| 25 | Tamil | `ta` | தமிழ் | — | Tamil | — |
+| 26 | Indonesian | `id` | Bahasa Indonesia | — | Latin | — |
+| 27 | German | `de` | Deutsch | — | Latin | — |
+| 28 | Hausa | `ha` | Hausa | — | Latin | — |
+| 29 | Portuguese | `pt` | Português | — | Latin | — |
+| 30 | Bhojpuri | `bho` | भोजपुरी | — | Devanagari | ✓ |
+| 31 | Kongo | `kg` | Kikongo | — | Latin | — |
+| 32 | Mongo (Lomongo) | `lol` | Lomongo | — | Latin | ✓ |
+| 33 | Hassaniya Arabic | `mey` | حسانية | RTL | Arabic | ✓ |
+| 34 | Afrikaans | `af` | Afrikaans | — | Latin | — |
+| 35 | Xhosa | `xh` | isiXhosa | — | Latin | — |
+| 36 | Oromo | `om` | Afaan Oromoo | — | Latin | — |
+| 37 | Dutch | `nl` | Nederlands | — | Latin | — |
+| 38 | Mongolian | `mn` | Монгол | — | Cyrillic | — |
+| 39 | Lao | `lo` | ລາວ | — | Lao | — |
+| 40 | Khmer | `km` | ខ្មែរ | — | Khmer | — |
+| 41 | Kannada | `kn` | ಕನ್ನಡ | — | Kannada | — |
+| 42 | Uzbek | `uz` | Oʻzbekcha | — | Latin | — |
+| 43 | Sindhi | `sd` | سنڌي | RTL | Arabic | — |
+| 44 | Malayalam | `ml` | മലയാളം | — | Malayalam | — |
+| 45 | Odia | `or` | ଓଡ଼ିଆ | — | Odia | — |
+| 46 | Maithili | `mai` | मैथिली | — | Devanagari | ✓ |
+| 47 | Kurmanji Kurdish | `kmr` | Kurdî | — | Latin | — |
+| 48 | Sorani Kurdish | `ckb` | کوردیی ناوەندی | RTL | Arabic | — |
+| 49 | Malay | `ms` | Bahasa Melayu | — | Latin | — |
+| 50 | Cebuano | `ceb` | Cebuano | — | Latin | — |
+| 51 | Hokkien (Min Nan) | `nan` | 閩南語 | — | Han | — |
+| 52 | Kazakh | `kk` | Қазақша | — | Cyrillic | — |
+| 53 | Sinhala | `si` | සිංහල | — | Sinhala | — |
+| 54 | Rohingya | `rhg` | 𐴌𐴗𐴥𐴝𐴙𐴚 | RTL | Hanifi Rohingya | ✓ |
+
+**Romanian (`ro`) is already supported** — skipped.
+
+**Karen split:** S'gaw Karen and Karenni / Red Karen are separate non-mutually-intelligible languages with distinct Chicago refugee communities — both ship.
+
+**Kurdish split:** Kurmanji (Latin script, Turkey/Syria diaspora) and Sorani / Central Kurdish (Arabic script, RTL, Iraq/Iran diaspora) use different writing systems — a single `ku` entry cannot serve both, so both ship.
+
+**RTL additions (9):** `prs`, `fa`, `aii`, `he`, `arz`, `mey`, `sd`, `ckb`, `rhg`. Existing RTL: `ar`, `ur`, `ps`. Final RTL set has 12 codes.
+
+**Low-resource flagged (8):** `eky`, `aii`, `bho`, `lol`, `mey`, `mai`, `rhg`, `ksw`. These get the machine-translated review badge.
+
+#### 2. Machine-translated review badge
+
+- New translation keys in [frontend/public/locales/en/translation.json](../frontend/public/locales/en/translation.json):
+  - `mt_review_notice` — short notice text shown below the language picker when the active locale is in `RESEARCH_LOCALES`. Example English copy: *"This language was machine-translated and may have errors. Help us improve it — report a translation issue."*
+  - `feedback_link_label` — short label for the feedback CTA. Example: *"Report a translation issue."*
+- The badge is **always rendered using `t("mt_review_notice")`**, so when a Karenni speaker selects Karenni, the notice itself appears in Karenni. **Never show the badge in English fallback** — if the translation is missing for a low-resource locale, that's a translation script bug to fix, not a UX behavior to ship.
+- The `feedback_link_label` points at a feedback target. Day-one acceptable target: a `mailto:` link to the project email or a GitHub Issues link. A first-class user-feedback feature (settings-panel form) is **out of scope** for this entry; tracked separately as a follow-up consideration (see Out of Scope below).
+
+#### 3. Variant-sensitive translation prompts
+
+The existing `scripts/translate-missing.mjs` accepts per-locale instruction notes. These must be added before any low-resource or ambiguous locale is translated:
+
+| Code | Instruction note |
+|---|---|
+| `arz` | Translate into Egyptian Arabic colloquial (Masri). NOT Modern Standard Arabic. |
+| `ksw` | Translate into S'gaw Karen specifically (variant written in Burmese-derived Karen script). NOT Karenni / Red Karen. |
+| `eky` | Translate into Karenni / Red Karen, Kayah Li script. NOT S'gaw Karen. |
+| `kmr` | Translate into Kurmanji Kurdish using Latin (Hawar) alphabet. NOT Sorani. |
+| `ckb` | Translate into Sorani / Central Kurdish using Arabic script. NOT Kurmanji. |
+| `lol` | Translate into Mongo / Lomongo, the Bantu language of the Democratic Republic of the Congo. NOT Mongolian (`mn`). |
+| `mey` | Translate into Hassaniya Arabic dialect (Mauritania / Western Sahara). NOT MSA. |
+| `nan` | Translate into Hokkien (Min Nan) using traditional Han characters as used in Taiwan/Fujian. NOT Cantonese (`yue`) or Mandarin (`zh`). |
+| `rhg` | Translate into Rohingya using Hanifi Rohingya script. |
+| `aii` | Translate into Modern Assyrian Neo-Aramaic (Sureth) using Syriac script. |
+| `bho` | Translate into Bhojpuri using Devanagari script. NOT Hindi. |
+| `mai` | Translate into Maithili using Devanagari script. NOT Hindi. |
+
+#### 4. Continent picker model — 6 continents
+
+**Continents:** Africa · Americas · Asia · Europe · Middle East · Oceania.
+
+Antarctica is excluded (no native-language community). Middle East is split out from Asia because the linguistic cluster (Arabic family, Farsi/Dari, Hebrew, Kurdish, Aramaic, Pashto) is large enough to warrant its own bucket and reflects how Chicago diaspora communities self-identify. Oceania currently has zero assigned languages — the tile remains in the grid for design symmetry and shows a "Languages of Oceania coming soon — Tok Pisin, Māori, Sāmoan, ʻŌlelo Hawaiʻi planned" placeholder when tapped.
+
+Each language is assigned to **exactly one** continent for picker purposes. A user looking for English finds it under Americas (primary Chicago context); Spanish under Americas (Latin American Chicago demographics); Hassaniya Arabic under Africa (Mauritania); Egyptian Arabic under Middle East (regional cultural identity).
+
+**Assignment table for all 76 languages:**
+
+- **Americas (4):** `en`, `es`, `ht`, `pt`
+- **Europe (15):** `fr`, `it`, `pl`, `ro`, `uk`, `ru`, `bs`, `sr`, `hr`, `lt`, `el`, `sv`, `de`, `nl`, `tr`
+- **Middle East (9):** `ar`, `ps`, `he`, `fa`, `prs`, `arz`, `ckb`, `kmr`, `aii`
+- **Africa (12):** `yo`, `am`, `ti`, `sw`, `so`, `om`, `ha`, `xh`, `af`, `lol`, `kg`, `mey`
+- **Asia (36):** `zh`, `yue`, `ja`, `ko`, `tl`, `vi`, `hi`, `gu`, `pa`, `ne`, `ur`, `bn`, `mr`, `ta`, `te`, `ml`, `kn`, `or`, `mai`, `bho`, `si`, `sd`, `th`, `lo`, `km`, `my`, `ksw`, `eky`, `id`, `ms`, `ceb`, `nan`, `mn`, `kk`, `uz`, `rhg`
+- **Oceania (0):** placeholder tile only
+
+#### 5. Continent visual style
+
+- Custom-drawn outline silhouettes, charcoal stroke (`--ink`) on cream (`--paper`), no fill, no inline labels. Stroke weight matches `--hairline`.
+- Source SVGs designed for this app — not lifted from a generic library — so the line quality, vertex simplification, and proportion harmonize with the rest of the UI.
+- Each tile is a square with an aria-label and a hover/focus tooltip showing the continent name in the active locale (`t("continent_africa")`, `t("continent_americas")`, etc.).
+- Stored in `frontend/src/assets/continents/` as 6 SVG files with a normalized viewBox so they render identically at 64px (mobile) and 128px (desktop).
+
+#### 6. Font strategy — design-system-aligned, not blanket Noto
+
+Rather than dropping in `Noto Sans <Script>` for every new script, **research-driven selection**: for each non-Latin script in the new set, evaluate at least 3 candidate web fonts and choose one whose proportion, x-height, contrast, and stroke modulation harmonize with **Inter** (sans body) and **Fraunces** (serif headlines). Document each selection with a one-line rationale.
+
+Candidate families to consider (Noto Sans `<Script>` is the safe baseline if no better match exists):
+
+| Script | Candidate families to evaluate |
+|---|---|
+| Arabic (extends `ar`/`ur`/`ps` + new `prs`/`fa`/`arz`/`mey`/`sd`/`ckb`) | Vazirmatn, IBM Plex Sans Arabic, Cairo, Noto Sans Arabic |
+| Hebrew (`he`) | Heebo (Inter sibling), Frank Ruhl Libre (Fraunces sibling), Rubik, Noto Sans Hebrew |
+| Greek (`el`) | Inter already covers Greek; verify before adding fallback |
+| Cyrillic (`sr`/`mn`/`kk` — extends existing `ru`/`uk`) | Inter already covers Cyrillic; verify before adding fallback |
+| Devanagari (`mr`/`bho`/`mai` — extends `hi`/`gu`/`pa`/`ne`) | Mukta, Hind family, Anek Devanagari, Noto Sans Devanagari |
+| Bengali (`bn`) | Hind Siliguri, Anek Bangla, Noto Sans Bengali |
+| Tamil (`ta`) | Hind Madurai, Anek Tamil, Noto Sans Tamil |
+| Telugu (`te`) | Anek Telugu, Hind Guntur, Noto Sans Telugu |
+| Kannada (`kn`) | Anek Kannada, Hind Vadodara, Noto Sans Kannada |
+| Malayalam (`ml`) | Anek Malayalam, Manjari, Noto Sans Malayalam |
+| Odia (`or`) | Anek Odia, Noto Sans Oriya |
+| Sinhala (`si`) | Noto Sans Sinhala (limited alternatives) |
+| Thai (`th`) | Sarabun (Inter-aligned), Mitr (geometric), Kanit, Noto Sans Thai |
+| Lao (`lo`) | Noto Sans Lao, Phetsarath OT (limited alternatives) |
+| Khmer (`km`) | Hanuman, Battambang, Noto Sans Khmer |
+| Myanmar (`my`/`ksw`) | Padauk, Myanmar Text, Noto Sans Myanmar |
+| Kayah Li (`eky`) | Noto Sans Kayah Li (essentially the only option) |
+| Ethiopic (`am`/`ti`) | Abyssinica SIL, Noto Sans Ethiopic |
+| Syriac (`aii`) | Noto Sans Syriac (limited alternatives) |
+| Han (`nan` — extends `zh`/`yue`/`ja`/`ko` system fallbacks) | Noto Sans CJK; verify if explicit loading is needed for Hokkien |
+| Hanifi Rohingya (`rhg`) | Noto Sans Hanifi Rohingya — **availability uncertain.** If Google Fonts does not host it, document fallback to system font with a code comment; this is a known acceptable gap. |
+
+All imports use Google Fonts CSS with `unicode-range` so browsers only download a script's woff2 when a glyph in that range renders. Initial cost: ~17 small CSS requests; zero font binary downloads until a non-English locale is selected.
+
+CSP allowlist already covers `fonts.googleapis.com` and `fonts.gstatic.com` ([frontend/index.html](../frontend/index.html) — verify before each font addition).
+
+#### 7. Continent picker rolls out behind a feature flag
+
+`VITE_CONTINENT_PICKER_ENABLED` env var, default `false` in dev, set `true` in Vercel after the picker is verified end-to-end. This decouples picker rollout from translation completion — translations can ship chunk-by-chunk under the existing flat `<select>`, and the picker flips on once Chunks 14–15 are done.
+
+#### 8. Tests
+
+No new automated tests required. Existing component tests mock `react-i18next` (returning the key as the translation) and continue to pass with no change. Each chunk's acceptance criteria include manual verification steps.
+
+---
+
+### Chunk 1 --- Scaffolding + machine-translated badge UI
+
+**Files:** [frontend/src/i18n.js](../frontend/src/i18n.js), [frontend/public/locales/en/translation.json](../frontend/public/locales/en/translation.json), [frontend/src/components/Masthead.jsx](../frontend/src/components/Masthead.jsx), [scripts/translate-missing.mjs](../scripts/translate-missing.mjs)
+
+**What to build:**
+
+- Append all 54 new rows to the `LANGUAGES` array in `i18n.js` with `{ code, name, rtl }` fields. Until each translation chunk lands, missing-key fallback to English is acceptable; the picker shows the entry but the app reads English.
+- Add `RESEARCH_LOCALES = new Set([...])` next to `RTL_LANGS`, listing the 8 low-resource codes.
+- Add `mt_review_notice` and `feedback_link_label` to `frontend/public/locales/en/translation.json`.
+- In `Masthead.jsx`, render a small notice element below the language `<select>`, gated on `RESEARCH_LOCALES.has(currentLang)`. Use `t("mt_review_notice")` and a link with `t("feedback_link_label")` pointing at a `mailto:` or GitHub Issues URL (define via env var so it can be swapped without code change).
+- Extend `scripts/translate-missing.mjs` locale-name map with the 54 new English names + the per-locale instruction notes from Scoping decision 3.
+- Run the script for the **22 existing locales only** (just to fill the 2 new keys into already-shipped languages) — do not generate the 54 new locale files yet.
+
+**Acceptance:**
+
+1. Picker shows 76 entries, native names rendered correctly (some glyphs may render in system-fallback fonts until Chunk 13 ships fonts).
+2. Switching to a non-existing translation file gracefully falls back to English (i18next default behavior — verify in DevTools no console errors, just `404` on the missing translation.json which i18next handles).
+3. Switching to a low-resource code shows the badge — currently in English fallback because no translation file exists yet for those codes; this is expected and gets fixed by chunks 5/7/9/11 when those locale files land.
+4. Existing 22 locales show the new keys translated correctly.
+
+---
+
+### Chunks 2–12 --- Translation rollout (≤5 languages per chunk)
+
+**Files (per chunk):** new `frontend/public/locales/<code>/translation.json` files generated by the translation script.
+
+**Process for each chunk:**
+
+1. Confirm the locale-name + variant-instruction entries are present in `scripts/translate-missing.mjs` (added in Chunk 1).
+2. With `ANTHROPIC_API_KEY` set, run `node scripts/translate-missing.mjs` filtered to the chunk's codes (extend the script to accept a code allowlist via CLI arg if not already supported — minor enhancement).
+3. Eyeball-review each generated file: confirm glyphs are in the correct script (catch obvious failures where Claude returned text in a related higher-resource language), confirm `{{vars}}` and emoji/symbols (🔓 ☆ ★ ■ ▶ ⟶ — ·) survived, confirm RTL files contain natural RTL prose without inserted bidi markers.
+4. Build (`npm run build` in `frontend/`) and switch to each new locale in the running app — confirm no missing-key warnings for the chunk's codes.
+5. RTL chunks: confirm `<html dir="rtl">` toggles via `useDocumentLanguage` hook and that `rtl-a11y.css` rules apply.
+
+**Chunk schedule:**
+
+| Chunk | Codes | Theme |
+|---|---|---|
+| 2 | `de`, `sv`, `nl`, `pt`, `lt` | Western/Northern Europe (Latin) |
+| 3 | `hr`, `bs`, `sr`, `el`, `tr` | SE Europe + Greek + Turkish (mixed Latin/Cyrillic/Greek) |
+| 4 | `he`, `fa`, `prs`, `ckb`, `kmr` | Middle East — Hebrew, Persian family, Kurdish (4 RTL + 1 Latin) |
+| 5 | `arz`, `sd`, `mey`, `aii`, `rhg` | Arabic-script + Aramaic + Rohingya (5 RTL, 4 low-resource) |
+| 6 | `bn`, `mr`, `ta`, `te`, `ml` | South Asian Indic — batch 1 (5 distinct scripts) |
+| 7 | `kn`, `or`, `mai`, `bho`, `si` | South Asian Indic — batch 2 (3 low-resource) |
+| 8 | `th`, `lo`, `km`, `my`, `id` | Mainland SE Asia + Indonesian |
+| 9 | `ms`, `ceb`, `ksw`, `eky`, `nan` | Maritime SE Asia + Karen variants + Hokkien (2 low-resource) |
+| 10 | `am`, `ti`, `sw`, `so`, `om` | East Africa |
+| 11 | `ha`, `xh`, `af`, `lol`, `kg` | West/Southern Africa + Bantu (1 low-resource) |
+| 12 | `mn`, `kk`, `uz`, `ht` | Central Asia + Caribbean (4 codes — final translation chunk) |
+
+**Per-chunk acceptance:**
+
+1. Each `translation.json` exists with all keys present (currently 184 keys: 182 original + 2 added in Chunk 1; verify count matches `en.json` at chunk-execution time).
+2. `{{interpolation}}` placeholders intact in every translated value.
+3. Symbols preserved exactly: 🔓 ☆ ★ ■ ▶ ⟶ — ·.
+4. RTL locales: text reads naturally right-to-left in browser; no embedded bidi control characters added by the model.
+5. For low-resource codes: `mt_review_notice` and `feedback_link_label` are translated into the target language (not English); badge displays correctly.
+6. Build succeeds; no console warnings for missing keys when each new locale is selected.
+7. Spot-check at least one interpolation key (e.g., `walk_from_origin`) and one symbol key (e.g., the favorites star) per locale.
+
+---
+
+### Chunk 13 --- Font research + integration
+
+**Files:** [frontend/index.html](../frontend/index.html), [frontend/src/styles/tokens.css](../frontend/src/styles/tokens.css)
+
+**What to build:**
+
+- For each script in the table at Scoping decision 6, evaluate ≥3 candidate fonts side-by-side with Inter and Fraunces. Capture screenshots for the design record. Pick the family whose x-height, stroke contrast, and proportion best harmonize.
+- Document each selection with a one-line rationale in a code comment near the font import block in `index.html`.
+- Add segmented Google Fonts `<link rel="stylesheet">` imports for each chosen family, using `display=swap` and weight ranges that match Inter's loaded weights (400, 500, 600, 700, 800, 900) where the family supports them.
+- Update `--sans` chain in `tokens.css` to include the chosen non-Latin families before the system fallbacks.
+- For **Hanifi Rohingya**: confirm Google Fonts availability at execution time. If available, add it. If not, leave a code comment documenting the fallback to system font as a known gap; do not block this chunk on it.
+- Verify CSP `font-src` and `style-src` already permit `fonts.googleapis.com` and `fonts.gstatic.com`; no widening expected.
+
+**Acceptance:**
+
+1. Switch to one locale per script (sample list: `my`, `am`, `bn`, `ta`, `th`, `km`, `he`, `ckb`, `si`, `mr`) — every glyph renders, no tofu boxes.
+2. Side-by-side with English UI on the same page (e.g., the `app_title` in the masthead vs a route-card), the non-Latin script reads as a coherent design partner to Inter — not as a stylistic mismatch.
+3. Lighthouse performance score on the home page does not drop more than 2 points from pre-chunk baseline (font CSS is small; fonts themselves only download for the active locale).
+4. CSP report-only logs show no font-related violations.
+
+---
+
+### Chunk 14 --- Continent picker SVGs (design)
+
+**Files:** new `frontend/src/assets/continents/{africa,americas,asia,europe,middle-east,oceania}.svg`
+
+**What to build:**
+
+- 6 outline SVGs designed in this app's visual language. Stroke weight matches `--hairline`; stroke color uses `currentColor` so the picker can recolor based on light/dark/high-contrast mode.
+- Normalized viewBox (e.g., `0 0 100 100`) so all 6 render at consistent visual weight in the same tile size.
+- Vertex count simplified for crispness at 64px (mobile) — over-detailed coastlines turn to mush at small sizes.
+- Middle East boundary: depict Arabian Peninsula + Iran + Anatolia + Levant. Document the boundary choice in a code comment at the top of the SVG so future contributors don't argue with it.
+
+**Acceptance:**
+
+1. Each SVG renders identically in stroke weight/style at 64px and 128px.
+2. Visually balanced as a 2×3 or 3×2 grid (eye check — none of the 6 dominates the others through accidental weight or scale).
+3. Renders correctly in light mode (charcoal stroke on cream), dark mode (cream stroke on charcoal — via `currentColor`), and high-contrast mode (no fill bleed).
+4. No external library dependencies.
+
+---
+
+### Chunk 15 --- Continent picker UI
+
+**Files:** [frontend/src/components/Masthead.jsx](../frontend/src/components/Masthead.jsx), [frontend/src/i18n.js](../frontend/src/i18n.js), [frontend/src/styles/tokens.css](../frontend/src/styles/tokens.css) or a new component file under `frontend/src/components/LanguagePicker/`
+
+**What to build:**
+
+- New `LanguagePicker` component implementing 2-step flow:
+  - Step 1: 6-tile grid of continent SVGs. Each tile is a `<button>` with aria-label `t("continent_<id>")` and a tooltip showing the continent name in the active locale.
+  - Step 2: scoped list of languages for the chosen continent, rendered as a vertical menu with each item showing the native name. Selecting one calls `i18n.changeLanguage(code)` and dismisses the picker.
+  - Back affordance to return to the continent grid without selecting.
+- Add `LANGUAGES_BY_CONTINENT` static map in `i18n.js` per the Scoping decision 4 assignment table.
+- Add 6 new keys to `en.json` for continent labels: `continent_africa`, `continent_americas`, `continent_asia`, `continent_europe`, `continent_middle_east`, `continent_oceania`. Also add `continent_picker_back`, `continent_oceania_placeholder`. These get translated as part of a small follow-up `translate-missing.mjs` run for all 76 locales after this chunk.
+- Feature flag: read `import.meta.env.VITE_CONTINENT_PICKER_ENABLED`. When `false`, render the existing flat `<select>` (current code). When `true`, render `LanguagePicker`.
+- Keep state in `localStorage` under existing `cta_language` key — no schema change.
+- Full keyboard navigation: Tab through continent tiles, Enter to enter, Esc to back out, arrow keys within the language list.
+- Screen reader: announce both steps clearly. The continent grid is a `<menu>` of `<button>`s; the language list is a listbox or menu of options. Test with NVDA/VoiceOver.
+
+**Acceptance:**
+
+1. With flag off, behavior is identical to today's `<select>`.
+2. With flag on, all 76 languages are reachable via continent → language. No language is orphaned.
+3. Empty Oceania tile shows the "coming soon" placeholder when tapped.
+4. Keyboard-only flow works: Tab to picker, Enter to open, Tab/arrow through tiles, Enter to drill in, Tab/arrow through languages, Enter to select.
+5. Screen reader pass: NVDA reads the continent name on tile focus, then enters the language menu and reads each native name on focus. Verify on at least one RTL locale (e.g., Hebrew) that focus order remains logical.
+6. Switching back to a previously-selected language preserves correctly across reload.
+7. No regression in the existing language-switch flow used by deep-link URLs or programmatic `i18n.changeLanguage` calls.
+
+---
+
+### Chunk 16 --- Documentation + cleanup
+
+**Files:** [README.md](../README.md), [docs/PROJECT_CONTEXT.md](PROJECT_CONTEXT.md), this file ([docs/FEATURE_PLANS.md](FEATURE_PLANS.md)), [docs/archive/FEATURE_HISTORY.md](archive/FEATURE_HISTORY.md)
+
+**What to build:**
+
+- Update README language count from "22 languages" to "76 languages."
+- Add a short README paragraph describing the continent picker.
+- Update `PROJECT_CONTEXT.md` language count and any RTL count.
+- Per the FEATURE_PLANS.md process at the top of this file, **delete this entry** from FEATURE_PLANS.md and add a corresponding summary entry to [docs/archive/FEATURE_HISTORY.md](archive/FEATURE_HISTORY.md) describing what shipped: 54 new locales, machine-translated badge, design-system-aligned non-Latin fonts, and the continent-first language picker.
+
+**Acceptance:**
+
+1. README and `PROJECT_CONTEXT.md` reflect 76-language reality.
+2. This entry no longer appears in `FEATURE_PLANS.md`.
+3. A summary entry exists in `FEATURE_HISTORY.md` with file pointers and ship date.
+4. Feature Index in this file's header is updated to remove entry #3.
+
+---
+
+### Out of scope (followups, tracked separately)
+
+- **First-class user feedback feature** — a settings-panel form / Slack webhook / Linear-issue-creating endpoint where users can submit translation corrections (or any feedback) without leaving the app. Day-one implementation uses a `mailto:` or GitHub Issues link via the `feedback_link_label` string. Promote to its own feature plan once translation feedback volume justifies the effort.
+- **Self-hosting Noto Sans + chosen design-aligned fonts for SRI / CSP tightening** — flagged in [frontend/index.html](../frontend/index.html) as a long-term mitigation; not blocking this feature.
+- **Native-speaker translation review program** — community workflow for soliciting and incorporating native speaker corrections, especially for the 8 low-resource locales. Depends on the user-feedback feature above.
+- **Oceania locale rollout** — Tok Pisin, Māori, Sāmoan, ʻŌlelo Hawaiʻi, Tongan, Fijian. Track as a follow-up locale wave.
+- **Per-locale translation memory / glossary** — durable fixed-translation list (e.g., neighborhood names, line names) so the translation script never paraphrases proper nouns. The existing `KEEP_ENGLISH` set is a proto-version; promote to a structured glossary once translation volume warrants.
 
 ---
 

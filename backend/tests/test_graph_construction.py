@@ -47,6 +47,7 @@ from transit_graph import (
     WalkLeg,
     TransitLeg,
     _TRANSFER_MINUTES,
+    _MAX_TRANSFERS,
 )
 
 
@@ -543,3 +544,95 @@ class TestFindRoutes:
         transit = next(l for l in routes[0].legs if isinstance(l, TransitLeg))
         assert transit.line_code == "Blue"
         assert transit.minutes == 10.0
+
+
+class TestMaxTransfersCap:
+    """find_routes drops any candidate path with more than _MAX_TRANSFERS
+    transfers (line changes). The cap exists so Yen's algorithm can't surface
+    absurd 4+ transfer itineraries."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_thread_local(self):
+        transit_graph._routing_lock = threading.Lock()
+        yield
+        transit_graph._routing_lock = threading.Lock()
+
+    def _chain_graph(self, n_lines: int) -> tuple[nx.DiGraph, dict]:
+        """Build a chain of n_lines distinct routes connected by transfer edges:
+
+            40100 ─L0─► 40101 ─xfer─► 40102 ─L1─► 40103 ─xfer─► … ► 40{2n-1}
+
+        The shortest path from origin (40100) to destination (40{2n-1})
+        traverses every line, producing n_lines transit legs and
+        (n_lines - 1) transfers.
+        """
+        G = nx.DiGraph()
+        stations: dict[str, dict] = {}
+        for i in range(n_lines):
+            board = f"4010{2*i}"
+            alight = f"4010{2*i + 1}"
+            G.add_edge(board, alight, weight=4.0, edge_type="transit",
+                       route_id=f"L{i}", direction_id="0", line=f"Line {i}")
+            stations[board]  = {"name": f"S{2*i}",   "lat": 0, "lon": 0}
+            stations[alight] = {"name": f"S{2*i+1}", "lat": 0, "lon": 0}
+            if i + 1 < n_lines:
+                next_board = f"4010{2*(i+1)}"
+                G.add_edge(alight, next_board, weight=2.0, edge_type="transfer")
+        return G, stations
+
+    def _patch(self, G, stations, origin_mapid, dest_mapid):
+        return (
+            patch.object(transit_graph, "_build_graph", return_value=(G, stations)),
+            patch.object(transit_graph, "find_nearest_train_stations", side_effect=[
+                [{"mapid": origin_mapid, "name": stations[origin_mapid]["name"],
+                  "lat": 0, "lon": 0, "walk_minutes": 1.0}],
+                [{"mapid": dest_mapid, "name": stations[dest_mapid]["name"],
+                  "lat": 0, "lon": 0, "walk_minutes": 1.0}],
+            ]),
+            patch.object(transit_graph, "find_nearest_bus_stops", return_value=[]),
+        )
+
+    def test_cap_is_two_transfers(self):
+        """Sanity check: the constant the cap is enforced against is 2."""
+        assert _MAX_TRANSFERS == 2
+
+    def test_three_transit_legs_allowed(self):
+        """A 3-transit-leg / 2-transfer route is at the cap and must be returned."""
+        G, stations = self._chain_graph(3)   # 3 lines → 2 transfers
+        p1, p2, p3 = self._patch(G, stations, "40100", "40105")
+        with p1, p2, p3:
+            routes = find_routes(0, 0, 0, 0, n_routes=3)
+        assert len(routes) >= 1
+        # The shortest path traverses all 3 lines.
+        r = routes[0]
+        transit_legs = [l for l in r.legs if isinstance(l, TransitLeg)]
+        assert len(transit_legs) == 3
+        assert r.transfers == 2
+
+    def test_four_transit_legs_dropped(self):
+        """A 4-transit-leg / 3-transfer chain exceeds the cap → no routes returned."""
+        G, stations = self._chain_graph(4)   # 4 lines → 3 transfers (over cap)
+        p1, p2, p3 = self._patch(G, stations, "40100", "40107")
+        with p1, p2, p3:
+            routes = find_routes(0, 0, 0, 0, n_routes=3)
+        # The only path through the chain has 3 transfers — above the cap, so
+        # find_routes must drop it and return nothing.
+        assert routes == []
+
+    def test_cap_only_drops_over_limit_routes(self):
+        """When both a capped and an over-cap path exist, only the capped one
+        is returned."""
+        # 4-line chain: 40100→40101→40102→40103→40104→40105→40106→40107
+        # Add a direct shortcut from 40100→40107 via a single line so a 0-transfer
+        # alternative exists. Yen's may surface both, but only the 0-transfer
+        # path is at/under the cap.
+        G, stations = self._chain_graph(4)
+        # Direct shortcut, but slower so Yen's still considers the chain second.
+        G.add_edge("40100", "40107", weight=100.0, edge_type="transit",
+                   route_id="Express", direction_id="0", line="Express")
+        p1, p2, p3 = self._patch(G, stations, "40100", "40107")
+        with p1, p2, p3:
+            routes = find_routes(0, 0, 0, 0, n_routes=3)
+        assert len(routes) == 1
+        assert routes[0].transfers == 0
+        assert all(r.transfers <= _MAX_TRANSFERS for r in routes)

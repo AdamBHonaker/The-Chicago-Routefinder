@@ -38,7 +38,7 @@ from walking import (
     walk_all as _walk_all,
 )
 from weather_service import WeatherService, WeatherContext, PrecipitationType
-from utils import CHICAGO_TZ as _CHICAGO_TZ
+from utils import CHICAGO_TZ as _CHICAGO_TZ, TRANSFER_PENALTY_MINUTES
 
 logger = logging.getLogger(__name__)
 
@@ -444,9 +444,47 @@ def _rank_routes(
             total = route.total_minutes_no_wait + station_wait
         else:
             total = route.total_minutes_no_wait
+        # Fallback wait estimate for each transfer (line change). _fetch_transfer_arrivals
+        # later overrides this with live data via _apply_transfer_wait_estimates().
+        total += route.transfers * TRANSFER_PENALTY_MINUTES
         ranked.append((total, wait, route))
     ranked.sort(key=lambda x: x[0])
     return ranked
+
+
+def _apply_transfer_wait_estimates(
+    ranked_routes: list[tuple],
+) -> list[tuple[float, "int | None", object]]:
+    """Re-total each route using live transfer-leg waits when available.
+
+    Called after _fetch_transfer_arrivals() has annotated each transit leg
+    (other than the first) with leg.transfer_wait_minutes from live CTA data.
+    For each route, replaces the flat TRANSFER_PENALTY_MINUTES estimate added
+    by _rank_routes() with the live wait — falling back to TRANSFER_PENALTY_MINUTES
+    when the live data is missing for a particular transfer.
+
+    Returns a re-sorted list of (total, wait, route) tuples.
+    """
+    updated: list[tuple[float, "int | None", object]] = []
+    for total, wait, route in ranked_routes:
+        if route.transfers <= 0:
+            updated.append((total, wait, route))
+            continue
+        # Undo the flat estimate added in _rank_routes.
+        adjusted = total - route.transfers * TRANSFER_PENALTY_MINUTES
+        # Add the per-transfer live wait (or fall back to the same penalty).
+        seen_transit = False
+        for leg in route.legs:
+            if not isinstance(leg, TransitLeg):
+                continue
+            if not seen_transit:
+                seen_transit = True
+                continue
+            live = leg.transfer_wait_minutes
+            adjusted += float(live) if live is not None else TRANSFER_PENALTY_MINUTES
+        updated.append((adjusted, wait, route))
+    updated.sort(key=lambda x: x[0])
+    return updated
 
 
 def _rank_bus_routes(
@@ -1512,6 +1550,7 @@ async def recommend(
     )
 
     transfer_arrivals_combined = await _fetch_transfer_arrivals(ranked_routes)
+    ranked_routes = _apply_transfer_wait_estimates(ranked_routes)
 
     alert_ids = _alert_ids_from_routes(ranked_routes)
     alerts, route_statuses = await asyncio.gather(

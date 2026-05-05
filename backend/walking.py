@@ -590,7 +590,7 @@ def _walk_path_impl(
         return tuple(result_coords)
 
     except Exception as e:
-        print(f"[walk_path] routing failed: {type(e).__name__}: {e}")
+        print(f"[walk_path] routing failed for ({origin_lat:.6f},{origin_lon:.6f})→({dest_lat:.6f},{dest_lon:.6f}): {type(e).__name__}: {e}")
         return ((origin_lat, origin_lon), (dest_lat, dest_lon))
 
 

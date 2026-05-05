@@ -5,16 +5,40 @@
  * Requires ANTHROPIC_API_KEY environment variable.
  */
 
-import { readFileSync, writeFileSync, readdirSync } from 'fs';
+import { readFileSync, writeFileSync, readdirSync, existsSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const LOCALES_DIR = resolve(__dirname, '../frontend/public/locales');
-const API_KEY = process.env.ANTHROPIC_API_KEY;
+
+// Load ANTHROPIC_API_KEY from backend/.env if not already in environment.
+function loadEnvKey(name) {
+  if (process.env[name]) return process.env[name];
+  const candidates = [
+    resolve(__dirname, '../backend/.env'),
+    resolve(__dirname, '../.env'),
+  ];
+  for (const p of candidates) {
+    if (!existsSync(p)) continue;
+    const raw = readFileSync(p, 'utf8');
+    for (const line of raw.split(/\r?\n/)) {
+      const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
+      if (!m || m[1] !== name) continue;
+      let val = m[2];
+      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+        val = val.slice(1, -1);
+      }
+      return val;
+    }
+  }
+  return null;
+}
+
+const API_KEY = loadEnvKey('ANTHROPIC_API_KEY');
 
 if (!API_KEY) {
-  console.error('Error: ANTHROPIC_API_KEY environment variable not set.');
+  console.error('Error: ANTHROPIC_API_KEY not found in environment or backend/.env');
   process.exit(1);
 }
 

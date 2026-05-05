@@ -44,6 +44,11 @@ import config as _cfg
 # Default transfer time at a station when switching lines (minutes)
 _TRANSFER_MINUTES = TRANSFER_PENALTY_MINUTES
 
+# Maximum number of line changes per route (3 transit legs = 2 transfers).
+# find_routes() drops any candidate path that exceeds this so Yen's algorithm
+# can't surface absurd 4+ transfer itineraries.
+_MAX_TRANSFERS: int = 2
+
 
 def _bearing_to_direction(lat1: float, lon1: float, lat2: float, lon2: float) -> str:
     """Map the bearing from (lat1,lon1)→(lat2,lon2) to a CTA-style cardinal
@@ -1717,6 +1722,8 @@ def find_routes(
                     )
                     if route is None:
                         continue
+                    if route.transfers > _MAX_TRANSFERS:
+                        continue
                     signature = tuple(
                         (leg.line_code, leg.from_mapid, leg.to_mapid)
                         for leg in route.legs
@@ -2069,10 +2076,13 @@ def _build_transfer_routes(
 
     Performs all OSMnx street-walk calls, assembles WalkLeg / TransitLeg
     objects, and applies the 90-minute trip cap.  Returns up to n_routes
-    results sorted by (in-vehicle + walk + live wait for A + 7.5-min
-    estimated wait for B).
+    results sorted by (in-vehicle + walk + live wait for A + leg-2
+    estimated wait estimated as TRANSFER_PENALTY_MINUTES).
     """
-    _LEG2_WAIT_ESTIMATE = 7.5   # fixed leg-2 wait estimate (minutes)
+    # Use the shared per-transfer fallback so /recommend's later live-wait
+    # adjustment in _apply_transfer_wait_estimates() subtracts the same value
+    # it added — keeping bus+bus totals consistent with all other routes.
+    _LEG2_WAIT_ESTIMATE = TRANSFER_PENALTY_MINUTES
     _MAX_TRIP_MINUTES   = 90.0
 
     ranked: list[tuple[float, int, object]] = []

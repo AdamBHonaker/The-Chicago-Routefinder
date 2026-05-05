@@ -29,9 +29,12 @@ from main import (
     build_prompt,
     _format_routes,
     RouteRequest,
+    _rank_routes,
+    _apply_transfer_wait_estimates,
     _rate_store,
 )
 from transit_graph import Route, WalkLeg, TransitLeg
+from utils import TRANSFER_PENALTY_MINUTES
 
 
 # ---------------------------------------------------------------------------
@@ -472,3 +475,163 @@ class TestRouteRequestValidators:
     def test_bus_fullness_defaults_to_all(self):
         r = RouteRequest(origin="a", destination="b")
         assert r.bus_fullness == "All"
+
+
+# ---------------------------------------------------------------------------
+# _rank_routes — per-transfer wait penalty
+# ---------------------------------------------------------------------------
+
+def _two_transfer_route() -> Route:
+    """Three transit legs (two transfers)."""
+    legs = [
+        _walk_leg("Your location", "Howard", 4.0),
+        _transit_leg("Red", "Red Line", "Howard", "Belmont", 12.0),
+        _walk_leg("Belmont", "Belmont", 1.0),
+        _transit_leg("Brn", "Brown Line", "Belmont", "Clark/Lake", 18.0),
+        _walk_leg("Clark/Lake", "Clark/Lake", 1.0),
+        _transit_leg("Blue", "Blue Line", "Clark/Lake", "O'Hare", 25.0),
+        _walk_leg("O'Hare", "Your destination", 3.0),
+    ]
+    return Route(legs=legs, transit_minutes=55.0, walk_minutes_total=9.0,
+                 transfers=2, first_transit_leg_index=1)
+
+
+class TestRankRoutesTransferPenalty:
+    """_rank_routes adds TRANSFER_PENALTY_MINUTES per transfer to the total
+    so transfers are visible in the displayed time even before live transfer
+    arrivals are fetched."""
+
+    def test_no_transfer_route_unchanged_by_penalty(self):
+        ranked = _rank_routes([_simple_route()], arrival_lookup={})
+        total, _wait, route = ranked[0]
+        # No live wait, no transfers → total = total_minutes_no_wait + 0 penalty
+        assert route.transfers == 0
+        assert total == pytest.approx(route.total_minutes_no_wait)
+
+    def test_one_transfer_adds_one_penalty(self):
+        ranked = _rank_routes([_transfer_route()], arrival_lookup={})
+        total, _wait, route = ranked[0]
+        assert route.transfers == 1
+        expected = route.total_minutes_no_wait + TRANSFER_PENALTY_MINUTES
+        assert total == pytest.approx(expected)
+
+    def test_two_transfers_add_two_penalties(self):
+        ranked = _rank_routes([_two_transfer_route()], arrival_lookup={})
+        total, _wait, route = ranked[0]
+        assert route.transfers == 2
+        expected = route.total_minutes_no_wait + 2 * TRANSFER_PENALTY_MINUTES
+        assert total == pytest.approx(expected)
+
+    def test_penalty_applied_on_top_of_first_leg_wait(self):
+        """When live first-leg wait exists, transfer penalty is added on top."""
+        route = _transfer_route()
+        # Build an arrival_lookup that yields wait=10 for the first transit leg.
+        # _rank_routes calls _pick_wait((line_code, from_mapid)) with one dest.
+        first = route.legs[route.first_transit_leg_index]
+        lookup = {(first.line_code, first.from_mapid): {"O'Hare": 10}}
+        ranked = _rank_routes([route], arrival_lookup=lookup)
+        total, wait, _r = ranked[0]
+        first_walk = route.legs[0].minutes  # 4.0
+        station_wait = max(0.0, 10 - first_walk)  # 6.0
+        expected = (route.total_minutes_no_wait
+                    + station_wait
+                    + 1 * TRANSFER_PENALTY_MINUTES)
+        assert wait == 10
+        assert total == pytest.approx(expected)
+
+    def test_results_sorted_by_total(self):
+        """Two-transfer route should not outrank a faster simple route purely
+        because transfer penalty was forgotten."""
+        simple = _simple_route()           # ~28 min total_no_wait
+        heavy  = _two_transfer_route()     # ~64 min + 6 penalty
+        ranked = _rank_routes([heavy, simple], arrival_lookup={})
+        totals = [t for t, _, _ in ranked]
+        assert totals == sorted(totals)
+        assert ranked[0][2] is simple
+
+
+# ---------------------------------------------------------------------------
+# _apply_transfer_wait_estimates — live wait override
+# ---------------------------------------------------------------------------
+
+class TestApplyTransferWaitEstimates:
+    """After _fetch_transfer_arrivals annotates leg.transfer_wait_minutes with
+    live data, _apply_transfer_wait_estimates() swaps the flat penalty for the
+    live wait per transfer leg."""
+
+    def test_zero_transfer_route_unchanged(self):
+        route = _simple_route()
+        ranked = [(50.0, 7, route)]
+        out = _apply_transfer_wait_estimates(ranked)
+        assert out == [(50.0, 7, route)]
+
+    def test_live_wait_replaces_penalty(self):
+        """Single transfer: penalty removed, live wait added."""
+        route = _transfer_route()
+        # Set live wait on the second transit leg (the transfer board).
+        route.legs[3].transfer_wait_minutes = 8
+        # Pretend _rank_routes produced this total with the flat penalty in.
+        baseline = route.total_minutes_no_wait + TRANSFER_PENALTY_MINUTES
+        out = _apply_transfer_wait_estimates([(baseline, 5, route)])
+        adjusted_total, _wait, _r = out[0]
+        expected = route.total_minutes_no_wait + 8
+        assert adjusted_total == pytest.approx(expected)
+
+    def test_missing_live_wait_falls_back_to_penalty(self):
+        """Transfer leg with no transfer_wait_minutes → penalty preserved."""
+        route = _transfer_route()
+        # Leave transfer_wait_minutes = None (default)
+        baseline = route.total_minutes_no_wait + TRANSFER_PENALTY_MINUTES
+        out = _apply_transfer_wait_estimates([(baseline, 5, route)])
+        adjusted_total, _wait, _r = out[0]
+        # Net change should be zero.
+        assert adjusted_total == pytest.approx(baseline)
+
+    def test_first_transit_leg_wait_is_not_double_counted(self):
+        """The first transit leg's transfer_wait_minutes (which should never
+        be set anyway) must be ignored — only legs *after* the first count."""
+        route = _transfer_route()
+        # Defensive: even if something stamped a wait on the first leg, ignore it.
+        route.legs[1].transfer_wait_minutes = 999
+        route.legs[3].transfer_wait_minutes = 4
+        baseline = route.total_minutes_no_wait + TRANSFER_PENALTY_MINUTES
+        out = _apply_transfer_wait_estimates([(baseline, 5, route)])
+        adjusted_total, _wait, _r = out[0]
+        expected = route.total_minutes_no_wait + 4   # only leg-2 wait counts
+        assert adjusted_total == pytest.approx(expected)
+
+    def test_two_transfers_mixed_live_and_fallback(self):
+        """One transfer has live data, the other falls back to penalty."""
+        route = _two_transfer_route()
+        route.legs[3].transfer_wait_minutes = 6   # live for first transfer
+        route.legs[5].transfer_wait_minutes = None  # no live for second
+        baseline = route.total_minutes_no_wait + 2 * TRANSFER_PENALTY_MINUTES
+        out = _apply_transfer_wait_estimates([(baseline, 4, route)])
+        adjusted_total, _wait, _r = out[0]
+        expected = route.total_minutes_no_wait + 6 + TRANSFER_PENALTY_MINUTES
+        assert adjusted_total == pytest.approx(expected)
+
+    def test_re_sorts_after_adjustment(self):
+        """If the live wait reorders routes, output must be re-sorted."""
+        # Route A: 1 transfer, baseline 30 (with 3-min penalty); live wait will be 20
+        a = _transfer_route()
+        a.legs[3].transfer_wait_minutes = 20
+        a_baseline = 30.0   # ranked total assuming no_wait was 27
+        # Route B: 1 transfer, baseline 35; live wait will be 1
+        b = _transfer_route()
+        b.legs[3].transfer_wait_minutes = 1
+        b_baseline = 35.0
+        # Force total_minutes_no_wait by setting fields directly on both routes.
+        a.transit_minutes = 20.0; a.walk_minutes_total = 7.0      # no_wait=27
+        b.transit_minutes = 25.0; b.walk_minutes_total = 7.0      # no_wait=32
+        # baseline assumes _rank_routes added TRANSFER_PENALTY_MINUTES (=3):
+        # a_baseline=30=27+3, b_baseline=35=32+3 ✓
+        out = _apply_transfer_wait_estimates([
+            (a_baseline, None, a),
+            (b_baseline, None, b),
+        ])
+        # After adjustment: a_total=27+20=47, b_total=32+1=33 → b first.
+        assert out[0][2] is b
+        assert out[1][2] is a
+        assert out[0][0] == pytest.approx(33.0)
+        assert out[1][0] == pytest.approx(47.0)

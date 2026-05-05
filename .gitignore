@@ -7,6 +7,9 @@ frontend/.env.local
 # CTA GTFS data — large files, re-downloaded via fetch_gtfs.py
 backend/gtfs_data/
 
+# MaxMind GeoLite2 City database — large file, updated periodically by fetch_geolite.py
+backend/GeoLite2-City.mmdb
+
 # Persistent geocode cache — built up at runtime from Google Maps API lookups
 backend/geocode_cache.json
 backend/geocode_cache.journal
