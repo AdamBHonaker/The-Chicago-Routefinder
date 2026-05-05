@@ -149,12 +149,16 @@
       visibility 0s linear var(--dur-base);
   }
 
-  /* Grid collapse — visibility:hidden keeps elements in layout so the column
-     must be explicitly removed to prevent the hidden panel eating grid space */
-  [data-active-tab="map"] .layout--split,
+  /* Grid collapse — visibility:hidden keeps elements in layout so the hidden
+     panel's column must be collapsed to 0 (not removed) to keep all 3 grid
+     children placed correctly. Removing a column entirely auto-flows the
+     third child into a 0-width implicit column → black map canvas. */
+  [data-active-tab="map"] .layout--split {
+    grid-template-columns: 60px 0 1fr;
+  }
   [data-active-tab="alerts"] .layout--split,
   [data-active-tab="saved"] .layout--split {
-    grid-template-columns: 60px 1fr;
+    grid-template-columns: 60px 1fr 0;
   }
 }
 
