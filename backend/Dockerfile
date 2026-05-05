@@ -52,7 +52,7 @@ if not token:
     print("ERROR: GITHUB_TOKEN build arg is not set.")
     sys.exit(1)
 
-repo  = "AdamBHonaker/CTA-Transit-PWA"
+repo  = "AdamBHonaker/The-Chicago-Routefinder"
 tag   = "street-graph"
 fname = "street_graph_igraph.pkl"
 
