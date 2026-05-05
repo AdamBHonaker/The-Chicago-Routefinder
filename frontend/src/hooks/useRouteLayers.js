@@ -23,6 +23,12 @@ const isValidCoord = (c) =>
   typeof c[0] === "number" && isFinite(c[0]) &&
   typeof c[1] === "number" && isFinite(c[1]);
 
+export const WALK_LINE_PAINT = {
+  "line-color": "#888888",
+  "line-width": 3,
+  "line-dasharray": [2, 2],
+};
+
 function legColor(leg) {
   return getRouteColor(leg.line);
 }
@@ -65,7 +71,7 @@ function renderPolylines(map, legs, legGeoCoords, legColors, allGeoCoords, layer
         id:     `route-walk-line-${i}`,
         type:   "line",
         source: `route-walk-${i}`,
-        paint:  { "line-color": "#888888", "line-width": 3, "line-dasharray": [2, 2] },
+        paint:  WALK_LINE_PAINT,
       }, layerIds);
     } else if (leg.type === "transit") {
       const coords = legGeoCoords[i];

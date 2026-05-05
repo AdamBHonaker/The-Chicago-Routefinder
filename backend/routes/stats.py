@@ -15,10 +15,13 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 import dau
 import devices
+import events
+import funnel
 import geography
 import hourly
 import public_stats
 import referrers
+import retention
 import sessions
 from rate_limit import _check_geocode_rate_limit, _client_ip
 
@@ -93,6 +96,36 @@ async def public_referrers(request: Request):
     )
 
 
+@router.get("/stats/events")
+async def public_events(request: Request):
+    _gate(request)
+    raw = await events.get_counts()
+    return JSONResponse(
+        content=public_stats.project_events(raw),
+        headers=_PUBLIC_STATS_CACHE_HEADERS,
+    )
+
+
+@router.get("/stats/funnel")
+async def public_funnel(request: Request):
+    _gate(request)
+    raw = await funnel.get_counts()
+    return JSONResponse(
+        content=public_stats.project_funnel(raw),
+        headers=_PUBLIC_STATS_CACHE_HEADERS,
+    )
+
+
+@router.get("/stats/retention")
+async def public_retention(request: Request):
+    _gate(request)
+    raw = await retention.get_counts()
+    return JSONResponse(
+        content=public_stats.project_retention(raw),
+        headers=_PUBLIC_STATS_CACHE_HEADERS,
+    )
+
+
 @router.get("/privacy")
 async def public_privacy(request: Request):
     """Plaintext privacy notes for visitors who follow the dashboard footer
@@ -116,6 +149,9 @@ async def public_stats_page(request: Request):
     hourly_payload    = public_stats.project_hourly(await hourly.get_counts())
     devices_payload   = public_stats.project_devices(await devices.get_counts())
     referrers_payload = public_stats.project_referrers(await referrers.get_counts())
+    events_payload    = public_stats.project_events(await events.get_counts())
+    funnel_payload    = public_stats.project_funnel(await funnel.get_counts())
+    retention_payload = public_stats.project_retention(await retention.get_counts())
     return HTMLResponse(content=public_stats.render_html(
         dau_today=dau_payload.get("today"),
         metro_today=metro_payload.get("today"),
@@ -123,6 +159,9 @@ async def public_stats_page(request: Request):
         hourly_today=hourly_payload.get("today"),
         devices_today=devices_payload.get("today"),
         referrers_today=referrers_payload.get("today"),
+        events_today=events_payload.get("today"),
+        funnel_today=funnel_payload.get("today"),
+        retention_today=retention_payload.get("today"),
     ), headers={
         **_PUBLIC_STATS_CACHE_HEADERS,
         "Content-Security-Policy": (

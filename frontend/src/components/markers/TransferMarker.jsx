@@ -34,8 +34,8 @@ function TransferMarkerImpl({
   ariaLabel,
 }) {
   const { t } = useTranslation();
-  const isPassed   = state === "passed";
-  const isSelected = state === "selected";
+  const isPassed   = state === "passed" || state === "passed-selected";
+  const isSelected = state === "selected" || state === "passed-selected";
 
   // Marker box is 22x22 around center; widen for label.
   const W = label ? 140 : 22;

@@ -37,6 +37,13 @@ _RATE_LIMIT_DAILY   = int(os.getenv("RATE_LIMIT_DAILY", "50"))
 # bursty so RPM is set higher than /recommend; per-hour caps the long tail.
 _GEOCODE_RPM        = int(os.getenv("GEOCODE_RPM", "60"))
 _GEOCODE_RPH        = int(os.getenv("GEOCODE_RPH", "600"))
+# Events-bucket caps cover /events (FEAT-006). Higher than geocode because
+# a normal session naturally fires several events back-to-back (app_loaded,
+# recommend_submitted, route_selected, start_route_tapped, …) and we don't
+# want a chatty-but-legitimate user to trip the limit. Still tight enough
+# to make metric-poisoning expensive.
+_EVENTS_RPM         = int(os.getenv("EVENTS_RPM", "120"))
+_EVENTS_RPH         = int(os.getenv("EVENTS_RPH", "1200"))
 
 # ---------------------------------------------------------------------------
 # Locks — note: two distinct lock kinds because /recommend handlers are async
@@ -65,6 +72,7 @@ _geocode_lock = threading.Lock()
 _rate_store:          dict[str, collections.deque] = {}   # /recommend RPM/RPH
 _daily_quota_store:   dict[str, collections.deque] = {}   # /recommend rolling 24h
 _geocode_rate_store:  dict[str, collections.deque] = {}   # /autocomplete + /reverse-geocode
+_events_rate_store:   dict[str, collections.deque] = {}   # /events (FEAT-006)
 
 
 def _client_ip(http_request: Request) -> str:
@@ -173,4 +181,17 @@ def _check_geocode_rate_limit(ip: str) -> bool:
             store=_geocode_rate_store,
             rpm=_GEOCODE_RPM,
             rph=_GEOCODE_RPH,
+        )
+
+
+def _check_events_rate_limit(ip: str) -> bool:
+    """Rate-limit for /events (FEAT-006). Reuses _geocode_lock — a separate
+    threading.Lock would be wasteful for two sync handlers that both rarely
+    contend, and the lock only protects deque ops (microseconds)."""
+    with _geocode_lock:
+        return _check_rate_limit(
+            ip,
+            store=_events_rate_store,
+            rpm=_EVENTS_RPM,
+            rph=_EVENTS_RPH,
         )

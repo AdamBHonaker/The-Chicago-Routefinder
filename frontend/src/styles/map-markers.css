@@ -19,4 +19,16 @@
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  z-index: 3;
+}
+
+/* Z-order: transfer/footprint (1) → origin/destination (2) → live position (3).
+   Transfer markers are supporting context; O/D markers are trip coordinates. */
+.marker-transfer-wrapper {
+  z-index: 1;
+}
+
+.marker-origin-wrapper,
+.marker-destination-wrapper {
+  z-index: 2;
 }

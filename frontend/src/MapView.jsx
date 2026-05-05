@@ -4,12 +4,16 @@ import maplibregl from "maplibre-gl";
 import { useLocalStorage } from "./hooks/useLocalStorage.js";
 import { useMapMarker, mountMarker, removeMarker } from "./hooks/useMapMarker.jsx";
 import { useRouteLayers } from "./hooks/useRouteLayers.js";
+import { useTransferConnectors } from "./hooks/useTransferConnectors.js";
 import { BUS_DIRECTION_COLORS } from "./constants.js";
 import { haversineMeters } from "./utils/tripGeometry.js";
+import { deriveTransferPoints } from "./utils/deriveTransferPoints.js";
 import LinePill from "./components/LinePill.jsx";
 import OriginMarker from "./components/markers/OriginMarker.jsx";
 import DestinationMarker from "./components/markers/DestinationMarker.jsx";
 import LivePositionMarker from "./components/markers/LivePositionMarker.jsx";
+import TransferMarker from "./components/markers/TransferMarker.jsx";
+import FootprintMarker from "./components/markers/FootprintMarker.jsx";
 
 // ---------------------------------------------------------------------------
 // Map defaults — overridable via props for future view modes
@@ -85,18 +89,80 @@ function whenStyleReady(map, body) {
 }
 
 // ---------------------------------------------------------------------------
+// Transfer marker helpers
+// ---------------------------------------------------------------------------
+
+const FOOTPRINT_TYPES = new Set(["walk-transit", "transit-walk"]);
+
+function transferPointKey(d) {
+  return `${d.alightingLegIndex ?? "s"}-${d.boardingLegIndex ?? "e"}`;
+}
+
+// A transfer is "passed" when activeLegIndex has advanced past the alighting leg
+// (or past the boarding leg for walk-transit, which has no alighting leg).
+function isPassedDescriptor(activeLegIndex, descriptor) {
+  if (activeLegIndex == null) return false;
+  const ref = descriptor.alightingLegIndex ?? descriptor.boardingLegIndex;
+  if (ref == null) return false;
+  return activeLegIndex > ref;
+}
+
+// Wrapper that calls useMapMarker once per descriptor. Returns null — the hook
+// handles the imperative MapLibre marker; this component only manages lifecycle.
+function TransferPointMount({ map, descriptor, activeLegIndex, selectedTransferId, onSelectTransfer }) {
+  const id         = transferPointKey(descriptor);
+  const isSelected = selectedTransferId === id;
+  const isPassed   = isPassedDescriptor(activeLegIndex, descriptor);
+  const state      = isSelected && isPassed ? "passed-selected"
+                   : isSelected             ? "selected"
+                   : isPassed               ? "passed"
+                   : "default";
+  const label     = isSelected ? descriptor.stationName : undefined;
+  const isFootprint = FOOTPRINT_TYPES.has(descriptor.type);
+  const direction = descriptor.type === "walk-transit" ? "walk-to-transit"
+                  : descriptor.type === "transit-walk" ? "transit-to-walk"
+                  : undefined;
+  const props = isFootprint ? { state, direction, label } : { state, label };
+
+  // Stable refs so the onMount click handler always sees the latest values
+  // without needing to close over them at mount time.
+  const onSelectRef = useRef(onSelectTransfer);
+  const isSelectedRef = useRef(isSelected);
+  onSelectRef.current    = onSelectTransfer;
+  isSelectedRef.current  = isSelected;
+
+  const onMount = useMemo(() => (marker) => {
+    marker.getElement().addEventListener("click", (e) => {
+      e.stopPropagation();
+      onSelectRef.current(isSelectedRef.current ? null : id);
+    });
+  }, [id]); // id is stable for the lifetime of this component instance
+
+  useMapMarker(
+    map,
+    isFootprint ? FootprintMarker : TransferMarker,
+    props,
+    descriptor.coords,
+    { className: "marker-transfer-wrapper", onMount },
+  );
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
 export default function MapView({
-  route          = null,
-  originCoords   = null,
-  destCoords     = null,
-  userPosition   = null,
-  tripActive     = false,
-  activeLegIndex = null,
-  activeTab      = "home",
-  onArrived      = null,
+  route                = null,
+  originCoords         = null,
+  destCoords           = null,
+  userPosition         = null,
+  tripActive           = false,
+  activeLegIndex       = null,
+  activeTab            = "home",
+  onArrived            = null,
+  selectedTransferId   = null,
+  onSelectTransfer     = null,
   style          = DEFAULT_STYLE,
   center         = DEFAULT_CENTER,
   zoom           = DEFAULT_ZOOM,
@@ -211,13 +277,58 @@ export default function MapView({
     : (lastLeg?.path?.length ? swapLngLat(lastLeg.path[lastLeg.path.length - 1]) : null);
 
   // Origin / destination markers — declarative; the hook owns createRoot/unmount.
-  useMapMarker(map, OriginMarker, { fromLabel: t("marker_from") }, originLngLat);
+  useMapMarker(map, OriginMarker, { fromLabel: t("marker_from") }, originLngLat,
+    { className: "marker-origin-wrapper" });
   useMapMarker(
     map,
     DestinationMarker,
     { arrived, toLabel: t("marker_to"), arrivedLabel: t("marker_arrived") },
     destLngLat,
+    { className: "marker-destination-wrapper" },
   );
+
+  // Derive transfer points for the active trip (pure, memoised on route + tripActive).
+  // Uses primitive coord components as deps to avoid new-array-per-render instability.
+  const oc0 = originCoords?.[0] ?? null;
+  const oc1 = originCoords?.[1] ?? null;
+  const dc0 = destCoords?.[0] ?? null;
+  const dc1 = destCoords?.[1] ?? null;
+  const transferPoints = useMemo(() => {
+    if (!route || !tripActive) return [];
+    const oLL = oc0 != null ? [oc1, oc0] : null; // [lng, lat]
+    const dLL = dc0 != null ? [dc1, dc0] : null;
+    return deriveTransferPoints(route, { originCoords: oLL, destinationCoords: dLL });
+  }, [route, tripActive, oc0, oc1, dc0, dc1]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Dashed connector lines for split-stop transfers (managed canvas layers).
+  useTransferConnectors(map, transferPoints);
+
+  // flyTo the selected transfer marker when selection changes, unless it's already
+  // visible. Using selectedTransferId as the sole trigger: when the marker itself
+  // was tapped, its coords are on-screen, so the inset check suppresses the pan.
+  useEffect(() => {
+    if (!map || !selectedTransferId || !transferPoints.length) return;
+    const descriptor = transferPoints.find(d => transferPointKey(d) === selectedTransferId);
+    if (!descriptor) return;
+    const [lng, lat] = descriptor.coords;
+    const b = map.getBounds();
+    const w = b.getEast()  - b.getWest();
+    const h = b.getNorth() - b.getSouth();
+    const inset = 0.1;
+    const offScreen =
+      lng < b.getWest()  + w * inset || lng > b.getEast()  - w * inset ||
+      lat < b.getSouth() + h * inset || lat > b.getNorth() - h * inset;
+    if (offScreen) map.flyTo({ center: [lng, lat], duration: 400 });
+  }, [map, selectedTransferId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Clear selection when the rider taps empty map (not a marker — MapLibre DOM
+  // markers stop click propagation to the canvas, so this only fires on empty areas).
+  useEffect(() => {
+    if (!map || !onSelectTransfer) return;
+    const handler = () => onSelectTransfer(null);
+    map.on("click", handler);
+    return () => map.off("click", handler);
+  }, [map, onSelectTransfer]);
 
   // Feature RouteProgress — mute completed legs on the map.
   // Iterates legs 0..activeLegIndex-1 and dims their polyline/circle layers.
@@ -384,6 +495,16 @@ export default function MapView({
 
   return (
     <div className="map-view map-view--visible">
+      {route && tripActive && transferPoints.map(d => (
+        <TransferPointMount
+          key={transferPointKey(d)}
+          map={map}
+          descriptor={d}
+          activeLegIndex={activeLegIndex}
+          selectedTransferId={selectedTransferId}
+          onSelectTransfer={onSelectTransfer}
+        />
+      ))}
       <div ref={containerRef} className="map-container" />
       {styleError && (
         <div className="map-error">

@@ -117,6 +117,7 @@ def _cache_key(origin: str, destination: str, transit_mode: str, bus_fullness: s
 # ---------------------------------------------------------------------------
 from rate_limit import (
     _check_daily_quota,
+    _check_events_rate_limit,
     _check_geocode_rate_limit,
     _check_rate_limit,
     _client_ip,
@@ -126,6 +127,8 @@ from rate_limit import (
     _rate_store,
     _store_lock,
 )
+import events as _events
+import sessions as _sessions
 
 
 # ---------------------------------------------------------------------------
@@ -1081,6 +1084,40 @@ async def ping(http_request: Request):
     return {"ok": True}
 
 
+class EventBody(BaseModel):
+    name: str = Field(..., min_length=1, max_length=64)
+    # Accepted for forward-compatibility with FEAT-007 (funnel) but ignored
+    # here — the session cookie set by /ping already carries the sid, and the
+    # cookie is httpOnly so the frontend can't read it anyway. Older clients
+    # that send a body sessionId won't 422; the field is just dropped.
+    sessionId: str | None = Field(default=None, max_length=128)
+
+
+@app.post("/events")
+async def post_event(body: EventBody, http_request: Request):
+    """Record a named behavioral event (FEAT-006). Best-effort, fire-and-forget
+    from the frontend. Unknown event names are rejected so the on-disk
+    schema can't expand by way of metric poisoning."""
+    if not _check_events_rate_limit(_client_ip(http_request)):
+        raise HTTPException(status_code=429, detail="Too many requests")
+    if not _events.is_allowed(body.name):
+        raise HTTPException(status_code=400, detail="Unknown event name")
+    try:
+        await _events.record(body.name)
+    except Exception:
+        # Analytics is best-effort — never fail the user-facing call. The
+        # outer middleware would also catch this, but the explicit guard
+        # documents intent.
+        logger.exception("[events] record failed")
+    # FEAT-007: advance the session's funnel stage if this event is a stage.
+    try:
+        raw_sid = http_request.cookies.get(_sessions.COOKIE_NAME)
+        await _sessions.advance_funnel_stage(raw_sid, body.name)
+    except Exception:
+        logger.debug("[funnel] advance_funnel_stage failed for %s", body.name)
+    return {"ok": True}
+
+
 @app.get("/stop-arrivals")
 async def stop_arrivals(stops: list[str] = Query(default=[])):
     """
@@ -1443,6 +1480,16 @@ async def recommend(
         )
         async with _store_lock:
             _response_cache[key] = response
+        try:
+            await _events.record("recommend_returned")
+        except Exception as e:
+            logger.debug("[events] recommend_returned record failed: %s", e)
+        try:
+            await _sessions.advance_funnel_stage(
+                http_request.cookies.get(_sessions.COOKIE_NAME), "recommend_returned"
+            )
+        except Exception as e:
+            logger.debug("[funnel] advance_funnel_stage failed: %s", e)
         return response
 
     (
@@ -1511,6 +1558,17 @@ async def recommend(
 
     async with _store_lock:
         _response_cache[key] = response
+
+    try:
+        await _events.record("recommend_returned")
+    except Exception as e:
+        logger.debug("[events] recommend_returned record failed: %s", e)
+    try:
+        await _sessions.advance_funnel_stage(
+            http_request.cookies.get(_sessions.COOKIE_NAME), "recommend_returned"
+        )
+    except Exception as e:
+        logger.debug("[funnel] advance_funnel_stage failed: %s", e)
 
     return response
 

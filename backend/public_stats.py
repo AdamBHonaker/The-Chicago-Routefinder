@@ -11,6 +11,7 @@ through these projections.
 Phase 1 panels: DAU + Chicago-metro share.
 Phase 2 panels: Sessions/bounce/duration (FEAT-001), hour-of-day (FEAT-004),
                 device class (FEAT-005), traffic sources (FEAT-008).
+Phase 3 panels: Engagement events (FEAT-006), session funnel (FEAT-007).
 
 Maintenance:
   * Adding a new panel: add a ``project_<feat>`` function here, add a
@@ -22,6 +23,9 @@ Maintenance:
 """
 
 from __future__ import annotations
+
+import funnel as _funnel_mod
+import retention as _retention_mod
 
 # Whitelisted public field names per panel. Reject-by-default keeps a
 # careless future field addition (e.g. raw IP hashes, raw UA strings) from
@@ -39,6 +43,28 @@ _DEVICES_PUBLIC_FIELDS = frozenset({"date", "mobile", "tablet", "desktop", "tota
 _REFERRERS_PUBLIC_FIELDS = frozenset({
     "date", "direct", "search", "social", "other", "total",
 })
+# FEAT-006 events (Phase 3 panel #1). The public surface advertises the four
+# headline event volumes — recommend_submitted, recommend_returned,
+# route_selected, trip_completed — because those are the numbers an
+# advertiser can interpret. Operational/internal events (app_loaded,
+# map_opened, start_route_tapped, house_ad_clicked) stay admin-only so the
+# public dashboard isn't a vector for inferring per-user navigation patterns.
+_EVENTS_PUBLIC_FIELDS = frozenset({
+    "date",
+    "recommend_submitted",
+    "recommend_returned",
+    "route_selected",
+    "trip_completed",
+    "total",
+})
+_EVENTS_PUBLIC_KEYS = ("recommend_submitted", "recommend_returned",
+                       "route_selected", "trip_completed")
+# FEAT-007 funnel panel. The public surface exposes stage names (fixed list,
+# not PII), the at-least counts per stage, and the headline result rate.
+_FUNNEL_PUBLIC_FIELDS = frozenset({"date", "stages", "counts", "result_rate_pct"})
+# FEAT-002 retention panel. Exposes only the aggregate split and headline pct;
+# the Bloom filter diagnostics (capacity, utilisation) stay admin-only.
+_RETENTION_PUBLIC_FIELDS = frozenset({"date", "new", "returning", "total", "returning_pct"})
 
 PUBLIC_FIELD_WHITELIST: dict[str, frozenset[str]] = {
     "dau_day": _DAU_PUBLIC_FIELDS,
@@ -47,6 +73,9 @@ PUBLIC_FIELD_WHITELIST: dict[str, frozenset[str]] = {
     "hourly_day": _HOURLY_PUBLIC_FIELDS,
     "devices_day": _DEVICES_PUBLIC_FIELDS,
     "referrers_day": _REFERRERS_PUBLIC_FIELDS,
+    "events_day": _EVENTS_PUBLIC_FIELDS,
+    "funnel_day": _FUNNEL_PUBLIC_FIELDS,
+    "retention_day": _RETENTION_PUBLIC_FIELDS,
 }
 
 
@@ -133,6 +162,30 @@ def project_devices(raw: dict[str, dict[str, int]]) -> dict:
     return {"days": days, "today": today}
 
 
+def project_events(raw: dict[str, dict[str, int]]) -> dict:
+    """Project ``events.get_counts()`` to the public shape.
+
+    Drops admin-only event names (``app_loaded``, ``map_opened``,
+    ``start_route_tapped``, ``house_ad_clicked``). ``total`` is the sum of
+    only the published event volumes — using the full admin total would let
+    a viewer back out the dropped event counts via subtraction.
+    """
+    days: list[dict] = []
+    for date, day in sorted(raw.items()):
+        if not isinstance(day, dict):
+            continue
+        entry: dict = {"date": date}
+        total = 0
+        for k in _EVENTS_PUBLIC_KEYS:
+            v = int(day.get(k, 0) or 0)
+            entry[k] = v
+            total += v
+        entry["total"] = total
+        days.append(entry)
+    today = days[-1] if days else None
+    return {"days": days, "today": today}
+
+
 def project_referrers(raw: dict[str, dict]) -> dict:
     """Project ``referrers.get_counts()`` to the public shape.
 
@@ -151,6 +204,62 @@ def project_referrers(raw: dict[str, dict]) -> dict:
             "date": date,
             "direct": direct, "search": search, "social": social, "other": other,
             "total": direct + search + social + other,
+        })
+    today = days[-1] if days else None
+    return {"days": days, "today": today}
+
+
+def project_funnel(raw: dict[str, list[int]]) -> dict:
+    """Project ``funnel.get_counts()`` to the public shape.
+
+    Each day in the response contains:
+    - ``stages``: the canonical funnel stage names (fixed list, not PII).
+    - ``counts``: the at-least count per stage (same index as ``stages``).
+    - ``result_rate_pct``: the advertiser headline — percentage of sessions
+      that reached ``recommend_returned`` (stage 2) relative to ``app_loaded``
+      (stage 0). Rounded to one decimal place.
+
+    Days with malformed arrays (wrong length) are silently skipped.
+    """
+    stages = list(_funnel_mod.FUNNEL_STAGES)
+    n = len(stages)
+    days: list[dict] = []
+    for date, arr in sorted(raw.items()):
+        if not isinstance(arr, list) or len(arr) != n:
+            continue
+        counts = [max(0, int(v)) for v in arr]
+        started = counts[0]
+        got_result = counts[2] if n > 2 else 0
+        result_rate = round(100.0 * got_result / started, 1) if started else 0.0
+        days.append({
+            "date": date,
+            "stages": stages,
+            "counts": counts,
+            "result_rate_pct": result_rate,
+        })
+    today = days[-1] if days else None
+    return {"days": days, "today": today}
+
+
+def project_retention(raw: dict[str, dict]) -> dict:
+    """Project ``retention.get_counts()`` to the public shape.
+
+    Drops Bloom filter diagnostics (capacity, utilisation_pct) — those are
+    admin-only operational data. The public surface is the daily split of
+    new vs returning visitors and the headline returning percentage.
+    """
+    days: list[dict] = []
+    for date, bucket in sorted(raw.items()):
+        new = int(bucket.get("new", 0) or 0)
+        ret = int(bucket.get("returning", 0) or 0)
+        total = new + ret
+        pct = round(100.0 * ret / total, 1) if total else 0.0
+        days.append({
+            "date": date,
+            "new": new,
+            "returning": ret,
+            "total": total,
+            "returning_pct": pct,
         })
     today = days[-1] if days else None
     return {"days": days, "today": today}
@@ -211,6 +320,12 @@ _STATS_HTML_TEMPLATE = """<!doctype html>
   footer { margin-top: 32px; font-size: 13px; color: var(--muted); }
   footer a { color: var(--accent); }
   .err { color: #b04030; font-size: 14px; }
+  .funnel-bars { display: flex; flex-direction: column; gap: 6px; }
+  .funnel-row { display: flex; align-items: center; gap: 10px; }
+  .funnel-label { font-size: 12px; color: var(--muted); width: 150px; flex-shrink: 0; text-align: right; }
+  .funnel-bar-wrap { flex: 1; background: var(--grid); border-radius: 3px; height: 18px; }
+  .funnel-bar-fill { background: var(--accent); height: 100%; border-radius: 3px; min-width: 2px; }
+  .funnel-count { font-size: 12px; color: var(--muted); width: 60px; }
 </style>
 </head>
 <body>
@@ -257,6 +372,34 @@ _STATS_HTML_TEMPLATE = """<!doctype html>
     <h2>Traffic sources (today)</h2>
     <div class="split" id="referrers-split" aria-hidden="true"></div>
     <div class="split-legend" id="referrers-legend">__REFERRERS_LEGEND__</div>
+  </section>
+
+  <section class="panel" id="events-panel">
+    <h2>Engagement events (today)</h2>
+    <div class="stat-row">
+      <div><small>Recommendations served</small><b id="events-served">__EVENTS_SERVED__</b></div>
+      <div><small>Routes selected</small><b id="events-selected">__EVENTS_SELECTED__</b></div>
+      <div><small>Trips started</small><b id="events-trips">__EVENTS_TRIPS__</b></div>
+    </div>
+    <div class="sub" id="events-detail">__EVENTS_DETAIL__</div>
+  </section>
+
+  <section class="panel" id="funnel-panel">
+    <h2>Session funnel (today)</h2>
+    <div class="big" id="funnel-rate">__FUNNEL_RATE__</div>
+    <div class="sub">of sessions reached a route result</div>
+    <div class="funnel-bars" id="funnel-bars" aria-hidden="true" style="margin-top:14px"></div>
+    <div class="sub" id="funnel-detail">__FUNNEL_DETAIL__</div>
+  </section>
+
+  <section class="panel" id="retention-panel">
+    <h2>New vs returning visitors (today)</h2>
+    <div class="big" id="retention-rate">__RETENTION_RATE__</div>
+    <div class="sub">returning visitors today</div>
+    <div class="stat-row" style="margin-top:8px">
+      <div><small>New</small><b id="retention-new">__RETENTION_NEW__</b></div>
+      <div><small>Returning</small><b id="retention-returning">__RETENTION_RETURNING__</b></div>
+    </div>
   </section>
 
   <footer>
@@ -361,6 +504,51 @@ _STATS_HTML_TEMPLATE = """<!doctype html>
     }).join("");
   }).catch(function() { panelErr("devices-panel", "Failed to load devices."); });
 
+  // Engagement events
+  loadJSON("/stats/events").then(function(e) {
+    if (!e.today) return;
+    setText("events-served",   fmt(e.today.recommend_returned));
+    setText("events-selected", fmt(e.today.route_selected));
+    setText("events-trips",    fmt(e.today.trip_completed));
+    if (e.today.recommend_submitted > 0) {
+      setText("events-detail",
+        fmt(e.today.recommend_submitted) + " recommendation searches today" +
+        (e.today.recommend_returned > 0
+          ? " (" + ((100 * e.today.recommend_returned / e.today.recommend_submitted)|0) + "% returned a result)"
+          : "."));
+    }
+  }).catch(function() { panelErr("events-panel", "Failed to load events."); });
+
+  // Session funnel
+  loadJSON("/stats/funnel").then(function(f) {
+    if (!f.today || !f.today.counts || f.today.counts[0] === 0) return;
+    setText("funnel-rate", f.today.result_rate_pct.toFixed(1) + "%");
+    var stages = f.today.stages;
+    var counts = f.today.counts;
+    var max = counts[0] || 1;
+    var bars = document.getElementById("funnel-bars");
+    bars.innerHTML = stages.map(function(s, i) {
+      var pct = (100 * counts[i] / max).toFixed(1);
+      var label = s.replace(/_/g, " ");
+      return '<div class="funnel-row">' +
+        '<div class="funnel-label">' + label + '</div>' +
+        '<div class="funnel-bar-wrap"><div class="funnel-bar-fill" style="width:' + pct + '%"></div></div>' +
+        '<div class="funnel-count">' + fmt(counts[i]) + '</div>' +
+        '</div>';
+    }).join("");
+    setText("funnel-detail",
+      fmt(counts[0]) + " sessions started · " +
+      f.today.result_rate_pct.toFixed(1) + "% reached a route result.");
+  }).catch(function() { panelErr("funnel-panel", "Failed to load funnel."); });
+
+  // New vs returning
+  loadJSON("/stats/retention").then(function(ret) {
+    if (!ret.today || ret.today.total === 0) return;
+    setText("retention-rate", ret.today.returning_pct.toFixed(1) + "%");
+    setText("retention-new", fmt(ret.today.new));
+    setText("retention-returning", fmt(ret.today.returning));
+  }).catch(function() { panelErr("retention-panel", "Failed to load retention."); });
+
   // Referrers — stacked bar
   loadJSON("/stats/referrers").then(function(r) {
     var split = document.getElementById("referrers-split");
@@ -439,6 +627,16 @@ Referrers
   before any storage to avoid accidental capture of UTM params). Bucketed
   into direct / search / social / other.
 
+Engagement events
+  Named in-app actions (e.g. recommend_submitted, route_selected,
+  trip_completed) are reported by the frontend to a strict server-side
+  allowlist. Only a daily aggregate per event name is persisted — never
+  the per-session sequence, never the order in which events fired. The
+  public dashboard surfaces only the four advertiser-facing event volumes
+  (recommendations served, routes selected, trips started, searches);
+  internal/operational events (app_loaded, map_opened, etc.) are
+  admin-only.
+
 Public dashboard
   The /stats page is served from this app's own infrastructure and loads
   no third-party scripts. Per-city tables, per-hostname long-tail
@@ -452,9 +650,10 @@ What is NOT collected
 
   * No fingerprinting (canvas, fonts, audio, WebGL, screen size, etc.).
   * No third-party analytics or marketing tags.
-  * No raw IP addresses, fingerprints, or User-Agent strings on disk.
-  * No persistent cross-day user identifiers (no Bloom filter; FEAT-002
-    has not been built).
+  * No raw IP addresses, User-Agent strings, or reversible identifiers on disk.
+  * The returnId cookie (90-day opaque token) is the only persistent
+    cross-day identifier. It is an opaque random token with no PII linkage;
+    only a one-way HMAC fingerprint is stored in the Bloom filter.
 
 Where the data lives
 --------------------
@@ -473,6 +672,9 @@ def render_html(
     hourly_today: dict | None = None,
     devices_today: dict | None = None,
     referrers_today: dict | None = None,
+    events_today: dict | None = None,
+    funnel_today: dict | None = None,
+    retention_today: dict | None = None,
 ) -> str:
     """Render the /stats page with today's headline numbers server-injected.
 
@@ -561,6 +763,54 @@ def render_html(
     else:
         referrers_legend = "No referrer data yet today."
 
+    # Funnel
+    if funnel_today and funnel_today.get("counts") and funnel_today["counts"][0]:
+        counts = funnel_today["counts"]
+        rate = float(funnel_today.get("result_rate_pct", 0.0))
+        funnel_rate = f"{rate:.1f}%"
+        funnel_detail = (
+            f"{int(counts[0]):,} sessions started · "
+            f"{rate:.1f}% reached a route result."
+        )
+    else:
+        funnel_rate = "—"
+        funnel_detail = "No funnel data yet today."
+
+    # Retention
+    if retention_today and retention_today.get("total"):
+        total_ret = int(retention_today["total"])
+        ret_new = int(retention_today.get("new", 0))
+        ret_returning = int(retention_today.get("returning", 0))
+        ret_pct = float(retention_today.get("returning_pct", 0.0))
+        retention_rate = f"{ret_pct:.1f}%"
+        retention_new_str = fmt_int(ret_new)
+        retention_returning_str = fmt_int(ret_returning)
+    else:
+        retention_rate = "—"
+        retention_new_str = "—"
+        retention_returning_str = "—"
+
+    # Events
+    if events_today and events_today.get("total"):
+        events_served   = fmt_int(events_today.get("recommend_returned", 0))
+        events_selected = fmt_int(events_today.get("route_selected", 0))
+        events_trips    = fmt_int(events_today.get("trip_completed", 0))
+        submitted = int(events_today.get("recommend_submitted", 0))
+        returned  = int(events_today.get("recommend_returned", 0))
+        if submitted > 0:
+            return_rate = int(100 * returned / submitted)
+            events_detail = (
+                f"{submitted:,} recommendation searches today "
+                f"({return_rate}% returned a result)."
+            )
+        else:
+            events_detail = "No recommendation searches yet today."
+    else:
+        events_served = "—"
+        events_selected = "—"
+        events_trips = "—"
+        events_detail = "No event data yet today."
+
     return (
         _STATS_HTML_TEMPLATE
         .replace("__DAU_TODAY__", dau_str)
@@ -572,4 +822,13 @@ def render_html(
         .replace("__HOURLY_DETAIL__", hourly_detail)
         .replace("__DEVICES_LEGEND__", devices_legend)
         .replace("__REFERRERS_LEGEND__", referrers_legend)
+        .replace("__EVENTS_SERVED__", events_served)
+        .replace("__EVENTS_SELECTED__", events_selected)
+        .replace("__EVENTS_TRIPS__", events_trips)
+        .replace("__EVENTS_DETAIL__", events_detail)
+        .replace("__FUNNEL_RATE__", funnel_rate)
+        .replace("__FUNNEL_DETAIL__", funnel_detail)
+        .replace("__RETENTION_RATE__", retention_rate)
+        .replace("__RETENTION_NEW__", retention_new_str)
+        .replace("__RETENTION_RETURNING__", retention_returning_str)
     )

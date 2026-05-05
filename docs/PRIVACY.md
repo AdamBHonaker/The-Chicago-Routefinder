@@ -34,6 +34,31 @@ Implemented in [backend/geography.py](../backend/geography.py).
   list of Cook + collar-county municipalities; the metro list itself is not
   per-user data.
 
+### New vs returning visitors (FEAT-002)
+
+Implemented in [backend/retention.py](../backend/retention.py).
+
+- A 90-day opaque random ID (`returnId`) is set in an `httpOnly` `Secure`
+  `SameSite=Lax` cookie. The raw value is never written to disk — only a
+  stable HMAC fingerprint derived from it is stored.
+- Server stores a **rolling Bloom filter** of fingerprints (HMAC-SHA256
+  with a stable per-deployment retention key). The filter is the only
+  persistent cross-day artifact.
+- Daily aggregate: `{date, new: int, returning: int}`. "Returning" = the
+  visitor's fingerprint was probably seen on a previous day, subject to
+  the Bloom filter's ≤1% false-positive rate.
+- **Accepted privacy tradeoff:** This feature uses a stable (non-daily-
+  rotating) key so the same browser can be recognised across days. You can
+  ask "is this fingerprint probably in the set?" but not "who is this
+  user?" The `returnId` is an opaque random token with no PII linkage. This
+  is the explicitly documented tradeoff in the FEAT-002 scope — it is
+  narrower than a traditional cookie tracker (aggregate-only, no event
+  sequence, no PII binding) but it does introduce limited cross-day
+  correlation that the other analytics features avoid.
+- GDPR/CCPA: the `returnId` cookie is a functional analytics cookie (not
+  an advertising or tracking cookie). EU consent banner is deferred until
+  EU traffic becomes non-trivial.
+
 ### Sessions (FEAT-001)
 
 Implemented in [backend/sessions.py](../backend/sessions.py).
@@ -107,14 +132,12 @@ public response.
 
 ## What is **not** collected
 
-- No cookies (other than the session cookie for app state, which the
-  current build does not yet set).
 - No fingerprinting (canvas, fonts, audio, WebGL, screen size, etc.).
 - No third-party analytics or marketing tags.
-- No cross-day user identifiers (no Google Analytics ID, no Plausible ID,
-  no Bloom filter; the optional cross-day Bloom filter is gated behind
-  FEAT-002 which has not been built).
-- No raw IP addresses, fingerprints, or User-Agent strings on disk.
+- No raw IP addresses, User-Agent strings, or reversible identifiers on disk.
+- The `returnId` cookie (FEAT-002) is the only persistent cross-day identifier;
+  it is an opaque random token with no PII linkage — see the FEAT-002 section
+  above for the explicit privacy tradeoff.
 
 ## Where the data lives
 
@@ -128,5 +151,7 @@ are:
 - `backend/data/hourly.json` — per-day 24-int hour histograms.
 - `backend/data/devices.json` — per-day device-class buckets.
 - `backend/data/referrers.json` — per-day traffic-source buckets.
+- `backend/data/retention.json` — per-day new/returning aggregates + Bloom filter
+  bit array (no raw IDs or reversible identifiers).
 
 If you'd like the data deleted, contact the maintainer.

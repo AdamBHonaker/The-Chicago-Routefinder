@@ -35,6 +35,8 @@ import { useLocalStorage } from "./hooks/useLocalStorage.js";
 import { fetchWithRetry as _fetchWithRetry } from "./utils/fetchWithRetry.js";
 import { renderMarkdown } from "./utils/renderMarkdown.js";
 import { extractTransitLines } from "./utils/routeUtils.js";
+import { deriveTransferPoints } from "./utils/deriveTransferPoints.js";
+import { track } from "./analytics.js";
 
 // Thin wrapper so call-sites don't need to pass RETRY_DELAYS_MS explicitly.
 // Full implementation and JSDoc live in utils/fetchWithRetry.js (TD-040).
@@ -141,7 +143,15 @@ export default function App() {
   // (Vercel → Railway). Backend CORS is configured with allow_credentials=True.
   useEffect(() => {
     fetch(`${BACKEND_URL}/ping`, { credentials: "include" }).catch(() => {});
+    track("app_loaded");
   }, []);
+
+  // Fire ``map_opened`` whenever the mobile tab bar switches to the map view.
+  // Desktop has the map permanently visible, so the natural fire site is the
+  // explicit user action of opening the tab — not the component mount.
+  useEffect(() => {
+    if (activeTab === "map") track("map_opened");
+  }, [activeTab]);
 
   function handleSaveByokKey(key) {
     setByokKey(key);
@@ -166,6 +176,32 @@ export default function App() {
     isOffRoute, tripGeoError, onVehicle,
     startTrip, stopTrip, toggleOnVehicle, dismissOffRoute, dismissTripGeoError, resetForReroute,
   } = useTripTracker({ result, selectedRouteIndex });
+
+  // ── Feature TransferMarkers — selected transfer ID ────────────────────────
+  const [selectedTransferId, setSelectedTransferId] = useState(null);
+
+  // Clear selection when the trip ends, a different route is selected, or a new
+  // search runs — any of these make the current selection stale or irrelevant.
+  useEffect(() => {
+    setSelectedTransferId(null);
+  }, [tripActive, selectedRouteIndex, result]);
+
+  // Derive transfer points for the active trip so RouteCard can make spine rows
+  // interactive. Mirrors the derivation MapView does internally, using the same
+  // pure function so transfer IDs are identical on both sides.
+  const selectedRoute = result?.routes?.[selectedRouteIndex] ?? null;
+  const tripTransferPoints = useMemo(() => {
+    if (!tripActive || !selectedRoute) return [];
+    const oC = result?.originCoords ?? null;
+    const dC = result?.destCoords ?? null;
+    return deriveTransferPoints(selectedRoute, {
+      originCoords:      oC ? [oC[1], oC[0]] : null,
+      destinationCoords: dC ? [dC[1], dC[0]] : null,
+    });
+  // result?.originCoords / destCoords are stable array refs inside a given result object.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tripActive, selectedRoute, result?.originCoords, result?.destCoords]);
+  // ── End Feature TransferMarkers ───────────────────────────────────────────
 
   // ── Feature ArrivedToast ─────────────────────────────────────────────────
   const [showArrivedToast, setShowArrivedToast] = useState(false);
@@ -316,6 +352,7 @@ export default function App() {
     setRouteLimitError(false);
     setIsSharedLink(false);
 
+    track("recommend_submitted");
     await performSearch(originGeoCoords ?? origin.trim(), destination.trim());
   }
 
@@ -554,11 +591,11 @@ export default function App() {
                             index={i}
                             isFirst={i === 0}
                             isSelected={i === selectedRouteIndex}
-                            onSelect={() => { setSelectedRouteIndex(i); stopTrip(); }}
+                            onSelect={() => { setSelectedRouteIndex(i); stopTrip(); track("route_selected"); }}
                             tripActive={tripActive && i === selectedRouteIndex}
                             activeLegIndex={activeLegIndex}
                             completedSteps={completedSteps}
-                            onStartTrip={startTrip}
+                            onStartTrip={() => { track("start_route_tapped"); startTrip(); }}
                             onStopTrip={stopTrip}
                             tripGeoError={tripGeoError && i === selectedRouteIndex}
                             onDismissTripGeoError={dismissTripGeoError}
@@ -569,6 +606,9 @@ export default function App() {
                             activeAlertRoutes={activeAlertRoutes}
                             shareOrigin={origin}
                             shareDestination={destination}
+                            transferPoints={i === selectedRouteIndex ? tripTransferPoints : undefined}
+                            selectedTransferId={i === selectedRouteIndex ? selectedTransferId : null}
+                            onSelectTransfer={setSelectedTransferId}
                           />
                         </Fragment>
                       );
@@ -591,7 +631,9 @@ export default function App() {
               tripActive={tripActive}
               activeLegIndex={activeLegIndex}
               activeTab={activeTab}
-              onArrived={() => setShowArrivedToast(true)}
+              onArrived={() => { track("trip_completed"); setShowArrivedToast(true); }}
+              selectedTransferId={selectedTransferId}
+              onSelectTransfer={setSelectedTransferId}
             />
           </Suspense>
         </div>

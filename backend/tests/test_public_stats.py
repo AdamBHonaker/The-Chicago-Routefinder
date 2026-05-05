@@ -208,6 +208,68 @@ def test_project_referrers_no_leak():
 
 
 # ---------------------------------------------------------------------------
+# project_events
+# ---------------------------------------------------------------------------
+
+def test_project_events_drops_admin_only_event_names():
+    """Admin-only event names (app_loaded, map_opened, start_route_tapped,
+    house_ad_clicked) must not appear in the public projection — they would
+    let a viewer infer per-user navigation."""
+    raw = {"2026-05-04": {
+        "recommend_submitted": 100,
+        "recommend_returned": 90,
+        "route_selected": 70,
+        "trip_completed": 40,
+        # Admin-only — must not pass through.
+        "app_loaded": 250,
+        "map_opened": 60,
+        "start_route_tapped": 45,
+        "house_ad_clicked": 8,
+    }}
+    out = public_stats.project_events(raw)
+    today = out["today"]
+    allowed = public_stats.PUBLIC_FIELD_WHITELIST["events_day"]
+    leaked = set(today.keys()) - allowed
+    assert not leaked, f"events leak: {leaked}"
+    for admin_only in ("app_loaded", "map_opened", "start_route_tapped", "house_ad_clicked"):
+        assert admin_only not in today
+    # Total is sum of public events ONLY (100 + 90 + 70 + 40 = 300), not the
+    # admin-side total — the difference would let a viewer back out the
+    # dropped event volumes via subtraction.
+    assert today["total"] == 300
+
+
+def test_project_events_no_leak_hostile_input():
+    raw = {"2026-05-04": {
+        "recommend_submitted": 1,
+        "secret_pii_field": "evil",  # hostile field — must not pass through
+    }}
+    out = public_stats.project_events(raw)  # type: ignore[arg-type]
+    allowed = public_stats.PUBLIC_FIELD_WHITELIST["events_day"]
+    for day in out["days"]:
+        leaked = set(day.keys()) - allowed
+        assert not leaked, f"events hostile-input leak: {leaked}"
+
+
+def test_project_events_empty():
+    out = public_stats.project_events({})
+    assert out == {"days": [], "today": None}
+
+
+def test_project_events_zero_fills_missing_keys():
+    """A fresh day may only have one event recorded so far; the rest must
+    appear as 0 in the public payload so the dashboard renders cleanly."""
+    raw = {"2026-05-04": {"recommend_submitted": 5}}
+    out = public_stats.project_events(raw)
+    today = out["today"]
+    assert today["recommend_submitted"] == 5
+    assert today["recommend_returned"] == 0
+    assert today["route_selected"] == 0
+    assert today["trip_completed"] == 0
+    assert today["total"] == 5
+
+
+# ---------------------------------------------------------------------------
 # render_html — minimal sanity
 # ---------------------------------------------------------------------------
 
@@ -217,10 +279,83 @@ def test_render_html_self_contained():
     lower = html.lower()
     assert "http://" not in lower
     assert "https://" not in lower
-    # Must reference all six public endpoints the page hydrates from.
+    # Must reference all eight public endpoints the page hydrates from.
     for path in ("/stats/dau", "/stats/geography", "/stats/sessions",
-                 "/stats/hourly", "/stats/devices", "/stats/referrers"):
+                 "/stats/hourly", "/stats/devices", "/stats/referrers",
+                 "/stats/events", "/stats/funnel"):
         assert path in html
+
+
+# ---------------------------------------------------------------------------
+# project_funnel
+# ---------------------------------------------------------------------------
+
+def test_project_funnel_basic_shape():
+    raw = {
+        "2026-05-04": [100, 97, 95, 80, 60, 40],
+        "2026-05-03": [80, 78, 75, 60, 45, 30],
+    }
+    out = public_stats.project_funnel(raw)
+    # Chronological order.
+    assert [d["date"] for d in out["days"]] == ["2026-05-03", "2026-05-04"]
+    today = out["today"]
+    assert today["date"] == "2026-05-04"
+    assert today["counts"] == [100, 97, 95, 80, 60, 40]
+    # result_rate_pct = n[2] / n[0] * 100 = 95 / 100 * 100 = 95.0
+    assert today["result_rate_pct"] == 95.0
+    assert "stages" in today
+
+
+def test_project_funnel_empty():
+    out = public_stats.project_funnel({})
+    assert out == {"days": [], "today": None}
+
+
+def test_project_funnel_skips_wrong_length():
+    raw = {
+        "2026-05-04": [1, 2, 3],            # wrong length
+        "2026-05-05": [10, 9, 8, 7, 6, 5],  # valid
+    }
+    out = public_stats.project_funnel(raw)
+    assert [d["date"] for d in out["days"]] == ["2026-05-05"]
+
+
+def test_project_funnel_no_leak():
+    raw = {"2026-05-04": [100, 97, 95, 80, 60, 40]}
+    out = public_stats.project_funnel(raw)
+    allowed = public_stats.PUBLIC_FIELD_WHITELIST["funnel_day"]
+    for day in out["days"]:
+        leaked = set(day.keys()) - allowed
+        assert not leaked, f"funnel leak: {leaked}"
+    if out["today"] is not None:
+        leaked = set(out["today"].keys()) - allowed
+        assert not leaked, f"funnel today leak: {leaked}"
+
+
+def test_project_funnel_no_leak_hostile_input():
+    raw = {"2026-05-04": [100, 97, 95, 80, 60, 40]}
+    # project_funnel builds the shape from scratch, so hostile fields can't
+    # come in via raw — but ensure the whitelist test still passes.
+    out = public_stats.project_funnel(raw)
+    allowed = public_stats.PUBLIC_FIELD_WHITELIST["funnel_day"]
+    for day in out["days"]:
+        leaked = set(day.keys()) - allowed
+        assert not leaked, f"funnel hostile-input leak: {leaked}"
+
+
+def test_project_funnel_zero_denominator():
+    """A day where no sessions reached stage 0 must not divide by zero."""
+    raw = {"2026-05-04": [0, 0, 0, 0, 0, 0]}
+    out = public_stats.project_funnel(raw)
+    assert out["today"]["result_rate_pct"] == 0.0
+
+
+def test_project_funnel_stages_list_matches_module():
+    """The stages list in the projection must match funnel.FUNNEL_STAGES."""
+    import funnel
+    raw = {"2026-05-04": [10] * 6}
+    out = public_stats.project_funnel(raw)
+    assert out["today"]["stages"] == list(funnel.FUNNEL_STAGES)
 
 
 def test_privacy_text_self_contained():

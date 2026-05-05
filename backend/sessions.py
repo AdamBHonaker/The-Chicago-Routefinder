@@ -36,6 +36,7 @@ import secrets
 import time
 
 import analytics_store
+import funnel as _funnel
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,8 @@ def _finalise_locked(state: dict, now: float) -> None:
     bucket["total_duration_seconds"] = int(bucket.get("total_duration_seconds", 0)) + duration
     if state["recommend_count"] < _BOUNCE_RECOMMEND_THRESHOLD:
         bucket["bounces"] = int(bucket.get("bounces", 0)) + 1
+    # FEAT-007: funnel.record_finalized is async — collected and awaited by
+    # the calling async function (_expire_idle_locked / touch day-rollover).
 
 
 async def _expire_idle_locked(now: float, loop) -> None:
@@ -120,6 +123,10 @@ async def _expire_idle_locked(now: float, loop) -> None:
     if _writes_since_flush >= _FLUSH_EVERY_N_WRITES:
         await loop.run_in_executor(None, _save, _daily)
         _writes_since_flush = 0
+    # FEAT-007: record funnel stage for each expired session after the
+    # sessions lock is still held (funnel uses its own independent lock).
+    for _, s in expired:
+        await _funnel.record_finalized(s["day"], s.get("funnel_stage", -1))
 
 
 async def touch(raw_sid: str | None, *, is_recommend: bool) -> str:
@@ -143,6 +150,11 @@ async def touch(raw_sid: str | None, *, is_recommend: bool) -> str:
             # Day rolled over. Finalise every still-active session against
             # whichever day it began on (its ``day`` field), then drop the
             # in-memory map — the new day's hashes won't match anyway.
+            # Capture funnel stages before clearing _active (FEAT-007).
+            rollover_funnel = [
+                (s["day"], s.get("funnel_stage", -1))
+                for s in _active.values()
+            ]
             for s in list(_active.values()):
                 _finalise_locked(s, now)
             _active.clear()
@@ -156,6 +168,9 @@ async def touch(raw_sid: str | None, *, is_recommend: bool) -> str:
             await loop.run_in_executor(None, _save, _daily)
             _current_day = today
             _writes_since_flush = 0
+            # Record funnel stages for rolled-over sessions (FEAT-007).
+            for day, stage in rollover_funnel:
+                await _funnel.record_finalized(day, stage)
 
         # Lazy idle cleanup: cheap because _active is small in practice.
         await _expire_idle_locked(now, loop)
@@ -170,6 +185,7 @@ async def touch(raw_sid: str | None, *, is_recommend: bool) -> str:
                 "last_seen": now,
                 "recommend_count": 1 if is_recommend else 0,
                 "day": today,
+                "funnel_stage": -1,  # FEAT-007: highest funnel stage reached
             }
         else:
             s = _active[h]
@@ -177,6 +193,29 @@ async def touch(raw_sid: str | None, *, is_recommend: bool) -> str:
             if is_recommend:
                 s["recommend_count"] += 1
         return sid  # type: ignore[return-value]
+
+
+async def advance_funnel_stage(raw_sid: str | None, event_name: str) -> None:
+    """Advance the funnel stage for the session identified by ``raw_sid``.
+
+    Called from the ``POST /events`` handler and from the ``/recommend``
+    handler (for the server-side ``recommend_returned`` event). If the event
+    is not a funnel stage, or the session is not currently active (expired /
+    cross-day), the call is a silent no-op.
+    """
+    if not raw_sid:
+        return
+    stage = _funnel.stage_index(event_name)
+    if stage < 0:
+        return
+    async with _lock:
+        today = _today_chi()
+        h = _hash_sid(raw_sid, today)
+        s = _active.get(h)
+        if s is None:
+            return
+        if stage > s.get("funnel_stage", -1):
+            s["funnel_stage"] = stage
 
 
 async def get_counts() -> dict[str, dict[str, float | int]]:

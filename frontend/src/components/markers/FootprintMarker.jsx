@@ -30,8 +30,8 @@ function FootprintMarkerImpl({
   ariaLabel,
 }) {
   const { t } = useTranslation();
-  const isPassed   = state === "passed";
-  const isSelected = state === "selected";
+  const isPassed   = state === "passed" || state === "passed-selected";
+  const isSelected = state === "selected" || state === "passed-selected";
 
   const W = label ? 140 : 12;
   const H = label ? 40  : 12;

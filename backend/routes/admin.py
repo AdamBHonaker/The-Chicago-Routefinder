@@ -15,9 +15,12 @@ from fastapi import APIRouter, Header, HTTPException, Request
 
 import dau
 import devices
+import events
+import funnel
 import geography
 import hourly
 import referrers
+import retention
 import sessions
 
 router = APIRouter()
@@ -102,3 +105,41 @@ async def admin_referrers(
     """Per-day referrer/traffic-source counts (FEAT-008)."""
     _check_admin_token(request, authorization)
     return await referrers.get_counts()
+
+
+@router.get("/admin/events")
+async def admin_events(
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
+    """Per-day named-event counts (FEAT-006)."""
+    _check_admin_token(request, authorization)
+    return await events.get_counts()
+
+
+@router.get("/admin/retention")
+async def admin_retention(
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
+    """Per-day new/returning visitor counts + Bloom filter diagnostics (FEAT-002)."""
+    _check_admin_token(request, authorization)
+    counts = await retention.get_counts()
+    stats = await retention.get_filter_stats()
+    return {"daily": counts, "filter": stats}
+
+
+@router.get("/admin/funnel")
+async def admin_funnel(
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
+    """Per-day funnel stage-count arrays (FEAT-007).
+
+    Each day is a 6-element list: ``[n0, n1, n2, n3, n4, n5]`` where
+    ``n_i`` = sessions that reached at least stage i.
+    Stage order: app_loaded, recommend_submitted, recommend_returned,
+    route_selected, start_route_tapped, trip_completed.
+    """
+    _check_admin_token(request, authorization)
+    return await funnel.get_counts()

@@ -21,6 +21,7 @@ import devices
 import geography
 import hourly
 import referrers
+import retention
 import sessions
 from rate_limit import _client_ip
 
@@ -161,5 +162,25 @@ def register_middlewares(
             )
         except Exception as e:
             logger.debug("[analytics] sessions.touch failed: %s", e)
+
+        # FEAT-002: new vs returning visitors. Fires only on /ping (app load)
+        # so the same browser opening multiple tabs doesn't inflate the counter.
+        if not is_recommend:
+            try:
+                rid = await retention.record_visit(
+                    request.cookies.get(retention.COOKIE_NAME) or None
+                )
+                secure = os.getenv("APP_ENV") == "production"
+                response.set_cookie(
+                    key=retention.COOKIE_NAME,
+                    value=rid,
+                    max_age=retention.COOKIE_MAX_AGE,
+                    httponly=True,
+                    secure=secure,
+                    samesite="lax",
+                    path="/",
+                )
+            except Exception as e:
+                logger.debug("[analytics] retention.record_visit failed: %s", e)
 
         return response

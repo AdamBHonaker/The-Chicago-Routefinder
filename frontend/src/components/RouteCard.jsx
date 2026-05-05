@@ -96,13 +96,27 @@ function WalkLegItem({ leg, index, completedSteps, extraClass = "" }) {
   );
 }
 
-function RouteLegs({ legs, initialWait, activeLegIndex, completedSteps, pinnedStops, onPinToggle, activeAlertRoutes }) {
+function RouteLegs({ legs, initialWait, activeLegIndex, completedSteps, pinnedStops, onPinToggle, activeAlertRoutes, transferPoints, selectedTransferId, onSelectTransfer }) {
   const { t } = useTranslation();
   // Key by `${type}:${stop_id}` so bus stop_ids and train mapids never alias.
   const pinnedIds = useMemo(
     () => new Set(pinnedStops?.map((s) => `${s.type}:${s.stop_id}`) ?? []),
     [pinnedStops]
   );
+
+  // Build lookup maps so transit leg rows know whether they're tappable.
+  // boardingLegIndex → descriptor (walk-transit, transit-transit),
+  // alightingLegIndex → descriptor (transit-walk only, boardingLegIndex is null there).
+  const { transferByBoardingLeg, transferByAlightingLeg } = useMemo(() => {
+    const boarding  = new Map();
+    const alighting = new Map();
+    for (const d of (transferPoints ?? [])) {
+      if (d.boardingLegIndex != null)  boarding.set(d.boardingLegIndex, d);
+      else if (d.alightingLegIndex != null) alighting.set(d.alightingLegIndex, d);
+    }
+    return { transferByBoardingLeg: boarding, transferByAlightingLeg: alighting };
+  }, [transferPoints]);
+
   let seenTransit = false;
   return (
     <ol className="route-legs">
@@ -140,13 +154,38 @@ function RouteLegs({ legs, initialWait, activeLegIndex, completedSteps, pinnedSt
         const isPinned  = !!stopId && pinnedIds.has(`${stopType}:${stopId}`);
         const hasAlert  = activeAlertRoutes?.has(pillLabel);
 
+        // Transfer-point interactivity: tappable during tripActive when this leg
+        // corresponds to a boarding or alighting transfer point.
+        const tpDescriptor = transferByBoardingLeg.get(i) ?? transferByAlightingLeg.get(i);
+        const isTappable = !!(activeLegIndex !== null && tpDescriptor && onSelectTransfer);
+        const tpId       = tpDescriptor ? `${tpDescriptor.alightingLegIndex ?? "s"}-${tpDescriptor.boardingLegIndex ?? "e"}` : null;
+        const tpSelected = isTappable && selectedTransferId === tpId;
+
+        const handleTransferToggle = isTappable
+          ? () => onSelectTransfer(tpSelected ? null : tpId)
+          : undefined;
+
         const dotStyle = { background: color };
         return (
           <li key={i} className={`leg leg-transit${legClass}`}>
             <span className="leg-minutes" aria-hidden="true">{leg.minutes}</span>
-            <span className="leg-spine" aria-hidden="true">
-              <span className="itinerary-dot" style={dotStyle} />
-            </span>
+            {isTappable ? (
+              <span
+                className="leg-spine leg-spine--tappable"
+                role="button"
+                tabIndex={0}
+                aria-pressed={tpSelected}
+                aria-label={t("transfer_marker_aria", { station: tpDescriptor.stationName })}
+                onClick={handleTransferToggle}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleTransferToggle(); } }}
+              >
+                <span className="itinerary-dot" style={dotStyle} />
+              </span>
+            ) : (
+              <span className="leg-spine" aria-hidden="true">
+                <span className="itinerary-dot" style={dotStyle} />
+              </span>
+            )}
             <span className="leg-content">
               {isDone && <span className="leg-complete-check">✓</span>}
               {xferNote && <span className="transfer-wait-note">{xferNote}</span>}
@@ -185,6 +224,7 @@ export default memo(function RouteCard({
   onVehicle, onToggleVehicle,
   pinnedStops, onPinToggle, activeAlertRoutes,
   shareOrigin, shareDestination,
+  transferPoints, selectedTransferId, onSelectTransfer,
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(isFirst);
@@ -299,6 +339,9 @@ export default memo(function RouteCard({
           pinnedStops={pinnedStops}
           onPinToggle={onPinToggle}
           activeAlertRoutes={activeAlertRoutes}
+          transferPoints={isSelected ? transferPoints : undefined}
+          selectedTransferId={isSelected ? selectedTransferId : null}
+          onSelectTransfer={isSelected ? onSelectTransfer : undefined}
         />
       )}
       {isSelected && (
