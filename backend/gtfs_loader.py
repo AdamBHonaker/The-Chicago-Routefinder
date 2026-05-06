@@ -372,10 +372,13 @@ _start_geocode_flush_thread()
 # Entries outside this rectangle are omitted — they would find no nearby CTA stops.
 # ---------------------------------------------------------------------------
 
-# Loaded once at first access from backend/data/neighborhoods.json. Storing
-# the landmark list as JSON keeps it editable without a Python source change
-# and lets a non-Python contributor add a new entry by appending one line.
-_NEIGHBORHOODS_PATH: Path = Path(__file__).parent / "data" / "neighborhoods.json"
+# Loaded once at first access from backend/static_data/neighborhoods.json.
+# Storing the landmark list as JSON keeps it editable without a Python source
+# change and lets a non-Python contributor add a new entry by appending one
+# line. The directory is named static_data/ (not data/) because /app/data/ is
+# the Railway persistent-volume mount point in production — placing static
+# fixtures there gets them hidden by the volume overlay at runtime.
+_NEIGHBORHOODS_PATH: Path = Path(__file__).parent / "static_data" / "neighborhoods.json"
 
 
 def _load_neighborhood_coords() -> dict[str, tuple[float, float]]:

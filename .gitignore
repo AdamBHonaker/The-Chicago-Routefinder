@@ -18,6 +18,13 @@ backend/geocode_cache.tmp
 # Monthly Google Maps API call counter — temporary pre-deployment rate limiter
 backend/geocode_counter.json
 
+# Runtime analytics counter outputs — the analytics modules write per-day
+# aggregates to backend/data/ in dev (sibling to the modules) and to /app/data
+# on Railway (persistent volume). Static fixtures live in backend/static_data/.
+# Do NOT commit anything in backend/data/ — production volume overlays it
+# anyway, and committed stubs hide image-baked fixtures behind the mount.
+backend/data/
+
 # Python
 __pycache__/
 *.pyc

@@ -450,7 +450,7 @@ The single FEAT-011 work is split into two sequential PRs per Decision 3.
 - `backend/places.py` (new) — Google Places client, autocomplete cache, Place Details cache, circuit breaker
 - `scripts/build_geo_index.py` (new) — TIGER fetch + processing; CPL refresh subcommand stub (for FEAT-013)
 - `backend/.env.example` — 11 new env vars
-- `backend/data/geo_index.bin` (new artifact path; format TBD during implementation)
+- `backend/static_data/geo_index.bin` (new artifact path; format TBD during implementation — static fixture, must NOT live under `backend/data/` because Railway overlays that path with the persistent analytics volume)
 - `backend/tests/` — extensive new tests
 - `frontend/src/components/LocationInput.jsx` — `session_id` generation, polymorphic resolution
 - `frontend/src/App.css` — `address` badge + shared base
@@ -717,7 +717,7 @@ All gaps are within the existing design system's vocabulary — the fix is **app
 
 **Files likely touched:**
 
-- `backend/data/cpl_locations.json` (new — static artifact, ~80 entries, committed to repo as source of truth)
+- `backend/static_data/cpl_locations.json` (new — static artifact, ~80 entries, committed to repo as source of truth — must live under `static_data/` not `data/` because Railway's persistent volume overlays `/app/data` at runtime)
 - `scripts/build_geo_index.py` (extends the FEAT-011a build script with a `--refresh-cpl` subcommand that fetches the latest data from the Chicago Open Data Portal "Libraries — Locations, Hours and Contact Information" dataset and overwrites the JSON file)
 - `backend/main.py` (registers the CPL tier with the index loader; small dedupe rule for the OSM-overlap case)
 - `frontend/src/components/LocationInput.jsx` (handles `library` suggestion type)
@@ -727,7 +727,7 @@ All gaps are within the existing design system's vocabulary — the fix is **app
 
 **Data source:**
 
-- **Authoritative:** static `backend/data/cpl_locations.json` committed to the repo. ~80 entries, <50KB. Source-of-truth artifact.
+- **Authoritative:** static `backend/static_data/cpl_locations.json` committed to the repo. ~80 entries, <50KB. Source-of-truth artifact.
 - **Refresh path:** `scripts/build_geo_index.py --refresh-cpl` fetches the current dataset from `data.cityofchicago.org` ("Libraries — Locations, Hours and Contact Information") and overwrites the JSON file. The maintainer runs this ad-hoc — annually, or when notified of a CPL branch change. No CI dependency on the city portal.
 - **Rationale for static-with-refresh-script over live fetching:** ~80 entries that change every few years. Static asset is fully reproducible, license-clean, and immune to portal outages. The refresh script provides automation when needed without coupling production builds to an external service.
 
