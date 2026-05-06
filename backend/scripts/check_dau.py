@@ -7,7 +7,7 @@ import sys
 import urllib.request
 import json
 
-BACKEND_URL = "https://cta-transit-pwa-prod-production.up.railway.app"
+BACKEND_URL = "https://the-chicago-routefinder.up.railway.app"
 
 def main():
     if len(sys.argv) < 2:

@@ -152,7 +152,7 @@ _FULLNESS_API_VALUES = {
 
 # CORS origins — always allow localhost for local dev.
 # Set ALLOWED_ORIGINS in Railway env vars to your Vercel URL, e.g.:
-#   ALLOWED_ORIGINS=https://cta-transit.vercel.app
+#   ALLOWED_ORIGINS=https://the-chicago-routefinder.vercel.app
 _extra_origins = os.getenv("ALLOWED_ORIGINS", "")
 _extra_origin_list = [o.strip() for o in _extra_origins.split(",") if o.strip()]
 # Fail-closed in production: if ALLOWED_ORIGINS is unset, refuse to start so a

@@ -11,7 +11,7 @@ import urllib.request
 import urllib.error
 import json
 
-BACKEND_URL = "https://cta-transit-pwa-prod-production.up.railway.app"
+BACKEND_URL = "https://the-chicago-routefinder.up.railway.app"
 
 _STAGES = (
     "app_loaded",

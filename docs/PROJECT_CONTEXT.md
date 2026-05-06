@@ -250,7 +250,7 @@ Open bugs: [`docs/BUGS.md`](BUGS.md) · Technical debt: [`docs/TECH_DEBT.md`](TE
 
 ## Deployment Status
 
-**Backend → Railway:** ✅ Live at `https://cta-transit-pwa-prod-production.up.railway.app`
+**Backend → Railway:** ✅ Live at `https://the-chicago-routefinder.up.railway.app`
 
 **Frontend → Vercel:** ✅ Live at `https://the-chicago-routefinder.vercel.app/`
 
