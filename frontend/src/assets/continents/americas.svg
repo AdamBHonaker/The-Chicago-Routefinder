@@ -1,0 +1,13 @@
+<!--
+  Americas silhouette (North + South joined at the isthmus) for the
+  continent-first language picker. Two stacked masses connected by a thin
+  Central American bridge. Vertex count simplified for 64px.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">
+  <!-- North America -->
+  <path d="M22 12 L46 10 L60 14 L70 20 L74 28 L70 36 L62 42 L56 46 L52 50 L48 50 L42 46 L38 42 L30 38 L22 32 L18 24 L20 16 Z" />
+  <!-- Isthmus -->
+  <path d="M50 50 L54 56 L52 60 L48 60 L46 56 Z" />
+  <!-- South America -->
+  <path d="M48 60 L60 60 L66 66 L66 76 L60 86 L52 92 L44 88 L42 80 L42 70 Z" />
+</svg>

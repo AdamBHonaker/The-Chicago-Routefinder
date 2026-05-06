@@ -179,5 +179,16 @@
   "footprint_marker_aria_walk_to_transit": "Siso ni {{station}}",
   "footprint_marker_aria_walk_to_transit_passed": "Ti siso ti le sile ni {{station}}",
   "footprint_marker_aria_transit_to_walk": "Isale ni {{station}}",
-  "footprint_marker_aria_transit_to_walk_passed": "Ti isale ti le sile ni {{station}}"
+  "footprint_marker_aria_transit_to_walk_passed": "Ti isale ti le sile ni {{station}}",
+  "ad_sponsored_kicker": "Afihan",
+  "mt_review_notice": "Ede yii jẹ itumọ ẹrọ ati o le ni awọn aṣiṣe. Ṣe iranlọwọ fun wa — royin iṣoro itumọ.",
+  "feedback_link_label": "Royin iṣoro itumọ.",
+  "continent_africa": "Afrika",
+  "continent_americas": "Americas",
+  "continent_asia": "Esia",
+  "continent_europe": "Yuroopu",
+  "continent_middle_east": "Gusali Okerindilẹ",
+  "continent_oceania": "Oceania",
+  "continent_picker_back": "Pada si awọn kontinenti",
+  "continent_oceania_placeholder": "Awọn ede Oceania yoo wa fun ipari — Tok Pisin, Māori, Sāmoan, ʻŌlelo Hawaiʻi a ṣe itumọ."
 }

@@ -1,0 +1,15 @@
+<!--
+  Europe silhouette for the continent-first language picker. Compact mass
+  with Iberian, Italian, and Scandinavian peninsulas. UK/Ireland sketched
+  as a small island offshoot at left for visual identification.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">
+  <!-- Mainland -->
+  <path d="M30 32 L40 26 L50 22 L60 22 L70 24 L80 28 L82 36 L78 42 L70 46 L62 44 L56 50 L54 58 L52 66 L46 70 L42 64 L40 56 L36 52 L30 50 L26 44 L24 38 Z" />
+  <!-- Italian peninsula -->
+  <path d="M52 54 L56 60 L58 70 L56 76 L52 74 L52 64 Z" />
+  <!-- British Isles -->
+  <path d="M22 32 L28 30 L30 38 L26 44 L20 42 Z" />
+  <!-- Scandinavian peninsula -->
+  <path d="M60 22 L62 14 L70 14 L74 20 L70 24 L64 26 Z" />
+</svg>

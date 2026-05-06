@@ -65,3 +65,28 @@ _All items from the 2026-04-30 scans have been resolved. See RESOLVED_HISTORY.md
 > **Resolved:** 2026-05-04 · All 11 frontend items (TD-FE-006 through TD-FE-016) resolved in the same session. See `docs/archive/RESOLVED_HISTORY.md` for details.
 
 ---
+
+## Tech Debt Scan — 2026-05-06 (frontend)
+
+> Scanned: `frontend/src/` (App.jsx, MapView.jsx, all components/, hooks/, utils/, constants, analytics, favorites, lineColors, i18n, main, index.css, App.css, styles/), `frontend/index.html`, `frontend/vite.config.js`, `frontend/package.json`
+>
+> Found: 6 item(s) · **Resolved 2026-05-06: 5 of 6** (TD-FE-017, TD-FE-018, TD-FE-020, TD-FE-021, TD-FE-022). TD-FE-019 retained — flipping CSP from report-only to enforce requires manual flow-by-flow QA that cannot be auto-resolved.
+
+---
+
+### TD-FE-019 · Content-Security-Policy still in report-only mode
+
+- **File**: [frontend/index.html](frontend/index.html#L22)
+- **Line(s)**: 22–34
+- **Category**: TODO-FIXME / Pending Hardening
+- **Priority**: 🟡 Medium
+- **Status**: **Awaiting human walkthrough.** The CSP meta tag is `Content-Security-Policy-Report-Only`. The inline comment explicitly states the next step: *"Once a clean run through the main flows shows zero violations, swap `Content-Security-Policy-Report-Only` for `Content-Security-Policy` to enforce."* That validation has been deferred — until enforcement is on, the policy provides no actual protection. A wrong flip risks breaking production for users on networks where a tile/font CDN serves content from an origin we missed.
+- **How to resolve**: Walk the main flows (search → results → trip → map tab → settings → language switch → saved routes → pinned stops) in production with DevTools open, capture any `[Report Only] Refused to…` console messages, fix or allowlist the offending sources, then change the meta-tag header to `Content-Security-Policy`. If any violations come from third-party tile/font CDNs that genuinely need to be allowlisted, update the policy directives in lockstep.
+
+---
+
+> **Audit date:** 2026-05-06 · Files scanned: `backend/*.py` (28 modules) and `backend/routes/*.py`. Excluded `backend/scripts/` and `backend/tests/`.
+>
+> **Resolved:** 2026-05-06 · All 7 actionable items (TD-BE-009 through TD-BE-015) resolved in the same session. See `docs/archive/RESOLVED_HISTORY.md` for details.
+
+---

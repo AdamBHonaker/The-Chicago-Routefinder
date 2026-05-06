@@ -1,4 +1,9 @@
 
+/* Touch-state family system (FEAT-012) — see layout.css for the full system.
+ * .btn-ghost-icon and .masthead-select are GHOST family: transparent →
+ * --paper-folio on hover; pressed inverts to ink/paper.
+ */
+
 /* ── Masthead ────────────────────────────────────────────────────────────── */
 
 .header {
@@ -94,11 +99,18 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: background var(--dur-quick) var(--ease-out);
+  transition:
+    background var(--dur-quick) var(--ease-out),
+    color var(--dur-quick) var(--ease-out);
 }
 
 .btn-ghost-icon:hover {
   background: var(--paper-folio);
+}
+
+.btn-ghost-icon:active:not(.btn-ghost-icon--active) {
+  background: var(--ink);
+  color: var(--paper);
 }
 
 .btn-ghost-icon--active {
@@ -122,12 +134,19 @@
   -webkit-appearance: none;
   /* Prevent iOS zoom on tap */
   font-size: max(var(--fs-caps), 16px);
-  transition: background var(--dur-quick) var(--ease-out);
+  transition:
+    background var(--dur-quick) var(--ease-out),
+    color var(--dur-quick) var(--ease-out);
 }
 
 .masthead-select:hover,
 .masthead-select:focus {
   background: var(--paper-folio);
+}
+
+.masthead-select:active {
+  background: var(--ink);
+  color: var(--paper);
 }
 
 .masthead-tagline {

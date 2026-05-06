@@ -29,6 +29,7 @@ import { computeTripPositionUpdates } from "../utils/tripGeometry.js";
  *   stopTrip: () => void,
  *   toggleOnVehicle: () => void,
  *   dismissOffRoute: () => void,
+ *   dismissTripGeoError: () => void,
  *   resetForReroute: () => void,
  * }}
  */

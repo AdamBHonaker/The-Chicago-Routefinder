@@ -106,3 +106,26 @@ def test_save_load_roundtrip(tmp_path):
         referrers._save(payload)
         result = referrers._load()
     assert result == payload
+
+
+@pytest.mark.asyncio
+async def test_day_rollover_preserves_unflushed_increments():
+    """Regression test: BUG-006 — day rollover used to clobber unflushed counts."""
+    day_a = "2026-05-05"
+    day_b = "2026-05-06"
+
+    with patch.object(referrers, "_today_chi", return_value=day_a):
+        await referrers.record_visit("https://www.google.com/search?q=cta")
+        await referrers.record_visit("https://www.google.com/search?q=cta")
+        await referrers.record_visit("https://chicagotribune.com/article")
+
+    assert referrers._counts[day_a]["search"] == 2
+    assert referrers._counts[day_a]["other"]["chicagotribune.com"] == 1
+
+    with patch.object(referrers, "_today_chi", return_value=day_b):
+        await referrers.record_visit(None)  # direct
+
+    counts = await referrers.get_counts()
+    assert counts[day_a]["search"] == 2
+    assert counts[day_a]["other"]["chicagotribune.com"] == 1
+    assert counts[day_b]["direct"] == 1

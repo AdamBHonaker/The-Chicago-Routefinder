@@ -1,0 +1,51 @@
+/* House ad slot (Feature Monetization, Chunk 1).
+ *
+ * Design intent: the slot must read as part of the editorial column, not as
+ * a foreign element. Cream background (inherits --paper from the panel),
+ * hairline top divider, charcoal text, italic Fraunces body so the copy
+ * lands like a maintainer-voice tip. No box, no shadow, no accent fill.
+ * Animation, autoplay, and tracking pixels are excluded by spec.
+ */
+
+.ad-slot {
+  display: block;
+  padding: var(--sp-4) var(--sp-3);
+  margin-top: var(--sp-5);
+  border-top: var(--hairline);
+  background: var(--paper);
+  color: var(--ink);
+  text-decoration: none;
+  transition: opacity var(--dur-quick) var(--ease-out);
+}
+
+.ad-slot:hover,
+.ad-slot:focus-visible {
+  opacity: var(--opacity-hover);
+}
+
+.ad-slot__kicker {
+  display: block;
+  font-family: var(--sans);
+  font-size: var(--fs-caps);
+  line-height: var(--lh-caps);
+  letter-spacing: var(--ls-caps);
+  font-weight: var(--fw-caps);
+  text-transform: uppercase;
+  color: var(--mute);
+  margin-bottom: var(--sp-3);
+}
+
+.ad-slot__body {
+  display: block;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: var(--fs-body-sm);
+  line-height: var(--lh-body-sm);
+  color: var(--ink-soft);
+}
+
+.ad-slot__body em,
+.ad-slot__cta {
+  color: var(--rust);
+  font-style: normal;
+}

@@ -1,4 +1,13 @@
 
+/* Touch-state family system (FEAT-012) — see layout.css for the full system.
+ * This file mixes families:
+ *   • GHOST  — .leg-steps-toggle, .on-vehicle-btn, .stop-trip-btn (transparent
+ *               ground / hover swap to --paper-folio; pressed inverts to ink).
+ *   • INK-FILL — .start-trip-btn (uses --opacity-hover; pressed deepens to
+ *               --opacity-pressed).
+ *   • ICON/LINK — .btn-ghost-text (color-shift only; no :active rule).
+ */
+
 /* ── Results ─────────────────────────────────────────────────────────────── */
 
 .results {
@@ -76,7 +85,12 @@
   gap: 16px;
   cursor: pointer;
   text-align: start;
-  min-height: 44px;
+  min-height: var(--touch-min);
+  transition: opacity var(--dur-quick) var(--ease-out);
+}
+
+.route-card-header:active {
+  opacity: var(--opacity-pressed);
 }
 
 .route-card-left {
@@ -101,6 +115,18 @@
 
 @media (max-width: 359px) {
   .route-minutes { font-size: 56px; }
+}
+
+/* Tablet / large-phone intermediate step (FEAT-012 decision #13) — 60px keeps
+ * phone-italic character on iPhone Pro Max / iPad Mini portrait without the
+ * 72px feeling oversized. Letter-spacing stays at -3px (not desktop's -2px)
+ * so the italic Fraunces still reads as the mobile/hero treatment. */
+@media (min-width: 401px) and (max-width: 800px) {
+  .route-minutes {
+    font-size: var(--drop-cap-tablet);
+    letter-spacing: -3px;
+    line-height: 0.83;
+  }
 }
 
 @media (min-width: 801px) {
@@ -310,6 +336,11 @@
   border-color: var(--ink);
   color: var(--ink);
 }
+.leg-steps-toggle:active {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}
 
 .leg-steps {
   list-style: none;
@@ -436,6 +467,12 @@
   background: var(--paper-folio);
 }
 
+.on-vehicle-btn:active {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}
+
 .on-vehicle-btn--active {
   background: var(--paper-folio);
   border-color: var(--ink);
@@ -460,6 +497,10 @@
   opacity: var(--opacity-hover);
 }
 
+.start-trip-btn:active {
+  opacity: var(--opacity-pressed);
+}
+
 .stop-trip-btn {
   background: transparent;
   color: var(--rust);
@@ -475,6 +516,11 @@
 
 .stop-trip-btn:hover {
   background: rgba(156,42,26,0.08);
+}
+
+.stop-trip-btn:active {
+  background: var(--rust);
+  color: var(--paper);
 }
 
 /* ── Off-route banner — reskinned as .special-dispatch in App.jsx ─────────── */

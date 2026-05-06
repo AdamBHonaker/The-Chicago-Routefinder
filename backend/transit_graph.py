@@ -349,7 +349,7 @@ def _load_trips_unified(
       - the set of all referenced shape_ids               — UNFILTERED
 
     Replaces three separate streams of trips.txt that used to occur in
-    _load_representative_trips(), _load_bus_candidate_trips(), and Step 1 of
+    the legacy train/bus trip-candidate loaders and Step 1 of
     _build_shape_lookup().
 
     The weekday filter is applied ONLY to the train/bus trip-candidate outputs.
@@ -1170,44 +1170,9 @@ def _load_bus_stop_lookup() -> dict[str, dict]:
     return bus_stops
 
 
-def _load_bus_candidate_trips(
-    bus_route_ids: set[str],
-) -> tuple[dict[str, str], dict[str, str]]:
-    """
-    Returns (trip_route, trip_direction) for all weekday bus candidate trips.
-    Same pattern as _load_representative_trips() for trains.
-    Falls back to all trips if calendar.txt is absent or yields nothing.
-    """
-    weekday_sids = _load_weekday_service_ids()
-
-    trip_route: dict[str, str] = {}
-    trip_dir:   dict[str, str] = {}
-
-    def _read_trips(service_filter: set[str]) -> None:
-        with open(GTFS_DIR / "trips.txt", encoding="utf-8-sig") as f:
-            for row in csv.DictReader(f):
-                rid = row.get("route_id", "").strip()
-                if rid not in bus_route_ids:
-                    continue
-                if service_filter and row.get("service_id", "").strip() not in service_filter:
-                    continue
-                tid = row["trip_id"].strip()
-                trip_route[tid] = rid
-                trip_dir[tid]   = row.get("direction_id", "0").strip()
-
-    _read_trips(weekday_sids)
-    if not trip_route:
-        _read_trips(set())
-
-    n_dirs = len({(r, trip_dir[t]) for t, r in trip_route.items()})
-    print(f"[transit_graph] Loaded {len(trip_route)} weekday bus candidate trips "
-          f"across {n_dirs} route/direction pairs")
-    return trip_route, trip_dir
-
-
 def get_bus_stop_sequences() -> dict[tuple[str, str], list[tuple]]:
     """
-    Build and cache the bus stop sequence table.
+    Return the cached bus stop sequence table, building the graph on first use.
 
     Returns:
         {(route_short_name, direction_id): [
@@ -1216,100 +1181,17 @@ def get_bus_stop_sequences() -> dict[tuple[str, str], list[tuple]]:
         Sequences are ordered by stop_sequence. arr_minutes is minutes since
         midnight for the representative midday trip.
 
-    Fast path: if _build_graph() has already run (the normal case), the result
-    is returned directly from _bus_seq_cache with no I/O.
-
-    Fallback path: if called before _build_graph() (e.g. in isolated tests),
-    the function streams stop_times.txt independently — identical behaviour to
-    the original implementation.
+    The cache is populated by ``_build_graph()`` (which streams stop_times.txt
+    once for both train and bus sequences via ``_load_trips_unified`` +
+    ``_stream_all_stop_sequences``). Callers that hit this function before
+    ``warm_up()`` triggers ``_build_graph()`` will trigger it now via the
+    ``@lru_cache``-backed call below.
     """
-    # Fast path — _build_graph() already populated the cache during startup.
-    if _bus_seq_cache is not None:
-        return _bus_seq_cache
-
-    # Fallback path — should only be reached in tests or unusual call orders.
-    print("[transit_graph] get_bus_stop_sequences: cache miss — streaming independently …")
-    print("[transit_graph] Building bus stop sequence table …")
-    t0 = time.time()
-
-    bus_route_map  = _load_bus_route_map()                        # {route_id: route_short_name}
-    bus_stop_lookup = _load_bus_stop_lookup()                      # {stop_id: {name, lat, lon}}
-    trip_route, trip_dir = _load_bus_candidate_trips(
-        set(bus_route_map.keys())
-    )
-
-    # Stream stop_times.txt, collecting sequences for all candidate bus trips
-    candidate_set = set(trip_route)   # fast membership test; no list pre-allocation
-    raw: dict[str, list] = defaultdict(list)
-
-    print("[transit_graph] Streaming stop_times.txt for bus sequences …")
-    t1 = time.time()
-    rows_read = 0
-
-    with open(GTFS_DIR / "stop_times.txt", encoding="utf-8-sig") as f:
-        for row in csv.DictReader(f):
-            rows_read += 1
-            tid = row.get("trip_id", "").strip()
-            if tid not in candidate_set:
-                continue
-
-            sid = row.get("stop_id", "").strip()
-            if sid not in bus_stop_lookup:
-                continue
-
-            arr_str = (row.get("arrival_time") or row.get("departure_time") or "").strip()
-            if not arr_str:
-                continue
-
-            try:
-                seq     = int(row.get("stop_sequence", "0").strip())
-                arr_min = _parse_gtfs_time(arr_str)
-            except (ValueError, IndexError):
-                continue
-
-            raw[tid].append((seq, sid, arr_min))
-
-    print(f"[transit_graph] Bus stream: {rows_read:,} rows in {time.time() - t1:.1f}s")
-
-    # Sort each trip's stops and record first-stop departure time
-    sorted_raw: dict[str, list] = {}
-    first_arrival: dict[str, float] = {}
-    for tid, rows in raw.items():
-        if not rows:
-            continue
-        rows.sort(key=lambda x: x[0])
-        sorted_raw[tid] = rows
-        first_arrival[tid] = rows[0][2]
-
-    # Group by (route_id, direction_id), pick the trip closest to noon
-    groups: dict[tuple[str, str], list[str]] = defaultdict(list)
-    for tid in sorted_raw:
-        rid = trip_route[tid]
-        did = trip_dir.get(tid, "0")
-        groups[(rid, did)].append(tid)
-
-    result: dict[tuple[str, str], list[tuple]] = {}
-    for (rid, did), tids in groups.items():
-        best      = min(tids, key=lambda t: abs(first_arrival.get(t, 0.0) - _TARGET_NOON_MINUTES))
-        short     = bus_route_map.get(rid, rid)
-        seq_entries: list[tuple] = []
-        for _, sid, arr_min in sorted_raw[best]:
-            meta = bus_stop_lookup.get(sid, {})
-            seq_entries.append((
-                sid,
-                meta.get("name", sid),
-                meta.get("lat",  0.0),
-                meta.get("lon",  0.0),
-                arr_min,
-            ))
-        result[(short, did)] = seq_entries
-
-    n_routes = len({k[0] for k in result})
-    print(
-        f"[transit_graph] Bus stop sequences ready: {len(result)} route/direction pairs "
-        f"across {n_routes} routes ({time.time() - t0:.1f}s total)"
-    )
-    return result
+    if _bus_seq_cache is None:
+        _build_graph()
+    # Mypy: _bus_seq_cache is set during _build_graph(); narrow the Optional.
+    assert _bus_seq_cache is not None
+    return _bus_seq_cache
 
 
 # ---------------------------------------------------------------------------
@@ -2244,10 +2126,13 @@ def find_bus_transfer_routes(
         TransitLeg (route B: T → exit_stop_B)
         WalkLeg  (exit_stop_B → destination)
 
-    Sorting key includes a fixed 7.5-min estimate for the leg-2 wait (half
-    of a typical 15-min CTA headway). This estimate is NOT added to
-    route.walk_minutes_total or route.transit_minutes — those fields retain
-    their strict definitions.
+    Sorting key includes a fixed TRANSFER_PENALTY_MINUTES (3-min) estimate for
+    the leg-2 wait. This matches the per-transfer fallback that
+    _apply_transfer_wait_estimates() in main.py later subtracts and re-adds
+    (replacing the estimate with the live wait when available), so bus+bus
+    routes stay comparable to train/intermodal routes. The estimate is NOT
+    added to route.walk_minutes_total or route.transit_minutes — those fields
+    retain their strict definitions.
 
     Returns:
         list of (total_minutes, wait_minutes_A, Route) sorted by total_minutes.

@@ -99,3 +99,25 @@ def test_load_corrupt_returns_empty(tmp_path):
     f.write_text("{not json", encoding="utf-8")
     with patch.object(devices, "DEVICES_FILE", f):
         assert devices._load() == {}
+
+
+@pytest.mark.asyncio
+async def test_day_rollover_preserves_unflushed_increments():
+    """Regression test: BUG-005 — day rollover used to clobber unflushed counts."""
+    day_a = "2026-05-05"
+    day_b = "2026-05-06"
+    iphone_ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0)"
+
+    with patch.object(devices, "_today_chi", return_value=day_a):
+        await devices.record_visit(iphone_ua)
+        await devices.record_visit(iphone_ua)
+
+    assert devices._counts[day_a]["mobile"] == 2
+    assert devices._writes_since_flush == 2  # not yet flushed
+
+    with patch.object(devices, "_today_chi", return_value=day_b):
+        await devices.record_visit(iphone_ua)
+
+    counts = await devices.get_counts()
+    assert counts[day_a]["mobile"] == 2
+    assert counts[day_b]["mobile"] == 1

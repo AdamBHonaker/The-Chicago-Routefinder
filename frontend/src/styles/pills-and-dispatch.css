@@ -1,3 +1,8 @@
+/* Touch-state family system (FEAT-012) — see layout.css for the full system.
+ * .special-dispatch__dismiss is ICON/LINK family: color-shift on hover, NO
+ * :active rule per decision #14.
+ */
+
 /* ── Line pills (LinePill component) ─────────────────────────────────────── */
 
 .lin-pill {

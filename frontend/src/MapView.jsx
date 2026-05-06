@@ -1,13 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import maplibregl from "maplibre-gl";
-import { useLocalStorage } from "./hooks/useLocalStorage.js";
 import { useMapMarker, mountMarker, removeMarker } from "./hooks/useMapMarker.jsx";
 import { useRouteLayers } from "./hooks/useRouteLayers.js";
 import { useTransferConnectors } from "./hooks/useTransferConnectors.js";
-import { BUS_DIRECTION_COLORS } from "./constants.js";
+import { BUS_DIRECTION_COLORS, PANEL_MAP_RESIZE_DELAY_MS } from "./constants.js";
 import { haversineMeters } from "./utils/tripGeometry.js";
-import { deriveTransferPoints } from "./utils/deriveTransferPoints.js";
 import LinePill from "./components/LinePill.jsx";
 import OriginMarker from "./components/markers/OriginMarker.jsx";
 import DestinationMarker from "./components/markers/DestinationMarker.jsx";
@@ -94,6 +92,11 @@ function whenStyleReady(map, body) {
 
 const FOOTPRINT_TYPES = new Set(["walk-transit", "transit-walk"]);
 
+// Stable empty array used when no transferPoints prop is supplied. A fresh `[]`
+// per render would re-fire useTransferConnectors' clear/render cycle on every
+// MapView re-render, even when no trip is active.
+const EMPTY_TRANSFER_POINTS = Object.freeze([]);
+
 function transferPointKey(d) {
   return `${d.alightingLegIndex ?? "s"}-${d.boardingLegIndex ?? "e"}`;
 }
@@ -148,6 +151,45 @@ function TransferPointMount({ map, descriptor, activeLegIndex, selectedTransferI
   return null;
 }
 
+// CompassRose — the heading-up toggle button + rotating-rose SVG.
+// Lives in its own component so the bearing state's "rotate" listener only
+// re-renders this small subtree, not the entire MapView (OPT-FE-202). The
+// label reads `smoothedHeadingRef.current` directly; the rotate event fires
+// frequently enough during heading-up mode that the label stays in sync.
+function CompassRose({ map, headingUp, onToggle, smoothedHeadingRef, t }) {
+  const [bearing, setBearing] = useState(() => map?.getBearing() ?? 0);
+  useEffect(() => {
+    if (!map) return;
+    const handler = () => setBearing(map.getBearing());
+    map.on("rotate", handler);
+    return () => map.off("rotate", handler);
+  }, [map]);
+  return (
+    <button
+      className={`map-heading-btn${headingUp ? " map-heading-btn--active" : ""}`}
+      onClick={onToggle}
+      aria-pressed={headingUp}
+      aria-label={headingUp ? t("map_heading_north_btn") : t("map_heading_up_btn")}
+    >
+      <svg
+        className="map-heading-btn__rose"
+        width="16" height="16" viewBox="-8 -8 16 16"
+        aria-hidden="true"
+        style={{ transform: `rotate(${bearing}deg)` }}
+      >
+        <polygon points="0,-7 -2.5,-2 2.5,-2" fill={headingUp ? "var(--rust)" : "var(--ink)"} />
+        <polygon points="0,7 -2.5,2 2.5,2" fill="var(--mute-fog)" />
+        <line x1="0" y1="-7" x2="0" y2="7" stroke={headingUp ? "var(--rust)" : "var(--ink)"} strokeWidth="1" />
+      </svg>
+      <span className="map-heading-btn__label">
+        {headingUp
+          ? getBearingLabel(smoothedHeadingRef.current, t)
+          : t("map_heading_up_btn")}
+      </span>
+    </button>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -163,6 +205,7 @@ export default function MapView({
   onArrived            = null,
   selectedTransferId   = null,
   onSelectTransfer     = null,
+  transferPoints       = null,
   style          = DEFAULT_STYLE,
   center         = DEFAULT_CENTER,
   zoom           = DEFAULT_ZOOM,
@@ -175,14 +218,21 @@ export default function MapView({
   const firstFixDoneRef    = useRef(false); // gate for one-time flyTo on first GPS fix
   const [unlocked, setUnlocked] = useState(false);
   const [styleError, setStyleError] = useState(false);
-  // Reactive mirror of map.getBearing(). MapLibre updates bearing imperatively
-  // (drag-rotate, rotateTo, easeTo), so reading it during render alone leaves
-  // bearing-derived UI (the compass rose below) stale until something else
-  // re-renders. The `rotate` listener wired up in the map-init effect keeps
-  // this in sync.
-  const [mapBearing, setMapBearing] = useState(0);
-  const [headingUp, setHeadingUp] = useLocalStorage("cta_heading_up", false);
+  // Bearing is consumed only by <CompassRose>, which subscribes to the map's
+  // "rotate" event itself. Keeping it out of MapView state stops every
+  // rotateTo / drag-rotate frame from re-rendering the entire MapView tree
+  // (OPT-FE-202).
+  // headingUp is a transient in-trip preference: the trip-end teardown effect
+  // below resets it to false on every trip-end, so persisting across sessions
+  // would be silently clobbered on the next page load. Plain useState matches
+  // the teardown semantics — heading-up always starts off when a trip begins.
+  const [headingUp, setHeadingUp] = useState(false);
   const [arrived, setArrived] = useState(false);
+
+  // Stable ref to the latest handleRelock — read at click time by the
+  // live-position marker's listener, which is attached once at marker mount and
+  // would otherwise close over a stale `userPosition` from the first render.
+  const handleRelockRef = useRef(null);
 
   // Initialize map once after the container div mounts.
   //
@@ -205,6 +255,9 @@ export default function MapView({
   // any synchronous DOM measurements that share the same task.
   useEffect(() => {
     let mapInstance = null;
+    let canvas = null;
+    let onContextLost = null;
+    let onContextRestored = null;
 
     const timerId = setTimeout(() => {
       const container = containerRef.current;
@@ -229,10 +282,6 @@ export default function MapView({
         mapInstance.triggerRepaint();
       });
 
-      // Mirror bearing into React state so bearing-derived UI re-renders when
-      // the user drag-rotates or programmatic rotateTo/easeTo runs.
-      mapInstance.on("rotate", () => setMapBearing(mapInstance.getBearing()));
-
       mapInstance.on("error", (e) => {
         console.error("[MapView] map error:", e?.error ?? e);
         // Only latch the error banner for style *document* failures — not
@@ -246,11 +295,34 @@ export default function MapView({
         }
       });
 
+      // FEAT-012 (decision #8): defensive WebGL context-loss recovery. With the
+      // unified panel-swap pattern the canvas stays mounted on Home/Saved/Alerts
+      // tabs, slightly increasing context-loss exposure on low-memory devices.
+      // preventDefault() on `webglcontextlost` is required for the browser to
+      // fire the matching `webglcontextrestored` event; on restoration we call
+      // resize() so MapLibre rebuilds its framebuffer for the current container.
+      canvas = mapInstance.getCanvas();
+      onContextLost = (e) => {
+        e.preventDefault();
+        console.warn("[MapView] webgl context lost — pausing render");
+      };
+      onContextRestored = () => {
+        console.warn("[MapView] webgl context restored — resizing");
+        mapInstance.resize();
+        mapInstance.triggerRepaint();
+      };
+      canvas.addEventListener("webglcontextlost", onContextLost, false);
+      canvas.addEventListener("webglcontextrestored", onContextRestored, false);
+
       setMap(mapInstance);
     }, 0);
 
     return () => {
       clearTimeout(timerId);
+      if (canvas && onContextLost) {
+        canvas.removeEventListener("webglcontextlost", onContextLost);
+        canvas.removeEventListener("webglcontextrestored", onContextRestored);
+      }
       mapInstance?.remove();
       setMap(null);
     };
@@ -287,28 +359,20 @@ export default function MapView({
     { className: "marker-destination-wrapper" },
   );
 
-  // Derive transfer points for the active trip (pure, memoised on route + tripActive).
-  // Uses primitive coord components as deps to avoid new-array-per-render instability.
-  const oc0 = originCoords?.[0] ?? null;
-  const oc1 = originCoords?.[1] ?? null;
-  const dc0 = destCoords?.[0] ?? null;
-  const dc1 = destCoords?.[1] ?? null;
-  const transferPoints = useMemo(() => {
-    if (!route || !tripActive) return [];
-    const oLL = oc0 != null ? [oc1, oc0] : null; // [lng, lat]
-    const dLL = dc0 != null ? [dc1, dc0] : null;
-    return deriveTransferPoints(route, { originCoords: oLL, destinationCoords: dLL });
-  }, [route, tripActive, oc0, oc1, dc0, dc1]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Transfer points are derived once in App.jsx (OPT-FE-201) and passed in as a
+  // prop. Defensive fallback to an empty array means MapView can still render
+  // when mounted without the prop (e.g. unit tests, future view modes).
+  const tp = transferPoints ?? EMPTY_TRANSFER_POINTS;
 
   // Dashed connector lines for split-stop transfers (managed canvas layers).
-  useTransferConnectors(map, transferPoints);
+  useTransferConnectors(map, tp);
 
   // flyTo the selected transfer marker when selection changes, unless it's already
   // visible. Using selectedTransferId as the sole trigger: when the marker itself
   // was tapped, its coords are on-screen, so the inset check suppresses the pan.
   useEffect(() => {
-    if (!map || !selectedTransferId || !transferPoints.length) return;
-    const descriptor = transferPoints.find(d => transferPointKey(d) === selectedTransferId);
+    if (!map || !selectedTransferId || !tp.length) return;
+    const descriptor = tp.find(d => transferPointKey(d) === selectedTransferId);
     if (!descriptor) return;
     const [lng, lat] = descriptor.coords;
     const b = map.getBounds();
@@ -405,7 +469,7 @@ export default function MapView({
         );
         liveMarkerRef.current.marker.getElement().addEventListener("click", (event) => {
           event.stopPropagation();
-          handleRelock();
+          handleRelockRef.current?.();
         });
         if (!firstFixDoneRef.current) {
           firstFixDoneRef.current = true;
@@ -442,12 +506,13 @@ export default function MapView({
     map.rotateTo(0, { duration: 300 });
   }, [map, tripActive, setHeadingUp]);
 
-  // On desktop, panel-map transitions in over 220ms (--dur-base). Notify
+  // On desktop, panel-map transitions in over `--dur-base` (see tokens.css).
+  // PANEL_MAP_RESIZE_DELAY_MS mirrors that value — keep in lockstep. Notify
   // MapLibre after the transition so the WebGL framebuffer matches the new
   // container dimensions. Safe to call on every tab change — resize is cheap.
   useEffect(() => {
     if (!map) return;
-    const id = setTimeout(() => map.resize(), 220);
+    const id = setTimeout(() => map.resize(), PANEL_MAP_RESIZE_DELAY_MS);
     return () => clearTimeout(id);
   }, [map, activeTab]);
 
@@ -465,6 +530,7 @@ export default function MapView({
       map.easeTo({ center: [userPosition.lng, userPosition.lat] });
     }
   }
+  handleRelockRef.current = handleRelock;
 
   function handleToggleHeadingUp() {
     if (!map) return;
@@ -495,7 +561,7 @@ export default function MapView({
 
   return (
     <div className="map-view map-view--visible">
-      {route && tripActive && transferPoints.map(d => (
+      {route && tripActive && tp.map(d => (
         <TransferPointMount
           key={transferPointKey(d)}
           map={map}
@@ -560,28 +626,13 @@ export default function MapView({
         </div>
       )}
       {tripActive && !styleError && (
-        <button
-          className={`map-heading-btn${headingUp ? " map-heading-btn--active" : ""}`}
-          onClick={handleToggleHeadingUp}
-          aria-pressed={headingUp}
-          aria-label={headingUp ? t("map_heading_north_btn") : t("map_heading_up_btn")}
-        >
-          <svg
-            className="map-heading-btn__rose"
-            width="16" height="16" viewBox="-8 -8 16 16"
-            aria-hidden="true"
-            style={{ transform: `rotate(${mapBearing}deg)` }}
-          >
-            <polygon points="0,-7 -2.5,-2 2.5,-2" fill={headingUp ? "var(--rust)" : "var(--ink)"} />
-            <polygon points="0,7 -2.5,2 2.5,2" fill="var(--mute-fog)" />
-            <line x1="0" y1="-7" x2="0" y2="7" stroke={headingUp ? "var(--rust)" : "var(--ink)"} strokeWidth="1" />
-          </svg>
-          <span className="map-heading-btn__label">
-            {headingUp
-              ? getBearingLabel(smoothedHeadingRef.current, t)
-              : t("map_heading_up_btn")}
-          </span>
-        </button>
+        <CompassRose
+          map={map}
+          headingUp={headingUp}
+          onToggle={handleToggleHeadingUp}
+          smoothedHeadingRef={smoothedHeadingRef}
+          t={t}
+        />
       )}
     </div>
   );

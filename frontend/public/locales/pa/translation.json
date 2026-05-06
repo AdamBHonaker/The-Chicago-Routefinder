@@ -179,5 +179,16 @@
   "footprint_marker_aria_walk_to_transit": "{{station}} ਤੇ ਸਵਾਰ ਹੋ ਰਹੇ ਹੋ",
   "footprint_marker_aria_walk_to_transit_passed": "{{station}} ਤੇ ਸਵਾਰ ਹੋਣਾ ਪਾਸ ਹੋ ਗਿਆ",
   "footprint_marker_aria_transit_to_walk": "{{station}} ਤੇ ਉਤਰ ਰਹੇ ਹੋ",
-  "footprint_marker_aria_transit_to_walk_passed": "{{station}} ਤੇ ਉਤਰਨਾ ਪਾਸ ਹੋ ਗਿਆ"
+  "footprint_marker_aria_transit_to_walk_passed": "{{station}} ਤੇ ਉਤਰਨਾ ਪਾਸ ਹੋ ਗਿਆ",
+  "ad_sponsored_kicker": "ਸਪਾਂसਰ ਕੀਤਾ ਗਿਆ",
+  "mt_review_notice": "ਇਸ ਭਾਸ਼ਾ ਨੂੰ ਮਸ਼ੀਨ ਦੁਆਰਾ ਅਨੁਵਾਦ ਕੀਤਾ ਗਿਆ ਹੈ ਅਤੇ ਇਸ ਵਿੱਚ ਗਲਤੀਆਂ ਹੋ ਸਕਦੀਆਂ ਹਨ। ਇਸ ਨੂੰ ਬਿਹਤਰ ਬਣਾਉਣ ਵਿੱਚ ਸਾਡੀ ਮਦਦ ਕਰੋ — ਇੱਕ ਅਨੁਵਾਦ ਮੁੱਦਾ ਦੀ ਰਿਪੋਰਟ ਕਰੋ।",
+  "feedback_link_label": "ਅਨੁਵਾਦ ਸਮੱਸਿਆ ਦੀ ਰਿਪੋਰਟ ਕਰੋ।",
+  "continent_africa": "ਅਫ਼ਰੀਕਾ",
+  "continent_americas": "ਅਮੇਰਿਕਾ",
+  "continent_asia": "ਏਸ਼ੀਆ",
+  "continent_europe": "ਯੂਰਪ",
+  "continent_middle_east": "ਮਿਡਲ ਈਸਟ",
+  "continent_oceania": "ਓਸ਼ੇਨੀਆ",
+  "continent_picker_back": "ਮਹਾਂਦੇਸ਼ਾਂ ਨੂੰ ਵਾਪਸ",
+  "continent_oceania_placeholder": "ਓਸ਼ੇਨੀਆ ਦੀਆਂ ਭਾਸ਼ਾਵਾਂ ਜਲਦੀ ਆ ਰਹੀਆਂ ਹਨ — Tok Pisin, Māori, Sāmoan, ʻŌlelo Hawaiʻi ਦੀ ਯੋਜਨਾ ਹੈ।"
 }

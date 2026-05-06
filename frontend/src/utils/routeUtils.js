@@ -10,19 +10,18 @@ import { BUS_DIRECTION_COLORS } from "../constants.js";
  * @returns {{ line: string, isBus: boolean, lineCode: string }[]}
  */
 export function extractTransitLines(legs) {
+  // Single-pass dedup so isBus is computed once per leg and we touch the
+  // legs array once instead of three times (OPT-FE-206).
   const seen = new Set();
-  return legs
-    .filter((l) => l.type === "transit")
-    .filter((l) => {
-      const isBus = l.line in BUS_DIRECTION_COLORS;
-      const key = isBus ? `bus:${l.line_code}` : l.line;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    })
-    .map((l) => ({
-      line: l.line,
-      isBus: l.line in BUS_DIRECTION_COLORS,
-      lineCode: l.line_code,
-    }));
+  const out = [];
+  for (let i = 0; i < legs.length; i++) {
+    const l = legs[i];
+    if (l.type !== "transit") continue;
+    const isBus = l.line in BUS_DIRECTION_COLORS;
+    const key = isBus ? `bus:${l.line_code}` : l.line;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ line: l.line, isBus, lineCode: l.line_code });
+  }
+  return out;
 }

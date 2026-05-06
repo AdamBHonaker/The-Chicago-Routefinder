@@ -5,32 +5,13 @@
  * 30ft–1 block apart, a short dashed line connects the two stops using the same
  * dash idiom as walking-leg polylines (WALK_LINE_PAINT from useRouteLayers).
  *
- * Mirrors useRouteLayers lifecycle: tracks layer/source IDs in owned refs,
- * clears + re-renders on dep change, gates on map.isStyleLoaded().
- * Does NOT import _trackSource/_trackLayer from useRouteLayers — each hook owns
- * its own tracked-IDs lifecycle.
+ * Lifecycle helpers (clearLayers / trackSource / trackLayer) come from the
+ * shared mapLayerLifecycle util (TD-FE-020). The tracked-IDs *refs* stay
+ * hook-private so each consumer owns its own teardown without cross-talk.
  */
 import { useEffect, useRef } from "react";
 import { WALK_LINE_PAINT } from "./useRouteLayers.js";
-
-function clearLayers(map, layerIds, sourceIds) {
-  for (const id of layerIds.splice(0)) {
-    try { map.removeLayer(id); } catch { /* already gone */ }
-  }
-  for (const id of sourceIds.splice(0)) {
-    try { map.removeSource(id); } catch { /* already gone */ }
-  }
-}
-
-function trackSource(map, id, data, sourceIds) {
-  map.addSource(id, data);
-  sourceIds.push(id);
-}
-
-function trackLayer(map, cfg, layerIds) {
-  map.addLayer(cfg);
-  layerIds.push(cfg.id);
-}
+import { clearLayers, trackSource, trackLayer } from "../utils/mapLayerLifecycle.js";
 
 export function useTransferConnectors(map, descriptors) {
   const layerIds  = useRef([]);

@@ -1,4 +1,11 @@
 
+/* Touch-state family system (FEAT-012) — see layout.css for the full system.
+ * This file's interactive controls (.map-unlock-btn, .map-relock-btn,
+ * .map-heading-btn) are GHOST family: transparent-ish ground → --paper-bright
+ * on hover → invert to ink/paper on press. Overlays use safe-area insets so
+ * notched devices and 320px viewports don't clip behind status bars.
+ */
+
 /* ── MapView component ───────────────────────────────────────────────────── */
 
 .map-view {
@@ -20,20 +27,23 @@
 .map-unlock-btn,
 .map-relock-btn {
   position: absolute;
-  top: 10px;
-  left: 10px;
+  top: calc(var(--sp-3) + env(safe-area-inset-top));
+  left: calc(var(--sp-3) + env(safe-area-inset-left));
   z-index: var(--z-map-ctrl);
+  min-height: var(--touch-min);
   background: rgba(255,251,239,0.95);
   color: var(--ink);
   border: 1px solid var(--ink);
   border-radius: 0;
-  padding: 6px 12px;
+  padding: var(--sp-3) var(--sp-4);
   font-family: var(--serif);
   font-size: 12px;
   font-style: italic;
   font-weight: 600;
   cursor: pointer;
-  transition: background var(--dur-quick) var(--ease-out);
+  transition:
+    background var(--dur-quick) var(--ease-out),
+    color var(--dur-quick) var(--ease-out);
 }
 
 .map-unlock-btn:hover,
@@ -41,19 +51,35 @@
   background: var(--paper-bright);
 }
 
+.map-unlock-btn:active,
+.map-relock-btn:active {
+  background: var(--ink);
+  color: var(--paper);
+}
+
 /* ── Map overlays ─────────────────────────────────────────────────────────── */
 
 .map-legend {
   position: absolute;
-  bottom: 14px;
-  left: 14px;
+  bottom: calc(var(--sp-5) + env(safe-area-inset-bottom));
+  left: calc(var(--sp-5) + env(safe-area-inset-left));
   z-index: var(--z-map-overlay);
   background: rgba(255,251,239,0.95);
   border: 1px solid var(--ink);
-  padding: 8px 12px;
+  padding: var(--sp-3) var(--sp-4);
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--sp-3);
+}
+
+/* Narrow-viewport collision rule (FEAT-012 decision #11): below 400px,
+ * reserve a compass-width corridor on the legend's right edge so the
+ * bottom-left legend and bottom-right .map-heading-btn read as a coordinated
+ * bottom rail without overlapping. */
+@media (max-width: 400px) {
+  .map-legend {
+    right: calc(var(--map-compass-width) + var(--sp-4) + env(safe-area-inset-right));
+  }
 }
 
 .map-legend-chip {
@@ -68,16 +94,18 @@
   font-weight: 600;
   color: var(--ink);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .map-train-card {
   position: absolute;
-  top: 14px;
-  right: 14px;
+  top: calc(var(--sp-5) + env(safe-area-inset-top));
+  right: calc(var(--sp-5) + env(safe-area-inset-right));
   z-index: var(--z-map-overlay);
   background: rgba(255,251,239,0.95);
   border: 1px solid var(--ink);
-  padding: 10px 12px;
+  padding: var(--sp-4);
   max-width: 200px;
 }
 
@@ -138,26 +166,35 @@
 
 .map-heading-btn {
   position: absolute;
-  bottom: 14px;
-  right: 14px;
+  bottom: calc(var(--sp-5) + env(safe-area-inset-bottom));
+  right: calc(var(--sp-5) + env(safe-area-inset-right));
   z-index: var(--z-map-overlay);
   display: flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
+  gap: var(--sp-3);
+  min-height: var(--touch-min);
   background: rgba(255,251,239,0.95);
   color: var(--ink);
   border: 1px solid var(--ink);
   border-radius: 0;
-  padding: 6px 10px;
+  padding: var(--sp-3) var(--sp-4);
   font-family: var(--serif);
   font-size: 11px;
   font-weight: 600;
   cursor: pointer;
-  transition: background var(--dur-quick) var(--ease-out);
+  transition:
+    background var(--dur-quick) var(--ease-out),
+    color var(--dur-quick) var(--ease-out);
 }
 
 .map-heading-btn:hover {
   background: var(--paper-bright);
+}
+
+.map-heading-btn:active {
+  background: var(--ink);
+  color: var(--paper);
 }
 
 .map-heading-btn--active {

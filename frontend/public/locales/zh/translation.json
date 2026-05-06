@@ -179,5 +179,16 @@
   "footprint_marker_aria_walk_to_transit": "在{{station}}上车",
   "footprint_marker_aria_walk_to_transit_passed": "已经过{{station}}的上车点",
   "footprint_marker_aria_transit_to_walk": "在{{station}}下车",
-  "footprint_marker_aria_transit_to_walk_passed": "已经过{{station}}的下车点"
+  "footprint_marker_aria_transit_to_walk_passed": "已经过{{station}}的下车点",
+  "ad_sponsored_kicker": "赞助内容",
+  "mt_review_notice": "本语言由机器翻译，可能存在错误。请帮助我们改进 — 报告翻译问题。",
+  "feedback_link_label": "报告翻译问题。",
+  "continent_africa": "非洲",
+  "continent_americas": "美洲",
+  "continent_asia": "亚洲",
+  "continent_europe": "欧洲",
+  "continent_middle_east": "中东",
+  "continent_oceania": "大洋洲",
+  "continent_picker_back": "返回大陆选择",
+  "continent_oceania_placeholder": "大洋洲语言即将推出 — 计划支持托克皮辛语、毛利语、萨摩亚语、夏威夷语。"
 }

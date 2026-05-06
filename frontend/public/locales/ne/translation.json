@@ -179,5 +179,16 @@
   "footprint_marker_aria_walk_to_transit": "{{station}} मा चढ्नुहोस्",
   "footprint_marker_aria_walk_to_transit_passed": "{{station}} मा चढ्न पास भयो",
   "footprint_marker_aria_transit_to_walk": "{{station}} मा ओर्नुहोस्",
-  "footprint_marker_aria_transit_to_walk_passed": "{{station}} मा ओर्न पास भयो"
+  "footprint_marker_aria_transit_to_walk_passed": "{{station}} मा ओर्न पास भयो",
+  "ad_sponsored_kicker": "प्रायोजित",
+  "mt_review_notice": "यो भाषा मेसिन-अनुवादित छ र त्रुटि हुन सक्छ। यसलाई सुधार गर्न मदत गर्नुहोस् — अनुवाद समस्या रिपोर्ट गर्नुहोस्।",
+  "feedback_link_label": "अनुवाद समस्या रिपोर्ट गर्नुहोस्।",
+  "continent_africa": "अफ्रिका",
+  "continent_americas": "अमेरिका",
+  "continent_asia": "एशिया",
+  "continent_europe": "यूरोप",
+  "continent_middle_east": "मध्य पूर्व",
+  "continent_oceania": "ओशनिया",
+  "continent_picker_back": "महाद्वीपहरूमा फर्कनुहोस्",
+  "continent_oceania_placeholder": "ओशनियाका भाषाहरू चाँडै आउनेछन् — टक पिसिन, माओरी, सामोअन, ʻŌलेलो हवाईʻi योजनाबद्ध।"
 }

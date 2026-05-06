@@ -179,5 +179,16 @@
   "footprint_marker_aria_walk_to_transit": "Pagsakay sa {{station}}",
   "footprint_marker_aria_walk_to_transit_passed": "Lumipas na sa pagsakay sa {{station}}",
   "footprint_marker_aria_transit_to_walk": "Pagbaba sa {{station}}",
-  "footprint_marker_aria_transit_to_walk_passed": "Lumipas na sa pagbaba sa {{station}}"
+  "footprint_marker_aria_transit_to_walk_passed": "Lumipas na sa pagbaba sa {{station}}",
+  "ad_sponsored_kicker": "Sponsored",
+  "mt_review_notice": "Ang wika na ito ay itinranslate ng machine at maaaring may mga error. Tulungan kaming mapabuti ito — magulat ng isyu sa pagsasalin.",
+  "feedback_link_label": "Magulat ng isyu sa pagsasalin.",
+  "continent_africa": "Africa",
+  "continent_americas": "Americas",
+  "continent_asia": "Asia",
+  "continent_europe": "Europe",
+  "continent_middle_east": "Middle East",
+  "continent_oceania": "Oceania",
+  "continent_picker_back": "Bumalik sa mga kontinente",
+  "continent_oceania_placeholder": "Ang mga wika ng Oceania ay paparating na — Tok Pisin, Māori, Sāmoan, ʻŌlelo Hawaiʻi ay nakaplanong idagdag."
 }

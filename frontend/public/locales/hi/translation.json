@@ -179,5 +179,16 @@
   "footprint_marker_aria_walk_to_transit": "{{station}} पर चढ़ाई",
   "footprint_marker_aria_walk_to_transit_passed": "{{station}} पर चढ़ाई पार की",
   "footprint_marker_aria_transit_to_walk": "{{station}} पर उतरना",
-  "footprint_marker_aria_transit_to_walk_passed": "{{station}} पर उतरना पार किया"
+  "footprint_marker_aria_transit_to_walk_passed": "{{station}} पर उतरना पार किया",
+  "ad_sponsored_kicker": "प्रायोजित",
+  "mt_review_notice": "इस भाषा का मशीन अनुवाद किया गया है और इसमें त्रुटियां हो सकती हैं। इसे बेहतर बनाने में हमारी मदद करें — अनुवाद समस्या की रिपोर्ट करें।",
+  "feedback_link_label": "अनुवाद समस्या की रिपोर्ट करें।",
+  "continent_africa": "अफ्रीका",
+  "continent_americas": "अमेरिका",
+  "continent_asia": "एशिया",
+  "continent_europe": "यूरोप",
+  "continent_middle_east": "मध्य पूर्व",
+  "continent_oceania": "ओशिनिया",
+  "continent_picker_back": "महाद्वीपों पर वापस जाएं",
+  "continent_oceania_placeholder": "ओशिनिया की भाषाएं जल्द आ रही हैं — टोक पिसिन, माओरी, समोआन, ʻŌलेलो हवाईʻi की योजना है।"
 }

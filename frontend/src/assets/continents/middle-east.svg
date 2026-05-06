@@ -1,0 +1,14 @@
+<!--
+  Middle East silhouette for the continent-first language picker.
+  Boundary choice (documented per Chunk 14 spec): Arabian Peninsula +
+  Iran/Iraq + Anatolia + Levant. Egypt is intentionally excluded — it sits
+  under Africa even though it shares the Arabic-script linguistic cluster,
+  because the Arabian/Anatolian/Persian landmass alone makes the silhouette
+  legible and the Chicago diaspora cluster identifies regionally.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">
+  <!-- Anatolia / Iran / Iraq band -->
+  <path d="M16 30 L40 24 L60 24 L78 28 L84 36 L82 44 L72 48 L60 50 L48 48 L36 50 L24 48 L16 42 Z" />
+  <!-- Arabian Peninsula -->
+  <path d="M40 50 L52 50 L66 52 L72 60 L72 70 L66 80 L56 84 L48 78 L42 68 L40 60 Z" />
+</svg>

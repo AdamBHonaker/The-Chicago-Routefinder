@@ -21,7 +21,6 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import aiohttp
 from dotenv import load_dotenv
@@ -30,23 +29,13 @@ from dotenv import load_dotenv
 _ENV_PATH = Path(__file__).parent / ".env"
 load_dotenv(_ENV_PATH)
 
-CHICAGO_TZ = ZoneInfo("America/Chicago")
+# Single source of truth for the train line code → name map and CTA API
+# bases lives in cta_client. Importing it here keeps the CLI in lockstep with
+# the running backend if CTA renames a line or moves an endpoint.
+from cta_client import LINE_NAMES as TRAIN_LINES, _CTA_TRAIN_BASE, _CTA_BUS_BASE
+from utils import CHICAGO_TZ
+
 _IS_TTY = sys.stdout.isatty()
-
-# CTA Train line codes → human-readable names
-TRAIN_LINES: dict[str, str] = {
-    "Red":  "Red Line",
-    "Blue": "Blue Line",
-    "Brn":  "Brown Line",
-    "G":    "Green Line",
-    "Org":  "Orange Line",
-    "P":    "Purple Line",
-    "Pink": "Pink Line",
-    "Y":    "Yellow Line",
-}
-
-_CTA_TRAIN_BASE = os.getenv("CTA_TRAIN_API_URL", "https://lapi.transitchicago.com/api/1.0")
-_CTA_BUS_BASE   = os.getenv("CTA_BUS_API_URL",   "https://www.ctabustracker.com/bustime/api/v3")
 
 BUS_ROUTES_URL      = f"{_CTA_BUS_BASE}/getroutes"
 TRAIN_POSITIONS_URL = f"{_CTA_TRAIN_BASE}/ttpositions.aspx"

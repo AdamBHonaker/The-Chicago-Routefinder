@@ -54,10 +54,54 @@
       still scopes `style-src` to fonts.googleapis.com and nothing else.
       Long-term mitigation: self-host the Inter / Fraunces / JetBrains Mono
       subsets we actually use, then add SRI.
+
+      Latin/Greek/Cyrillic types: Inter (sans body), Fraunces (serif headlines),
+      JetBrains Mono (mono). Inter ships full Greek and Cyrillic glyph
+      coverage so no extra family is needed for el / ru / uk / sr / mn / kk.
+
+      Non-Latin script families (Feature LocaleExpansion, Chunk 13) — picked
+      to harmonize with Inter's humanist x-height and stroke modulation
+      where possible, falling back to Noto Sans <Script> for scripts with
+      no obvious Inter sibling. Each family is loaded via Google Fonts CSS
+      with a per-script unicode-range, so binary woff2 downloads only fire
+      when a glyph in that range actually renders — initial page load for
+      English riders is unchanged. Choice rationale per script:
+        - Arabic family (ar, ur, ps, prs, fa, arz, mey, sd, ckb):
+            IBM Plex Sans Arabic — IBM Plex was designed as a humanist sans
+            sibling; matches Inter x-height and stroke modulation.
+        - Hebrew (he):
+            Heebo — explicit Inter sibling (same designer).
+        - Devanagari (hi, mr, bho, mai):
+            Hind — long-running Indic family designed for screen UI.
+        - Bengali (bn) / Tamil (ta) / Telugu (te) / Kannada (kn):
+            Hind Siliguri / Madurai / Guntur / Vadodara — same Hind family
+            for visual consistency across Indic scripts.
+        - Thai (th):
+            Sarabun — explicitly Inter-aligned humanist proportions.
+        - Khmer (km):
+            Hanuman — closer to humanist sans than Noto Sans Khmer.
+        - Myanmar (my, ksw):
+            Padauk — standard high-quality typeface for Burmese / Karen.
+        - Ethiopic (am, ti):
+            Abyssinica SIL — refined letterforms designed for Ethiopic.
+        - Malayalam (ml) / Odia (or) / Sinhala (si) / Lao (lo) /
+          Kayah Li (eky) / Syriac (aii) / Hanifi Rohingya (rhg):
+            Noto Sans <Script> — limited or no realistic alternatives;
+            Noto is the safe baseline.
+        - Han (zh, yue, ja, ko, nan):
+            System CJK fallback — CJK font binaries are 2–30 MB each and
+            system CJK rendering is universally available, so we deliberately
+            do not load a web font for these.
+        - Hanifi Rohingya (rhg):
+            Noto Sans Hanifi Rohingya — was added to Google Fonts late in
+            development; if the request 404s the unicode-range simply
+            doesn't activate and the browser falls back to system font.
+            Documented acceptable gap.
     -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Fraunces:ital,opsz,wght@0,9..144,400..900;1,9..144,400..900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;700&family=Heebo:wght@400;500;700&family=Hind:wght@400;500;700&family=Hind+Siliguri:wght@400;500;700&family=Hind+Madurai:wght@400;500;700&family=Hind+Guntur:wght@400;500;700&family=Hind+Vadodara:wght@400;500;700&family=Sarabun:wght@400;500;700&family=Hanuman:wght@400;700&family=Padauk:wght@400;700&family=Abyssinica+SIL&family=Noto+Sans+Malayalam:wght@400;500;700&family=Noto+Sans+Oriya:wght@400;500;700&family=Noto+Sans+Sinhala:wght@400;500;700&family=Noto+Sans+Lao:wght@400;500;700&family=Noto+Sans+Kayah+Li&family=Noto+Sans+Syriac:wght@400;500;700&family=Noto+Sans+Hanifi+Rohingya:wght@400;500;700&display=swap" />
   </head>
   <body>
     <div id="root"></div>

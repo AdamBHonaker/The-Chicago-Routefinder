@@ -1,0 +1,9 @@
+<!--
+  Asia silhouette for the continent-first language picker. Broad northern
+  landmass with the Indian and Indochinese peninsulas extending south.
+  Boundary excludes the Arabian Peninsula and Anatolia (those belong to
+  the separate Middle East tile per the picker's diaspora-aware split).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">
+  <path d="M14 22 L34 18 L50 16 L68 18 L84 24 L88 32 L86 40 L80 46 L74 48 L70 54 L72 60 L68 64 L62 60 L58 64 L54 72 L50 78 L46 70 L44 62 L42 56 L36 54 L30 56 L26 60 L22 56 L20 48 L16 40 L14 32 Z" />
+</svg>

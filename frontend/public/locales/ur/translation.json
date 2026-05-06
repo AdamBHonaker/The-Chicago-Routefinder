@@ -179,5 +179,16 @@
   "footprint_marker_aria_walk_to_transit": "{{station}} پر سوار ہونا",
   "footprint_marker_aria_walk_to_transit_passed": "{{station}} پر سوار ہونا گزر چکا",
   "footprint_marker_aria_transit_to_walk": "{{station}} پر اتارنا",
-  "footprint_marker_aria_transit_to_walk_passed": "{{station}} پر اتارنا گزر چکا"
+  "footprint_marker_aria_transit_to_walk_passed": "{{station}} پر اتارنا گزر چکا",
+  "ad_sponsored_kicker": "اشتہار",
+  "mt_review_notice": "یہ زبان مشین کے ذریعے ترجمہ کی گئی ہے اور میں خرابیاں ہو سکتی ہیں۔ اسے بہتر بنانے میں ہماری مدد کریں — ترجمے کی خرابی کی اطلاع دیں۔",
+  "feedback_link_label": "ترجمے کی خرابی کی اطلاع دیں۔",
+  "continent_africa": "افریقہ",
+  "continent_americas": "امریکہ",
+  "continent_asia": "ایشیا",
+  "continent_europe": "یورپ",
+  "continent_middle_east": "درمیانی مشرق",
+  "continent_oceania": "اوشیانیہ",
+  "continent_picker_back": "براعظموں پر واپس جائیں",
+  "continent_oceania_placeholder": "اوشیانیہ کی زبانیں جلد آ رہی ہیں — ٹوک پسن، ماؤری، ساموآن، ہوائی زبان منصوبہ بندی میں ہیں۔"
 }

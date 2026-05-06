@@ -96,7 +96,7 @@ def new_session_id() -> str:
     return secrets.token_urlsafe(24)
 
 
-def _finalise_locked(state: dict, now: float) -> None:
+def _finalise_locked(state: dict) -> None:
     """Move an active session into the daily aggregate. Caller holds the lock."""
     day_key = state["day"]
     duration = max(0, int(state["last_seen"] - state["start"]))
@@ -117,7 +117,7 @@ async def _expire_idle_locked(now: float, loop) -> None:
     if not expired:
         return
     for h, s in expired:
-        _finalise_locked(s, now)
+        _finalise_locked(s)
         _active.pop(h, None)
         _writes_since_flush += 1
     if _writes_since_flush >= _FLUSH_EVERY_N_WRITES:
@@ -156,7 +156,7 @@ async def touch(raw_sid: str | None, *, is_recommend: bool) -> str:
                 for s in _active.values()
             ]
             for s in list(_active.values()):
-                _finalise_locked(s, now)
+                _finalise_locked(s)
             _active.clear()
             new_daily = await loop.run_in_executor(None, _load)
             for d, v in new_daily.items():

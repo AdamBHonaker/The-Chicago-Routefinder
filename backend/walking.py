@@ -455,6 +455,16 @@ def _walk_directions_impl(
         if len(vpath) < 2:
             return ()
 
+        # Bulk-fetch attribute lists once instead of allocating a fresh dict
+        # per edge inside the loop (OPT-BE-221). Each G.es[<attr>] is a single
+        # C-level call returning the full edge-attribute array; indexing by
+        # eid is then a plain list lookup. For a 100-edge walk this avoids
+        # building 100 throwaway attribute dicts.
+        edge_attrs = set(G.es.attributes()) if G.ecount() > 0 else set()
+        edge_names     = G.es["name"]     if "name"     in edge_attrs else None
+        edge_highways  = G.es["highway"]  if "highway"  in edge_attrs else None
+        edge_footways  = G.es["footway"]  if "footway"  in edge_attrs else None
+
         # Single-pass grouping of consecutive edges by (name, path_type).
         # Named edges group by name; unnamed edges group by OSM highway type
         # so a crosswalk and a footway are always separate steps.
@@ -468,10 +478,9 @@ def _walk_directions_impl(
         end_vertex   = 0
 
         for eid, u, v in zip(epath, vpath, vpath[1:]):
-            attrs  = G.es[eid].attributes()
-            name   = _clean_name(attrs.get("name"))
-            hw     = attrs.get("highway", "") or ""
-            fw     = attrs.get("footway", "") or ""
+            name = _clean_name(edge_names[eid]) if edge_names is not None else ""
+            hw   = (edge_highways[eid] if edge_highways is not None else "") or ""
+            fw   = (edge_footways[eid] if edge_footways is not None else "") or ""
             path_type = _highway_path_type(hw, fw)
             # Named segments group by name; unnamed group by path_type token.
             group_key = (name, "") if name else ("", path_type or "__unnamed__")

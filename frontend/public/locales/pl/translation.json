@@ -179,5 +179,16 @@
   "footprint_marker_aria_walk_to_transit": "Wejście na {{station}}",
   "footprint_marker_aria_walk_to_transit_passed": "Minięte wejście na {{station}}",
   "footprint_marker_aria_transit_to_walk": "Wyjście na {{station}}",
-  "footprint_marker_aria_transit_to_walk_passed": "Minięte wyjście na {{station}}"
+  "footprint_marker_aria_transit_to_walk_passed": "Minięte wyjście na {{station}}",
+  "ad_sponsored_kicker": "Sponsorowane",
+  "mt_review_notice": "Ten język został przetłumaczony automatycznie i może zawierać błędy. Pomóż nam go ulepszyć — zgłoś błąd tłumaczenia.",
+  "feedback_link_label": "Zgłoś błąd tłumaczenia.",
+  "continent_africa": "Afryka",
+  "continent_americas": "Ameryka",
+  "continent_asia": "Azja",
+  "continent_europe": "Europa",
+  "continent_middle_east": "Bliski Wschód",
+  "continent_oceania": "Oceania",
+  "continent_picker_back": "Powrót do kontynentów",
+  "continent_oceania_placeholder": "Języki Oceanii już wkrótce — zaplanowane są język tok pisin, maoryjski, samoański, hawajski."
 }

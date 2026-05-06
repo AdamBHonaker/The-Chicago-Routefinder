@@ -25,7 +25,7 @@
  *
  * @returns {{ data, loading, error, refetch }}
  */
-import { useState, useEffect, useLayoutEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useCallback } from "react";
 
 export function useApiQuery(fetcher, deps = [], { refetchInterval = 0, enabled = true } = {}) {
   const [data, setData]       = useState(null);
@@ -34,7 +34,6 @@ export function useApiQuery(fetcher, deps = [], { refetchInterval = 0, enabled =
   // Stable refetch trigger — incrementing fires a new fetch without needing a
   // dep-array change (avoids including `refetch` itself in the caller's deps).
   const [tick, setTick] = useState(0);
-  const intervalRef = useRef(null);
 
   const refetch = useCallback(() => setTick(t => t + 1), []);
 
@@ -77,10 +76,12 @@ export function useApiQuery(fetcher, deps = [], { refetchInterval = 0, enabled =
   }, [enabled, tick, ...deps]);
 
   // Polling — restart the interval whenever refetchInterval or enabled changes.
+  // Capture the local id directly so a fast re-run can't overwrite a still-live
+  // interval before its cleanup runs (OPT-FE-208).
   useEffect(() => {
     if (!enabled || !refetchInterval) return;
-    intervalRef.current = setInterval(() => setTick(t => t + 1), refetchInterval);
-    return () => clearInterval(intervalRef.current);
+    const id = setInterval(() => setTick(t => t + 1), refetchInterval);
+    return () => clearInterval(id);
   }, [enabled, refetchInterval]);
 
   return { data, loading, error, refetch };

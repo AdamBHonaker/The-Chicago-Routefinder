@@ -147,7 +147,7 @@ CHICAGO_BBOX_OSMNX: tuple  = (CHICAGO_WEST, CHICAGO_SOUTH, CHICAGO_EAST, CHICAGO
 #   East  -87.520 — Chicago lakefront
 #
 # Includes Chicago + Evanston only. Pace and Metra service areas are out of scope
-# (see FEATURE_IMPLEMENTATION_PLANS.md → Pace/Metra Coverage Expansion).
+# (see docs/FEATURE_PLANS.md → Feature PaceMetraCoverage).
 # ---------------------------------------------------------------------------
 STREET_GRAPH_SOUTH: float = 41.7120
 STREET_GRAPH_NORTH: float = 42.0830

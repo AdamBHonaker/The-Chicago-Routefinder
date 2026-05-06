@@ -179,5 +179,16 @@
   "footprint_marker_aria_walk_to_transit": "Urcarea la {{station}}",
   "footprint_marker_aria_walk_to_transit_passed": "Urcarea trecută la {{station}}",
   "footprint_marker_aria_transit_to_walk": "Coborârea la {{station}}",
-  "footprint_marker_aria_transit_to_walk_passed": "Coborârea trecută la {{station}}"
+  "footprint_marker_aria_transit_to_walk_passed": "Coborârea trecută la {{station}}",
+  "ad_sponsored_kicker": "Publicitate",
+  "mt_review_notice": "Această limbă a fost tradusă automat și poate conține erori. Ajută-ne să o îmbunătățim — raportează o problemă de traducere.",
+  "feedback_link_label": "Raportează o problemă de traducere.",
+  "continent_africa": "Africa",
+  "continent_americas": "Americi",
+  "continent_asia": "Asia",
+  "continent_europe": "Europa",
+  "continent_middle_east": "Orientul Mijlociu",
+  "continent_oceania": "Oceania",
+  "continent_picker_back": "Înapoi la continente",
+  "continent_oceania_placeholder": "Limbile din Oceania vor fi disponibile în curând — Tok Pisin, Māori, Sāmoan, ʻŌlelo Hawaiʻi sunt planificate."
 }

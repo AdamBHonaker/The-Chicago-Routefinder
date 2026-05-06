@@ -1,0 +1,191 @@
+/* ── Language Picker ────────────────────────────────────────────────────────
+ *
+ * Continent-first language picker (Feature LocaleExpansion, Chunk 15).
+ * Activated via VITE_CONTINENT_PICKER_ENABLED=true. When the flag is off,
+ * Masthead.jsx renders the existing flat <select> and these styles are
+ * unused.
+ *
+ * Layout philosophy: the picker is a popover anchored under its trigger
+ * button in the masthead. Its visual language matches `.masthead-select`
+ * — paper-folio fill on hover, hairline borders, rounded zero radius,
+ * caps tracking — so it reads as a peer to the other masthead controls
+ * rather than a foreign UI primitive.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+.language-picker {
+  position: relative;
+  display: inline-flex;
+}
+
+.language-picker-trigger {
+  /* Inherits .masthead-select; this class exists for future targeting only. */
+}
+
+.language-picker-popover {
+  position: absolute;
+  top: calc(100% + var(--sp-2));
+  right: 0;
+  background: var(--paper-bright);
+  border: var(--rule);
+  box-shadow: 0 4px 16px rgba(23, 19, 16, 0.12);
+  z-index: var(--z-dropdown);
+  min-width: 240px;
+  padding: var(--sp-3);
+}
+
+.language-picker-popover--continents {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--sp-3);
+  width: 320px;
+}
+
+.continent-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  background: transparent;
+  border: var(--hairline);
+  color: var(--ink);
+  cursor: pointer;
+  border-radius: var(--r-0);
+  font-family: var(--sans);
+  font-size: var(--fs-caps);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  font-weight: 700;
+  transition: background var(--dur-quick) var(--ease-out);
+}
+
+.continent-tile:hover,
+.continent-tile:focus-visible {
+  background: var(--paper-folio);
+  outline: none;
+}
+
+.continent-tile-svg {
+  display: inline-flex;
+  width: 64px;
+  height: 64px;
+  color: var(--ink);
+}
+
+.continent-tile-svg svg {
+  width: 100%;
+  height: 100%;
+}
+
+.continent-tile-label {
+  white-space: nowrap;
+}
+
+.continent-tile-count {
+  color: var(--mute);
+  font-size: 14px;
+}
+
+.language-picker-popover--languages {
+  width: 240px;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.language-picker-back {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-bottom: var(--hairline);
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--mute);
+  font-family: var(--sans);
+  font-size: var(--fs-caps);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  font-weight: 700;
+  cursor: pointer;
+  margin-bottom: var(--sp-2);
+}
+
+.language-picker-back:hover,
+.language-picker-back:focus-visible {
+  color: var(--ink);
+  outline: none;
+}
+
+.language-picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.language-picker-item {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: var(--fs-body-sm);
+  cursor: pointer;
+  border-radius: var(--r-0);
+}
+
+.language-picker-item:hover,
+.language-picker-item:focus-visible {
+  background: var(--paper-folio);
+  outline: none;
+}
+
+.language-picker-item--active {
+  background: var(--paper-folio);
+  font-weight: 700;
+}
+
+.language-picker-empty {
+  padding: var(--sp-3);
+  color: var(--mute);
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: var(--fs-body-sm);
+  line-height: var(--lh-body-sm);
+}
+
+/* RTL: anchor popover to the left edge of the trigger so it doesn't run off
+ * the right side of an Arabic/Hebrew/etc. masthead. */
+[dir="rtl"] .language-picker-popover {
+  right: auto;
+  left: 0;
+}
+
+/* ── Machine-translated review badge (Chunk 1) ──────────────────────────── */
+
+.mt-review-notice {
+  display: block;
+  width: 100%;
+  margin-top: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--paper-folio);
+  border: var(--hairline);
+  color: var(--ink-soft);
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.mt-review-notice a {
+  color: var(--rust);
+  text-decoration: underline;
+  margin-left: 0.4em;
+}
+
+[dir="rtl"] .mt-review-notice a {
+  margin-left: 0;
+  margin-right: 0.4em;
+}

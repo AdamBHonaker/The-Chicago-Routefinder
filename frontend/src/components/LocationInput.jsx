@@ -158,6 +158,9 @@ export default function LocationInput({ value, onChange, onGeoCoords, placeholde
           placeholder={placeholder}
           value={value}
           onChange={(e) => {
+            // Cancel any in-flight geo lookup so its async success callback
+            // can't overwrite the user's typing once it eventually resolves.
+            if (geoAbortRef.current) geoAbortRef.current.abort();
             onChange(e.target.value);
             onGeoCoords?.(null);
             fetchAcSuggestions(e.target.value);

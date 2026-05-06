@@ -179,5 +179,16 @@
   "footprint_marker_aria_walk_to_transit": "Посадка на {{station}}",
   "footprint_marker_aria_walk_to_transit_passed": "Пропущена посадка на {{station}}",
   "footprint_marker_aria_transit_to_walk": "Висадка на {{station}}",
-  "footprint_marker_aria_transit_to_walk_passed": "Пропущена висадка на {{station}}"
+  "footprint_marker_aria_transit_to_walk_passed": "Пропущена висадка на {{station}}",
+  "ad_sponsored_kicker": "Спонсоровано",
+  "mt_review_notice": "Цей переклад виконаний машиною і може містити помилки. Допоможіть нам його поліпшити — повідомте про проблему в перекладі.",
+  "feedback_link_label": "Повідомте про проблему в перекладі.",
+  "continent_africa": "Африка",
+  "continent_americas": "Америка",
+  "continent_asia": "Азія",
+  "continent_europe": "Європа",
+  "continent_middle_east": "Близький Схід",
+  "continent_oceania": "Океанія",
+  "continent_picker_back": "Повернутися до континентів",
+  "continent_oceania_placeholder": "Мови Океанії скоро з'являться — плануються токпісин, маорійська, самоанська та гавайська мови."
 }

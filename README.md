@@ -1,5 +1,7 @@
 # The Chicago Routefinder
 
+**Live app:** https://the-chicago-routefinder.vercel.app/
+
 An AI-powered, real-time Chicago Transit Authority (CTA) route recommendation app. Built as a Progressive Web App (PWA) for mobile use, styled under "The Chicago Routefinder" editorial almanac design system — cream paper, charcoal ink, Fraunces serif headlines, and hairline rules throughout.
 
 ## What it does
@@ -23,7 +25,7 @@ A user enters their origin and destination. The app:
 - **Pinned stops** — Pin any train station or bus stop from a result to a persistent home-screen arrivals board; each card shows live arrivals and a "Last train in X min" countdown badge for late-night use
 - **GPS trip tracking** — "Start Trip" activates GPS following: active leg highlighted, walk steps checked off as the user passes them, off-route detection with a one-tap re-route from current position
 - **Saved locations & routes** — Star any typed location or origin+destination pair; saved items appear in a quick-fill dropdown or one-tap panel
-- **Multi-language** — 22 languages with RTL support; browser language auto-detected; Claude responds in the selected language
+- **Multi-language** — 76 languages with full RTL support across 12 RTL codes; continent-first language picker (feature-flagged) with diaspora-aware groupings; machine-translated review badge for low-resource locales; browser language auto-detected; Claude responds in the selected language
 - **Walking speed** — Slow / Standard / Brisk pace selector in settings; applied to all walk legs and route ranking
 - **BYOK** — Bring Your Own Anthropic API key (opt-in, sessionStorage only)
 - **Rate limiting** — Per-IP sliding-window limiter (opt-in via Railway env var)
@@ -34,7 +36,7 @@ A user enters their origin and destination. The app:
 
 | Layer | Technologies |
 |-------|-------------|
-| **Frontend** | React (PWA), MapLibre GL JS v4, OpenFreeMap Liberty tiles, Vite, i18next (22 languages) |
+| **Frontend** | React (PWA), MapLibre GL JS v4, OpenFreeMap Liberty tiles, Vite, i18next (76 languages) |
 | **Backend** | Python, FastAPI, NetworkX (transit graph), igraph (walking graph), OSMnx, scikit-learn, aiohttp |
 | **AI** | Claude (`claude-sonnet-4-6` / `claude-haiku-4-5-20251001`) via Anthropic Python SDK |
 | **Data** | CTA GTFS (static schedules), CTA Bus & Train Tracker APIs (real-time), CTA Alerts API, CTA Route Status API, NWS Weather API, Google Maps Geocoding API |
@@ -93,6 +95,8 @@ The FastAPI server (`backend/main.py`) exposes:
 |---|---|
 | `POST /recommend` | Main routing endpoint — origin/destination + transit mode → ranked route options + optional Claude recommendation |
 | `GET /health` | Liveness probe |
+| `GET /ping` | Lightweight no-op endpoint used to issue/refresh the analytics session cookie |
+| `POST /events` | Frontend-fired analytics events (allowlisted names only — see `backend/events.py`) |
 | `GET /autocomplete?q=` | Location autocomplete (stations, neighborhoods, bus stops) |
 | `GET /reverse-geocode?lat=&lon=` | GPS coordinate → human-readable address (Google Maps) |
 | `GET /alerts` | CTA service alerts feed |
@@ -103,8 +107,11 @@ The FastAPI server (`backend/main.py`) exposes:
 | `GET /admin/hourly` | Per-day 24-int `/recommend` histogram in Chicago tz (FEAT-004, `DAU_ADMIN_TOKEN`) |
 | `GET /admin/devices` | Per-day mobile/tablet/desktop/bot/unknown bucket counts (FEAT-005, `DAU_ADMIN_TOKEN`) |
 | `GET /admin/referrers` | Per-day direct/search/social/other bucket counts + per-hostname `other` long-tail table (FEAT-008, `DAU_ADMIN_TOKEN`) |
-| `GET /stats` | **Public** dashboard page (HTML). Live engagement numbers — DAU, Chicago metro, sessions/bounce/duration, peak hours, device split, traffic sources. No third-party scripts. (FEAT-009) |
-| `GET /stats/{dau,geography,sessions,hourly,devices,referrers}` | Public-safe JSON projections of the corresponding admin endpoints — only the whitelisted fields per [backend/public_stats.py](backend/public_stats.py) leave the server. |
+| `GET /admin/events` | Per-day allowlisted event counts (FEAT-006, `DAU_ADMIN_TOKEN`) |
+| `GET /admin/funnel` | Per-day funnel-stage cumulative arrays + derived conversion rates (FEAT-007, `DAU_ADMIN_TOKEN`) |
+| `GET /admin/retention` | Per-day new vs returning visitor counts + Bloom-filter utilisation (FEAT-002, `DAU_ADMIN_TOKEN`) |
+| `GET /stats` | **Public** dashboard page (HTML). Live engagement numbers — DAU, Chicago metro, sessions/bounce/duration, peak hours, device split, traffic sources, events, funnel, new/returning. No third-party scripts. (FEAT-009) |
+| `GET /stats/{dau,geography,sessions,hourly,devices,referrers,events,funnel,retention}` | Public-safe JSON projections of the corresponding admin endpoints — only the whitelisted fields per [backend/public_stats.py](backend/public_stats.py) leave the server. |
 | `GET /privacy` | Plain-text privacy notes shown via the `/stats` footer link. |
 
 ## Utility scripts
@@ -123,6 +130,10 @@ Standalone scripts that run independently of the server:
 | `backend/scripts/check_hourly.py` | **Per-day hour-of-day ASCII bar chart** from `/admin/hourly`. Usage: `python backend/scripts/check_hourly.py <DAU_ADMIN_TOKEN>` |
 | `backend/scripts/check_devices.py` | **Per-day device-class table** from `/admin/devices`. Usage: `python backend/scripts/check_devices.py <DAU_ADMIN_TOKEN>` |
 | `backend/scripts/check_referrers.py` | **Per-day traffic-source breakdown + top-10 `other` hostnames** from `/admin/referrers`. Usage: `python backend/scripts/check_referrers.py <DAU_ADMIN_TOKEN>` |
+| `backend/scripts/check_events.py` | **Per-day allowlisted-event counts** from `/admin/events`. Usage: `python backend/scripts/check_events.py <DAU_ADMIN_TOKEN>` |
+| `backend/scripts/check_funnel.py` | **Per-day funnel-stage cumulative arrays + derived conversion rates** from `/admin/funnel`. Usage: `python backend/scripts/check_funnel.py <DAU_ADMIN_TOKEN>` |
+| `backend/scripts/check_retention.py` | **Per-day new vs returning visitor counts + Bloom-filter utilisation banner** from `/admin/retention`. Usage: `python backend/scripts/check_retention.py <DAU_ADMIN_TOKEN>` |
+| `backend/scripts/fetch_geolite.py` | Download the MaxMind GeoLite2-City database used by the FEAT-003 geography panel. |
 
 ## Operational notes
 
@@ -134,7 +145,7 @@ Standalone scripts that run independently of the server:
 
 - [docs/PROJECT_CONTEXT.md](docs/PROJECT_CONTEXT.md) — Full project brief, architecture, decisions, and phase history
 - [docs/FEATURE_PLANS.md](docs/FEATURE_PLANS.md) — Chunked implementation plans for upcoming features and post-launch enhancement ideas
-- [docs/BUGS.md](docs/BUGS.md) — Open bugs (0 🔴 high, 0 🟡 medium, 1 🟢 low)
+- [docs/BUGS.md](docs/BUGS.md) — Open bugs (0 🔴 high, 5 🟡 medium, 1 🟢 low)
 - [docs/TODO.md](docs/TODO.md) — Tasks requiring human action (accounts, API keys, deployment steps)
 - [docs/TECH_DEBT.md](docs/TECH_DEBT.md) — Known technical debt items
 - [docs/EFFICIENCY.md](docs/EFFICIENCY.md) — Optimization notes and efficiency improvements

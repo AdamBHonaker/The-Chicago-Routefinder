@@ -1,0 +1,790 @@
+{
+  "rogers park": [
+    42.0085,
+    -87.6688
+  ],
+  "loyola": [
+    41.9998,
+    -87.6586
+  ],
+  "loyola university": [
+    41.9998,
+    -87.6586
+  ],
+  "granville": [
+    41.9943,
+    -87.6579
+  ],
+  "thorndale": [
+    41.9898,
+    -87.6577
+  ],
+  "morse": [
+    41.9832,
+    -87.659
+  ],
+  "jarvis": [
+    41.993,
+    -87.6693
+  ],
+  "edgewater": [
+    41.9889,
+    -87.66
+  ],
+  "bryn mawr": [
+    41.9834,
+    -87.659
+  ],
+  "foster beach": [
+    41.9791,
+    -87.6403
+  ],
+  "foster avenue beach": [
+    41.9791,
+    -87.6403
+  ],
+  "andersonville": [
+    41.98,
+    -87.6682
+  ],
+  "berwyn": [
+    41.9778,
+    -87.6593
+  ],
+  "berwyn station": [
+    41.9778,
+    -87.6593
+  ],
+  "swedish american museum": [
+    41.9799,
+    -87.669
+  ],
+  "uptown": [
+    41.965,
+    -87.655
+  ],
+  "wilson": [
+    41.9648,
+    -87.6575
+  ],
+  "lawrence": [
+    41.9688,
+    -87.658
+  ],
+  "argyle": [
+    41.9735,
+    -87.658
+  ],
+  "sheridan": [
+    41.9542,
+    -87.6537
+  ],
+  "montrose beach": [
+    41.9643,
+    -87.6384
+  ],
+  "montrose harbor": [
+    41.9643,
+    -87.6384
+  ],
+  "uptown theatre": [
+    41.9648,
+    -87.6545
+  ],
+  "green mill": [
+    41.9656,
+    -87.6556
+  ],
+  "illinois masonic": [
+    41.9437,
+    -87.6561
+  ],
+  "advocate illinois masonic": [
+    41.9437,
+    -87.6561
+  ],
+  "lincoln square": [
+    41.9679,
+    -87.6848
+  ],
+  "ravenswood": [
+    41.9656,
+    -87.6741
+  ],
+  "wrigleyville": [
+    41.9476,
+    -87.6553
+  ],
+  "wrigley field": [
+    41.9484,
+    -87.6553
+  ],
+  "lakeview": [
+    41.9433,
+    -87.6513
+  ],
+  "east lakeview": [
+    41.9395,
+    -87.642
+  ],
+  "boystown": [
+    41.9444,
+    -87.6491
+  ],
+  "addison": [
+    41.9476,
+    -87.6542
+  ],
+  "belmont": [
+    41.9394,
+    -87.6527
+  ],
+  "southport corridor": [
+    41.9416,
+    -87.6641
+  ],
+  "southport": [
+    41.9416,
+    -87.6641
+  ],
+  "diversey": [
+    41.9321,
+    -87.6527
+  ],
+  "wellington": [
+    41.936,
+    -87.6545
+  ],
+  "paulina": [
+    41.9437,
+    -87.6705
+  ],
+  "diversey harbor": [
+    41.9321,
+    -87.6385
+  ],
+  "theater on the lake": [
+    41.9258,
+    -87.6334
+  ],
+  "lincoln park": [
+    41.9228,
+    -87.6482
+  ],
+  "lincoln park zoo": [
+    41.922,
+    -87.6332
+  ],
+  "fullerton": [
+    41.9253,
+    -87.6527
+  ],
+  "armitage": [
+    41.9175,
+    -87.6513
+  ],
+  "depaul": [
+    41.9253,
+    -87.6554
+  ],
+  "depaul university": [
+    41.9253,
+    -87.6554
+  ],
+  "north avenue beach": [
+    41.9168,
+    -87.6354
+  ],
+  "oz park": [
+    41.9257,
+    -87.6395
+  ],
+  "chicago history museum": [
+    41.9218,
+    -87.6318
+  ],
+  "peggy notebaert nature museum": [
+    41.9218,
+    -87.6341
+  ],
+  "steppenwolf theatre": [
+    41.9119,
+    -87.6316
+  ],
+  "steppenwolf": [
+    41.9119,
+    -87.6316
+  ],
+  "old town": [
+    41.9101,
+    -87.6364
+  ],
+  "sedgwick": [
+    41.9101,
+    -87.6386
+  ],
+  "north/clybourn": [
+    41.9103,
+    -87.6486
+  ],
+  "north clybourn": [
+    41.9103,
+    -87.6486
+  ],
+  "second city": [
+    41.9101,
+    -87.6356
+  ],
+  "wells street": [
+    41.9101,
+    -87.634
+  ],
+  "gold coast": [
+    41.9016,
+    -87.6298
+  ],
+  "clark/division": [
+    41.9046,
+    -87.6312
+  ],
+  "clark division": [
+    41.9046,
+    -87.6312
+  ],
+  "newberry library": [
+    41.9019,
+    -87.6317
+  ],
+  "washington square park": [
+    41.9019,
+    -87.6317
+  ],
+  "lurie childrens hospital": [
+    41.9049,
+    -87.6241
+  ],
+  "lurie children's hospital": [
+    41.9049,
+    -87.6241
+  ],
+  "ann & robert h. lurie": [
+    41.9049,
+    -87.6241
+  ],
+  "chicago water tower": [
+    41.9007,
+    -87.6235
+  ],
+  "water tower place": [
+    41.9007,
+    -87.6235
+  ],
+  "pumping station": [
+    41.9007,
+    -87.6233
+  ],
+  "river north": [
+    41.8944,
+    -87.6333
+  ],
+  "merchandise mart": [
+    41.8883,
+    -87.636
+  ],
+  "chicago avenue": [
+    41.8966,
+    -87.6269
+  ],
+  "chicago station": [
+    41.8966,
+    -87.628
+  ],
+  "gallery district": [
+    41.8933,
+    -87.6348
+  ],
+  "near north": [
+    41.8976,
+    -87.6271
+  ],
+  "streeterville": [
+    41.8924,
+    -87.6196
+  ],
+  "magnificent mile": [
+    41.8951,
+    -87.6249
+  ],
+  "mag mile": [
+    41.8951,
+    -87.6249
+  ],
+  "michigan avenue": [
+    41.8847,
+    -87.624
+  ],
+  "navy pier": [
+    41.8919,
+    -87.6053
+  ],
+  "grand": [
+    41.8912,
+    -87.6276
+  ],
+  "john hancock": [
+    41.8988,
+    -87.6232
+  ],
+  "875 north michigan": [
+    41.8988,
+    -87.6232
+  ],
+  "875 n michigan": [
+    41.8988,
+    -87.6232
+  ],
+  "northwestern memorial hospital": [
+    41.8951,
+    -87.6218
+  ],
+  "northwestern memorial": [
+    41.8951,
+    -87.6218
+  ],
+  "prentice women's hospital": [
+    41.8951,
+    -87.6218
+  ],
+  "northwestern university chicago": [
+    41.8951,
+    -87.6218
+  ],
+  "loop": [
+    41.8827,
+    -87.6326
+  ],
+  "the loop": [
+    41.8827,
+    -87.6326
+  ],
+  "downtown": [
+    41.8827,
+    -87.6326
+  ],
+  "downtown chicago": [
+    41.8827,
+    -87.6326
+  ],
+  "millennium park": [
+    41.8827,
+    -87.6233
+  ],
+  "maggie daley park": [
+    41.8832,
+    -87.6196
+  ],
+  "grant park": [
+    41.8757,
+    -87.6189
+  ],
+  "art institute": [
+    41.8796,
+    -87.6237
+  ],
+  "art institute of chicago": [
+    41.8796,
+    -87.6237
+  ],
+  "chicago art museum": [
+    41.8796,
+    -87.6237
+  ],
+  "art museum": [
+    41.8796,
+    -87.6237
+  ],
+  "the art institute": [
+    41.8796,
+    -87.6237
+  ],
+  "theater district": [
+    41.8854,
+    -87.6295
+  ],
+  "chicago theatre": [
+    41.8854,
+    -87.6295
+  ],
+  "state street": [
+    41.88,
+    -87.6278
+  ],
+  "union station": [
+    41.8789,
+    -87.6401
+  ],
+  "ogilvie": [
+    41.8821,
+    -87.6416
+  ],
+  "ogilvie transportation center": [
+    41.8821,
+    -87.6416
+  ],
+  "lasalle street station": [
+    41.8757,
+    -87.6315
+  ],
+  "museum campus": [
+    41.8666,
+    -87.6151
+  ],
+  "soldier field": [
+    41.8623,
+    -87.6167
+  ],
+  "shedd aquarium": [
+    41.8676,
+    -87.6139
+  ],
+  "field museum": [
+    41.8663,
+    -87.6168
+  ],
+  "adler planetarium": [
+    41.8664,
+    -87.6069
+  ],
+  "harold washington library": [
+    41.8762,
+    -87.6286
+  ],
+  "harold washington library center": [
+    41.8762,
+    -87.6286
+  ],
+  "chicago cultural center": [
+    41.8838,
+    -87.6248
+  ],
+  "millennium station": [
+    41.8844,
+    -87.6244
+  ],
+  "willis tower": [
+    41.8789,
+    -87.6359
+  ],
+  "sears tower": [
+    41.8789,
+    -87.6359
+  ],
+  "wrigley building": [
+    41.8891,
+    -87.6244
+  ],
+  "tribune tower": [
+    41.8902,
+    -87.6245
+  ],
+  "chicago riverwalk": [
+    41.8876,
+    -87.6291
+  ],
+  "lyric opera": [
+    41.8855,
+    -87.6371
+  ],
+  "auditorium theatre": [
+    41.8762,
+    -87.6263
+  ],
+  "chicago symphony orchestra": [
+    41.8796,
+    -87.6263
+  ],
+  "symphony center": [
+    41.8796,
+    -87.6263
+  ],
+  "columbia college": [
+    41.8723,
+    -87.6247
+  ],
+  "columbia college chicago": [
+    41.8723,
+    -87.6247
+  ],
+  "school of the art institute": [
+    41.8796,
+    -87.6237
+  ],
+  "saic": [
+    41.8796,
+    -87.6237
+  ],
+  "daley plaza": [
+    41.884,
+    -87.6318
+  ],
+  "city hall": [
+    41.884,
+    -87.6318
+  ],
+  "south loop": [
+    41.8674,
+    -87.6278
+  ],
+  "printers row": [
+    41.8723,
+    -87.6278
+  ],
+  "printer's row": [
+    41.8723,
+    -87.6278
+  ],
+  "chinatown": [
+    41.8508,
+    -87.6326
+  ],
+  "armour square": [
+    41.85,
+    -87.635
+  ],
+  "bridgeport": [
+    41.835,
+    -87.645
+  ],
+  "canaryville": [
+    41.822,
+    -87.635
+  ],
+  "fuller park": [
+    41.81,
+    -87.635
+  ],
+  "near west side": [
+    41.875,
+    -87.66
+  ],
+  "greektown": [
+    41.8775,
+    -87.6475
+  ],
+  "little italy": [
+    41.8725,
+    -87.655
+  ],
+  "uic": [
+    41.87,
+    -87.65
+  ],
+  "university village": [
+    41.87,
+    -87.65
+  ],
+  "united center": [
+    41.8806,
+    -87.6742
+  ],
+  "medical district": [
+    41.87,
+    -87.673
+  ],
+  "west town": [
+    41.9,
+    -87.67
+  ],
+  "ukrainian village": [
+    41.895,
+    -87.68
+  ],
+  "wicker park": [
+    41.909,
+    -87.68
+  ],
+  "bucktown": [
+    41.919,
+    -87.68
+  ],
+  "noble square": [
+    41.898,
+    -87.665
+  ],
+  "east village": [
+    41.898,
+    -87.675
+  ],
+  "logan square": [
+    41.929,
+    -87.7
+  ],
+  "humboldt park": [
+    41.9,
+    -87.72
+  ],
+  "palmer square": [
+    41.923,
+    -87.7
+  ],
+  "avondale": [
+    41.94,
+    -87.71
+  ],
+  "hermosa": [
+    41.92,
+    -87.72
+  ],
+  "irving park": [
+    41.954,
+    -87.72
+  ],
+  "mayfair": [
+    41.973,
+    -87.71
+  ],
+  "north park": [
+    41.98,
+    -87.72
+  ],
+  "west ridge": [
+    41.999,
+    -87.695
+  ],
+  "sauganash": [
+    41.99,
+    -87.72
+  ],
+  "east garfield park": [
+    41.88,
+    -87.72
+  ],
+  "north lawndale": [
+    41.865,
+    -87.72
+  ],
+  "little village": [
+    41.825,
+    -87.72
+  ],
+  "south lawndale": [
+    41.825,
+    -87.72
+  ],
+  "pilsen": [
+    41.855,
+    -87.66
+  ],
+  "18th street": [
+    41.8575,
+    -87.67
+  ],
+  "back of the yards": [
+    41.81,
+    -87.655
+  ],
+  "new city": [
+    41.81,
+    -87.655
+  ],
+  "mckinley park": [
+    41.829,
+    -87.675
+  ],
+  "brighton park": [
+    41.825,
+    -87.695
+  ],
+  "archer heights": [
+    41.82,
+    -87.725
+  ],
+  "bronzeville": [
+    41.835,
+    -87.615
+  ],
+  "douglas": [
+    41.842,
+    -87.62
+  ],
+  "grand boulevard": [
+    41.82,
+    -87.615
+  ],
+  "sox-35th": [
+    41.8312,
+    -87.6304
+  ],
+  "35th street": [
+    41.8312,
+    -87.6304
+  ],
+  "kenwood": [
+    41.81,
+    -87.605
+  ],
+  "cermak-chinatown": [
+    41.8534,
+    -87.6306
+  ],
+  "pulaski": [
+    41.8866,
+    -87.726
+  ],
+  "kedzie": [
+    41.8864,
+    -87.7063
+  ],
+  "lake": [
+    41.8849,
+    -87.6278
+  ],
+  "monroe": [
+    41.8806,
+    -87.6278
+  ],
+  "jackson": [
+    41.8781,
+    -87.6278
+  ],
+  "harrison": [
+    41.8742,
+    -87.6278
+  ],
+  "roosevelt": [
+    41.8674,
+    -87.6278
+  ],
+  "clark/lake": [
+    41.8858,
+    -87.631
+  ],
+  "state/lake": [
+    41.8858,
+    -87.6278
+  ],
+  "washington/wabash": [
+    41.8832,
+    -87.6258
+  ],
+  "washington/wells": [
+    41.8829,
+    -87.634
+  ],
+  "adams/wabash": [
+    41.8796,
+    -87.6258
+  ],
+  "quincy": [
+    41.8784,
+    -87.634
+  ],
+  "lasalle/van buren": [
+    41.8757,
+    -87.6315
+  ],
+  "clinton": [
+    41.8749,
+    -87.6408
+  ]
+}

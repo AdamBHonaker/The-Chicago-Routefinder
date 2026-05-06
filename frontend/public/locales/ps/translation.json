@@ -179,5 +179,16 @@
   "footprint_marker_aria_walk_to_transit": "د {{station}} په محطه کې سوار کېدل",
   "footprint_marker_aria_walk_to_transit_passed": "د {{station}} په محطه کې سوار کېدل تیر شو",
   "footprint_marker_aria_transit_to_walk": "د {{station}} په محطه کې ښکته کېدل",
-  "footprint_marker_aria_transit_to_walk_passed": "د {{station}} په محطه کې ښکته کېدل تیر شو"
+  "footprint_marker_aria_transit_to_walk_passed": "د {{station}} په محطه کې ښکته کېدل تیر شو",
+  "ad_sponsored_kicker": "سپانسر شوی",
+  "mt_review_notice": "دا ژبه د مشین لخوا ژباړه شوې او کیدی شي خرابۍ ولري. موږ سره مرسته وکړئ چې دا بهتر کړو — ژباړې خرابۍ راپور کړئ.",
+  "feedback_link_label": "ژباړې خرابۍ راپور کړئ.",
+  "continent_africa": "افریقا",
+  "continent_americas": "امریکې",
+  "continent_asia": "آسیا",
+  "continent_europe": "اروپا",
+  "continent_middle_east": "خاور میانه",
+  "continent_oceania": "اوقیانوسیا",
+  "continent_picker_back": "د براعظمونو ته بیرته",
+  "continent_oceania_placeholder": "د اوقیانوسیا ژبې ډیر ژر راتلونکي دي — ټاک پیسین، مائوري، ساموان، او هاوایی ژبه پلان شوي دي."
 }

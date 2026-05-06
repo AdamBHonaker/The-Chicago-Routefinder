@@ -179,5 +179,16 @@
   "footprint_marker_aria_walk_to_transit": "Lên tại {{station}}",
   "footprint_marker_aria_walk_to_transit_passed": "Đã qua điểm lên tại {{station}}",
   "footprint_marker_aria_transit_to_walk": "Xuống tại {{station}}",
-  "footprint_marker_aria_transit_to_walk_passed": "Đã qua điểm xuống tại {{station}}"
+  "footprint_marker_aria_transit_to_walk_passed": "Đã qua điểm xuống tại {{station}}",
+  "ad_sponsored_kicker": "Được tài trợ",
+  "mt_review_notice": "Ngôn ngữ này được dịch bằng máy và có thể có lỗi. Hãy giúp chúng tôi cải thiện — báo cáo vấn đề dịch.",
+  "feedback_link_label": "Báo cáo vấn đề dịch.",
+  "continent_africa": "Châu Phi",
+  "continent_americas": "Châu Mỹ",
+  "continent_asia": "Châu Á",
+  "continent_europe": "Châu Âu",
+  "continent_middle_east": "Trung Đông",
+  "continent_oceania": "Châu Đại Dương",
+  "continent_picker_back": "Quay lại các châu lục",
+  "continent_oceania_placeholder": "Các ngôn ngữ của Châu Đại Dương sắp có — Tok Pisin, Māori, Sāmoan, ʻŌlelo Hawaiʻi đang được lên kế hoạch."
 }

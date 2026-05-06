@@ -98,3 +98,30 @@ def test_save_load_roundtrip(tmp_path):
         events._save(payload)
         out = events._load()
     assert out == payload
+
+
+@pytest.mark.asyncio
+async def test_day_rollover_preserves_unflushed_increments():
+    """Regression test: BUG-007 — day rollover used to clobber unflushed counts."""
+    day_a = "2026-05-05"
+    day_b = "2026-05-06"
+
+    with patch.object(events, "_today_chi", return_value=day_a):
+        await events.record("recommend_submitted")
+        await events.record("recommend_returned")
+        await events.record("route_selected")
+
+    assert events._counts[day_a]["recommend_submitted"] == 1
+    assert events._counts[day_a]["recommend_returned"] == 1
+    assert events._counts[day_a]["route_selected"] == 1
+    assert events._writes_since_flush == 3  # not yet flushed (default 20)
+
+    with patch.object(events, "_today_chi", return_value=day_b):
+        await events.record("trip_completed")
+
+    counts = await events.get_counts()
+    # Day A's funnel-stage events must survive the rollover.
+    assert counts[day_a]["recommend_submitted"] == 1
+    assert counts[day_a]["recommend_returned"] == 1
+    assert counts[day_a]["route_selected"] == 1
+    assert counts[day_b]["trip_completed"] == 1

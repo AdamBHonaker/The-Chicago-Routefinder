@@ -179,5 +179,16 @@
   "footprint_marker_aria_walk_to_transit": "{{station}}で乗車",
   "footprint_marker_aria_walk_to_transit_passed": "{{station}}での乗車を通過しました",
   "footprint_marker_aria_transit_to_walk": "{{station}}で下車",
-  "footprint_marker_aria_transit_to_walk_passed": "{{station}}での下車を通過しました"
+  "footprint_marker_aria_transit_to_walk_passed": "{{station}}での下車を通過しました",
+  "ad_sponsored_kicker": "スポンサー",
+  "mt_review_notice": "この言語は機械翻訳されており、エラーが含まれる可能性があります。改善をお手伝いください — 翻訳の問題を報告してください。",
+  "feedback_link_label": "翻訳の問題を報告する。",
+  "continent_africa": "アフリカ",
+  "continent_americas": "アメリカ",
+  "continent_asia": "アジア",
+  "continent_europe": "ヨーロッパ",
+  "continent_middle_east": "中東",
+  "continent_oceania": "オセアニア",
+  "continent_picker_back": "大陸に戻る",
+  "continent_oceania_placeholder": "オセアニアの言語は近日公開予定です — トク・ピシン語、マオリ語、サモア語、ハワイ語の提供を予定しています。"
 }

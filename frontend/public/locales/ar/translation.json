@@ -179,5 +179,16 @@
   "footprint_marker_aria_walk_to_transit": "الصعود عند {{station}}",
   "footprint_marker_aria_walk_to_transit_passed": "صعود سابق عند {{station}}",
   "footprint_marker_aria_transit_to_walk": "النزول عند {{station}}",
-  "footprint_marker_aria_transit_to_walk_passed": "نزول سابق عند {{station}}"
+  "footprint_marker_aria_transit_to_walk_passed": "نزول سابق عند {{station}}",
+  "ad_sponsored_kicker": "برعاية",
+  "mt_review_notice": "تمت ترجمة هذه اللغة آليًا وقد تحتوي على أخطاء. ساعدنا في تحسينها — أبلغ عن مشكلة ترجمة.",
+  "feedback_link_label": "أبلغ عن مشكلة ترجمة.",
+  "continent_africa": "أفريقيا",
+  "continent_americas": "الأمريكتان",
+  "continent_asia": "آسيا",
+  "continent_europe": "أوروبا",
+  "continent_middle_east": "الشرق الأوسط",
+  "continent_oceania": "أوقيانوسيا",
+  "continent_picker_back": "العودة إلى القارات",
+  "continent_oceania_placeholder": "لغات أوقيانوسيا قريبًا — Tok Pisin و Māori و Sāmoan و ʻŌlelo Hawaiʻi مخطط لها."
 }

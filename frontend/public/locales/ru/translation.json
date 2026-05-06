@@ -179,5 +179,16 @@
   "footprint_marker_aria_walk_to_transit": "Посадка на {{station}}",
   "footprint_marker_aria_walk_to_transit_passed": "Посадка на {{station}} пройдена",
   "footprint_marker_aria_transit_to_walk": "Высадка на {{station}}",
-  "footprint_marker_aria_transit_to_walk_passed": "Высадка на {{station}} пройдена"
+  "footprint_marker_aria_transit_to_walk_passed": "Высадка на {{station}} пройдена",
+  "ad_sponsored_kicker": "Реклама",
+  "mt_review_notice": "Этот текст переведён автоматически и может содержать ошибки. Помогите нам улучшить перевод — сообщите об ошибке.",
+  "feedback_link_label": "Сообщить об ошибке перевода.",
+  "continent_africa": "Африка",
+  "continent_americas": "Америка",
+  "continent_asia": "Азия",
+  "continent_europe": "Европа",
+  "continent_middle_east": "Ближний Восток",
+  "continent_oceania": "Океания",
+  "continent_picker_back": "Вернуться к континентам",
+  "continent_oceania_placeholder": "Языки Океании появятся скоро — планируются токи-пиджин, маори, самоанский, гавайский."
 }

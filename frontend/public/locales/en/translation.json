@@ -1,4 +1,5 @@
 {
+  "ad_sponsored_kicker": "Sponsored",
   "app_title": "The Chicago Routefinder",
   "tagline": "A working guide to the trains, buses, and schedules of the city.",
   "signal_lamp_label": "Signal Verified · Live",
@@ -178,5 +179,15 @@
   "footprint_marker_aria_walk_to_transit": "Boarding at {{station}}",
   "footprint_marker_aria_walk_to_transit_passed": "Passed boarding at {{station}}",
   "footprint_marker_aria_transit_to_walk": "Alighting at {{station}}",
-  "footprint_marker_aria_transit_to_walk_passed": "Passed alighting at {{station}}"
+  "footprint_marker_aria_transit_to_walk_passed": "Passed alighting at {{station}}",
+  "mt_review_notice": "This language was machine-translated and may have errors. Help us improve it — report a translation issue.",
+  "feedback_link_label": "Report a translation issue.",
+  "continent_africa": "Africa",
+  "continent_americas": "Americas",
+  "continent_asia": "Asia",
+  "continent_europe": "Europe",
+  "continent_middle_east": "Middle East",
+  "continent_oceania": "Oceania",
+  "continent_picker_back": "Back to continents",
+  "continent_oceania_placeholder": "Languages of Oceania coming soon — Tok Pisin, Māori, Sāmoan, ʻŌlelo Hawaiʻi planned."
 }

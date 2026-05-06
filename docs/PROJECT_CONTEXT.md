@@ -141,7 +141,7 @@ No database required. User accounts are not planned; saved locations, routes, an
 
 ## Monetization Strategy — Full Decision Record
 
-This is the single canonical reference for all ad/monetization decisions. The implementation plan in `FEATURE_IMPLEMENTATION_PLANS.md` → Feature Monetization follows from these decisions.
+This is the single canonical reference for all ad/monetization decisions. The implementation plan in `FEATURE_PLANS.md` → Feature Monetization follows from these decisions.
 
 ### Philosophy
 
@@ -232,13 +232,13 @@ See [`Implementation Plans/User_Acquisition_Plan.md`](Implementation%20Plans/Use
 
 ## Build Status
 
-All phases through 6.5 are complete (deploy live since 2026-04-14; Weather & Crowdedness shipped 2026-04-27). Phase 7 — Monetization (House Ads) — is next.
+All phases through 6.5 are complete (deploy live since 2026-04-14; Weather & Crowdedness shipped 2026-04-27). Phase 7 — Monetization (House Ads) — Chunk 1 (`AdSlot` component) shipped 2026-05-05 behind `VITE_HOUSE_AD_ENABLED` (default `false`). Subsequent monetization sub-phases remain — see [`docs/FEATURE_PLANS.md`](FEATURE_PLANS.md) → Feature Monetization.
 
 ---
 
 ## Features Implemented
 
-See [`docs/archive/FEATURE_HISTORY.md`](archive/FEATURE_HISTORY.md) for the full record of all 42 completed features.
+See [`docs/archive/FEATURE_HISTORY.md`](archive/FEATURE_HISTORY.md) for the full record of all 44 completed features (plus the four Analytics Suite phases 22a–22d).
 
 ---
 
@@ -252,7 +252,7 @@ Open bugs: [`docs/BUGS.md`](BUGS.md) · Technical debt: [`docs/TECH_DEBT.md`](TE
 
 **Backend → Railway:** ✅ Live at `https://cta-transit-pwa-prod-production.up.railway.app`
 
-**Frontend → Vercel:** ✅ Live
+**Frontend → Vercel:** ✅ Live at `https://the-chicago-routefinder.vercel.app/`
 
 | Env var | Where | Notes |
 |---------|-------|-------|
@@ -273,6 +273,11 @@ Open bugs: [`docs/BUGS.md`](BUGS.md) · Technical debt: [`docs/TECH_DEBT.md`](TE
 | `DAU_ADMIN_TOKEN` | Railway | Protects `GET /admin/dau` and `GET /admin/geography` |
 | `GITHUB_TOKEN` | Railway build arg | PAT with Contents:Read — needed for Dockerfile to pull street graph from GitHub Release street-graph-v1 |
 | `MAXMIND_LICENSE_KEY` | Railway build arg | Free MaxMind key — Dockerfile downloads GeoLite2-City.mmdb for FEAT-003 (geography). If unset, geography counting silently no-ops at runtime. |
+| `VITE_CONTINENT_PICKER_ENABLED` | Vercel | `true` to flip the continent-first language picker on. Default `false` — flat 76-entry `<select>` renders. Feature LocaleExpansion is fully shipped (all 76 locales translated, fonts wired up); flip to `true` once in-browser verification of glyph rendering passes. |
+| `VITE_TRANSLATION_FEEDBACK_URL` | Vercel | Override target for the machine-translated review badge feedback link. Default `mailto:wayfarer.atlas@gmail.com?subject=Translation%20issue`. Swap to a GitHub Issues URL if a structured intake is preferred. |
+| `VITE_HOUSE_AD_ENABLED` | Vercel | `true` to render the house ad slot below the route list. Default `false` — slot is hidden. Feature Monetization Chunk 1 shipped 2026-05-05 behind this flag. |
+| `VITE_HOUSE_AD_URL` | Vercel | Affiliate URL for the house ad. Read at build time (Vite). Leave blank to suppress the slot even when the flag is on. |
+| `VITE_HOUSE_AD_TEXT` | Vercel | Editorial-voice copy shown in the house ad slot. Intentionally not translated (affiliate links are typically en-US). |
 
 **Analytics persistent volume:** Add a Railway persistent volume mounted at `/app/data` so the analytics counters (`dau.json`, `geography.json`, `sessions.json`, `hourly.json`, `devices.json`, `referrers.json`) survive container restarts.
 
@@ -310,6 +315,8 @@ CTA-Transit-PWA/
 │   ├── EFFICIENCY.md                   ← Open efficiency improvements only; delete entry here when implemented
 │   ├── FEATURE_PLANS.md                ← Pending features only; delete entry here when shipped
 │   ├── TODO.md                         ← Tasks requiring human action (accounts, API keys, deploy steps)
+│   ├── PRIVACY.md                      ← Privacy notes (mirrored to backend/public_stats.py PRIVACY_TEXT; sync enforced by test_privacy_sync.py)
+│   ├── ANALYTICS_MAINTENANCE.md        ← Per-feature analytics-suite maintenance notes (FEAT-001 … FEAT-009)
 │   └── archive/                        ← Frozen historical records (do not append)
 │       ├── RESOLVED_HISTORY.md         ← Combined log: Bugs Fixed + Technical Debt Paid Off + Efficiency Improvements Implemented
 │       ├── FEATURE_HISTORY.md            ← All implemented features with full chunk-by-chunk detail
@@ -342,6 +349,9 @@ CTA-Transit-PWA/
 │   ├── hourly.py                       ← FEAT-004: per-day 24-int /recommend histogram in Chicago tz; /app/data/hourly.json
 │   ├── devices.py                      ← FEAT-005: ua-parser-driven mobile/tablet/desktop/bot/unknown buckets; raw UA never persisted; /app/data/devices.json
 │   ├── referrers.py                    ← FEAT-008: Referer hostname → direct/search/social/other buckets; path/query stripped pre-storage; /app/data/referrers.json
+│   ├── events.py                       ← FEAT-006: allowlisted event-name counter (POST /events); /app/data/events.json
+│   ├── funnel.py                       ← FEAT-007: per-day funnel-stage cumulative arrays driven by sessions.py finalisation hooks; /app/data/funnel.json
+│   ├── retention.py                    ← FEAT-002: 90-day returnId cookie + Bloom-filter new-vs-returning aggregator; /app/data/retention.json
 │   ├── public_stats.py                 ← FEAT-009: public-safe projection of admin counters + /stats HTML page (no third-party scripts) + /privacy text
 │   ├── fetch_gtfs.py                   ← Script: download/update CTA GTFS data
 │   ├── fetch_street_graph.py           ← Script: build OSMnx street graph + emit igraph pickle
@@ -365,7 +375,7 @@ CTA-Transit-PWA/
     ├── .env.production                 ← Production env vars — update VITE_BACKEND_URL before deploy
     ├── src/
     │   ├── main.jsx                    ← Entry point; i18n Suspense wrapper
-    │   ├── i18n.js                     ← i18next config: 22 language codes, HttpBackend, LanguageDetector
+    │   ├── i18n.js                     ← i18next config: 76 language codes (all with full translation files), RESEARCH_LOCALES (8 low-resource codes), LANGUAGES_BY_CONTINENT, HttpBackend, LanguageDetector
     │   ├── index.css
     │   ├── App.jsx                     ← Top-level state; split layout; LocationInput; GPS trip tracking; off-route detection
     │   ├── App.css                     ← Design tokens; layout--split; 800px mobile breakpoint
@@ -378,10 +388,12 @@ CTA-Transit-PWA/
     │   ├── utils/
     │   │   ├── fetchWithRetry.js       ← Exponential back-off fetch wrapper (1s/2s/4s for 5xx/network errors)
     │   │   └── tripGeometry.js         ← haversineMeters, pointToSegmentMeters, legEndCoord, distanceToPath
-    │   ├── tests/                      ← Vitest + jsdom frontend test suite (26 files, 258 tests)
+    │   ├── tests/                      ← Vitest + jsdom frontend test suite (28 files, 285 tests)
     │   │   ├── *.test.jsx              ← Component tests for all 16 non-map components
     │   │   ├── *.test.js               ← Util tests (5) + hook tests (4)
     │   │   └── setup.js                ← jest-dom matcher registration
+    │   ├── assets/
+    │   │   └── continents/             ← 6 outline SVG silhouettes for the continent-first language picker (Feature LocaleExpansion). stroke=currentColor so they recolor in light/dark/high-contrast modes.
     │   ├── components/
     │   │   ├── TransitPhoto.jsx        ← Photo carousel (PHOTOS manifest defined here)
     │   │   ├── RouteCard.jsx           ← Route card with walk legs, transit legs, pin button; React.memo wrapped
@@ -389,13 +401,15 @@ CTA-Transit-PWA/
     │   │   ├── WeatherStrip.jsx        ← Compact NWS weather bar; alert amber bar; returns null when weather is null
     │   │   ├── ServiceAlertsBar.jsx    ← CTA service alerts panel: collapsed by default, expand to show cards
     │   │   ├── SettingsPanel.jsx       ← BYOK / AI-toggle / walk-speed dialog
+    │   │   ├── Masthead.jsx            ← Newspaper-style header: folio, wordmark, transit-mode/language pickers, machine-translated review badge for low-resource locales
+    │   │   ├── LanguagePicker/         ← Continent-first language picker (feature-flagged via VITE_CONTINENT_PICKER_ENABLED) — 2-step flow with continent grid + scoped language list
     │   │   └── LoadingSkeleton.jsx     ← Loading skeleton animation
     │   └── MapView.jsx                 ← MapLibre GL JS map; renderPolylines + stop/origin/dest markers; user position dot
     └── public/
         ├── icon-192.png
         ├── icon-512.png
         ├── apple-touch-icon.png
-        ├── locales/                    ← 22 language JSON files for i18next HttpBackend
+        ├── locales/                    ← 76 language JSON files for i18next HttpBackend (each with the full 191-key dictionary)
         └── transit-photos/             ← PENDING: place ≥10 transit photos here (see HUMAN_TODO.md)
 ```
 
@@ -403,7 +417,7 @@ CTA-Transit-PWA/
 
 ## Automated Test Suite
 
-**Combined: 651 tests** — backend 393 (pytest, 18 files) + frontend 258 (Vitest + jsdom, 26 files). All passing as of 2026-05-04.
+**Combined: 811 tests** — backend 466 (pytest, 22 files) + frontend 345 (Vitest + jsdom, 35 files). All passing as of 2026-05-06.
 
 ### Run commands
 
@@ -424,15 +438,15 @@ CTA-Transit-PWA/
 | **Graph routing** | `test_transit_graph.py`, `test_graph_construction.py` | Pure helpers (bearing, time parse, dedup) + `_path_to_route` and `find_routes` against hand-built fixture graphs |
 | **CTA API client** | `test_cta_client.py` | Train/Bus/Alerts/Routes parsing with mocked `aiohttp.ClientSession`; CTA dict-vs-list quirks, error sentinels, dedup |
 | **FastAPI app** | `test_main_helpers.py`, `test_endpoints.py` | `_cache_key`, rate limiter, prompt builder, `RouteRequest` validators, `/recommend` + `/stop-arrivals` contract via `TestClient` |
-| **Analytics** | `test_devices.py`, `test_geography.py`, `test_hourly.py`, `test_public_stats.py`, `test_referrers.py`, `test_sessions.py` | All FEAT-001/003/004/005/008 modules and the `/stats` projection layer |
+| **Analytics** | `test_devices.py`, `test_events.py`, `test_funnel.py`, `test_geography.py`, `test_hourly.py`, `test_privacy_sync.py`, `test_public_stats.py`, `test_referrers.py`, `test_retention.py`, `test_sessions.py` | All FEAT-001 through FEAT-009 modules, the `/stats` projection layer, and the privacy-doc sync guard |
 
 ### Frontend coverage (`frontend/src/tests/`)
 
 | Layer | What's covered |
 | --- | --- |
-| **Components (15 of 16)** | All non-map components tested: ErrorBoundary, LabelSavePanel, LinePill, LoadingSkeleton, LocationInput, PinnedStopsBoard, RouteCard, SavedRoutesPanel, ServiceAlertsBar, SettingsPanel, SharedRouteBanner, SideRail, SignalLamp, TwoToneHeading, WeatherStrip, Wordmark. Not covered: `markers/*` (3 files — maplibre-dependent) |
-| **Utils (5 of 5)** | deriveTransferPoints, fetchWithRetry, renderMarkdown, routeUtils, tripGeometry |
-| **Hooks (4 of 7)** | useApiQuery, useByokIdleClear, useFavorites, useLocalStorage. Not covered: useMapMarker, useRouteLayers, useTripTracker (all maplibre/geolocation-dependent) |
+| **Components (18 of 18 non-map)** | All non-map components tested, including the LanguagePicker root: ErrorBoundary, LabelSavePanel, LanguagePicker, LinePill, LoadingSkeleton, LocationInput, Masthead, PinnedStopsBoard, RouteCard, SavedRoutesPanel, ServiceAlertsBar, SettingsPanel, SharedRouteBanner, SideRail, SignalLamp, TwoToneHeading, WeatherStrip, Wordmark. Not covered: `markers/*` (3 files — maplibre-dependent). |
+| **Utils (6 of 6)** | analytics, deriveTransferPoints, fetchWithRetry, renderMarkdown, routeUtils, tripGeometry, validateShareInput |
+| **Hooks (8 of 11)** | useApiQuery, useByokIdleClear, useDocumentLanguage, useFavorites, useLocalStorage, useServiceAlerts, useShareLink, useTripTracker. Not covered: useMapMarker, useRouteLayers, useTransferConnectors (all maplibre-dependent) |
 | **Persistence** | favorites.js — save/load round-trip, MAX_ITEMS, dedup |
 
 ### Design principles
@@ -460,15 +474,16 @@ CTA-Transit-PWA/
 
 ## Where to Resume
 
-The app is live on Railway + Vercel. All phases through 6.5 are complete; Feature Heritage, MapMarkers, and NorthExpansion/SouthExpansion shipped 2026-05-01. Feature HeadingTwoTone and Feature ItinerarySpine shipped 2026-05-03, completing the deferred D2 design-system work for panel headings and itinerary leg rows.
+The app is live on Railway + Vercel. All phases through 6.5 are complete; Feature Heritage, MapMarkers, and NorthExpansion/SouthExpansion shipped 2026-05-01. Feature HeadingTwoTone and Feature ItinerarySpine shipped 2026-05-03, completing the deferred D2 design-system work for panel headings and itinerary leg rows. Feature LocaleExpansion shipped 2026-05-05/06: i18n coverage went from 22 → 76 languages, with a continent-first picker (feature-flagged), a machine-translated review badge for low-resource locales, and Inter-aligned non-Latin web fonts.
 
 **Next steps (in order):**
 
 1. (Optional) Add a custom domain in Vercel → Settings → Domains.
-2. **Phase 7:** Monetization (House Ads first) — implement `AdSlot` component. See "Monetization Strategy — Full Decision Record" below.
+2. (Optional) Flip `VITE_CONTINENT_PICKER_ENABLED=true` in a Vercel preview to verify the LocaleExpansion font rendering and continent picker UX before promoting to production. See `docs/TODO.md` for the verification checklist.
+3. **Phase 7 — Monetization:** Chunk 1 (`AdSlot`) shipped 2026-05-05 behind `VITE_HOUSE_AD_ENABLED` (default `false`). Outstanding: Vercel-preview QA before flipping the flag in production, plus the Phase 2/2b/3 work documented in `docs/FEATURE_PLANS.md` → Feature Monetization. See "Monetization Strategy — Full Decision Record" below for the canonical decision record.
 
-**Bug status:** 0 🔴 high + 0 🟡 medium + 0 🟢 low — see `BUGS_TO_BE_FIXED.md`.
-**Technical debt status:** 0 items open — see `Technical_Debt.md`.
+**Bug status:** 0 🔴 high + 5 🟡 medium + 1 🟢 low — see [`docs/BUGS.md`](BUGS.md).
+**Technical debt status:** 2 items open (1 🟡 medium, 1 🟢 low) plus 1 deferred low-priority item (TD-BE-004) — see [`docs/TECH_DEBT.md`](TECH_DEBT.md).
 
 ---
 
@@ -479,9 +494,9 @@ The app is live on Railway + Vercel. All phases through 6.5 are complete; Featur
 - **The unified NetworkX graph is the canonical routing surface.** `find_bus_routes()` was deprecated and removed by Feature J. All routing goes through `find_routes()` on the unified graph, plus `find_bus_transfer_routes()` for bus+bus transfers.
 - **The street graph uses igraph, not NetworkX.** `walking.py` loads `street_graph_igraph.pkl` (igraph) not the graphml directly. The KDTree is built from LCC vertices only.
 - **BYOK and Rate Limiting are code-complete but OFF by default.** Do not activate them without explicit instruction.
-- **i18n is live in 22 languages.** Any new user-facing string in React components must have keys added to all 22 locale files in `frontend/public/locales/`.
-- **When resolving bugs or debt**, delete the entry from `BUGS_TO_BE_FIXED.md` or `Technical_Debt.md` and add an entry to `RESOLVED_HISTORY.md`. Do not leave resolved items in the open files.
-- **When implementing features**, delete the entry from `FEATURE_IMPLEMENTATION_PLANS.md` and add an entry to `FEATURE_HISTORY.md`. Do not mark features as ✅ in the plans file; remove them.
+- **i18n is live in 76 languages.** The `LANGUAGES` array in `frontend/src/i18n.js` is the single source of truth — adding a language means adding a row there and dropping a `frontend/public/locales/<code>/translation.json` file. Any new user-facing string in React components must have keys added to all 76 locale files; run `node scripts/translate-missing.mjs` (with `ANTHROPIC_API_KEY` set) to backfill new keys across every locale at once. The continent-first picker (`VITE_CONTINENT_PICKER_ENABLED`) is wired up but off by default — flip it on in Vercel after in-browser verification of glyph rendering for the non-Latin locales. Two locales (`mey`, `ceb`) are flagged for native-speaker review; the machine-translated review badge surfaces this to riders via the `feedback_link_label` link.
+- **When resolving bugs or debt**, delete the entry from `BUGS.md` or `TECH_DEBT.md` and add an entry to `RESOLVED_HISTORY.md`. Do not leave resolved items in the open files.
+- **When implementing features**, delete the entry from `FEATURE_PLANS.md` and add an entry to `FEATURE_HISTORY.md`. Do not mark features as ✅ in the plans file; remove them.
 
 ---
 

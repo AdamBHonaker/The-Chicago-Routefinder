@@ -1,0 +1,8 @@
+<!--
+  Africa silhouette for the continent-first language picker.
+  Simplified outline — vertex count tuned to read crisply at 64px.
+  Stroke uses currentColor so light/dark modes inherit theme ink.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">
+  <path d="M38 14 L60 14 L72 22 L74 30 L78 36 L82 40 L80 50 L74 58 L72 66 L66 76 L58 86 L48 90 L42 86 L36 80 L34 72 L28 66 L24 58 L22 50 L20 42 L24 32 L30 22 Z" />
+</svg>

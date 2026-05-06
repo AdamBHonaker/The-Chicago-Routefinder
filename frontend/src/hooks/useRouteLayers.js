@@ -2,9 +2,10 @@
  * useRouteLayers — render a route's polylines and stop markers on a MapLibre map.
  *
  * Encapsulates the imperative source/layer bookkeeping that previously lived
- * inline in MapView.jsx: tracked layer/source ID arrays, _trackSource/
- * _trackLayer helpers, and clearRouteLayers cleanup. Style-load gating is
- * handled internally — callers don't need to check map.isStyleLoaded().
+ * inline in MapView.jsx. Tracked layer/source IDs are kept in owned refs;
+ * lifecycle helpers come from `utils/mapLayerLifecycle.js` (TD-FE-020).
+ * Style-load gating is handled internally — callers don't need to check
+ * map.isStyleLoaded().
  *
  * The hook re-renders when map / route / originCoords / destCoords change.
  * On every change it clears prior layers via tracked IDs (try/catch guards
@@ -15,6 +16,7 @@
  */
 import { useEffect, useRef } from "react";
 import { getRouteColor } from "../constants.js";
+import { clearLayers, trackSource, trackLayer } from "../utils/mapLayerLifecycle.js";
 
 const toGeo = ([lat, lon]) => [lon, lat];
 
@@ -33,28 +35,6 @@ function legColor(leg) {
   return getRouteColor(leg.line);
 }
 
-// Remove all route layers/sources whose IDs are tracked, then clear the arrays.
-// try/catch guards against layers that were never added (style not loaded) or
-// already removed by a style reload.
-function clearRouteLayers(map, layerIds, sourceIds) {
-  for (const id of layerIds.splice(0)) {
-    try { map.removeLayer(id); } catch { /* already gone */ }
-  }
-  for (const id of sourceIds.splice(0)) {
-    try { map.removeSource(id); } catch { /* already gone */ }
-  }
-}
-
-function _trackSource(map, id, data, sourceIds) {
-  map.addSource(id, data);
-  sourceIds.push(id);
-}
-
-function _trackLayer(map, cfg, layerIds) {
-  map.addLayer(cfg);
-  layerIds.push(cfg.id);
-}
-
 // Pass 1: per-leg LineString layers (dashed grey for walk, solid colored for transit).
 // Pushes coordinates into allGeoCoords for auto-fit bounds.
 function renderPolylines(map, legs, legGeoCoords, legColors, allGeoCoords, layerIds, sourceIds) {
@@ -63,11 +43,11 @@ function renderPolylines(map, legs, legGeoCoords, legColors, allGeoCoords, layer
       const coords = legGeoCoords[i];
       if (coords.length < 2) return;
       coords.forEach(c => allGeoCoords.push(c));
-      _trackSource(map, `route-walk-${i}`, {
+      trackSource(map, `route-walk-${i}`, {
         type: "geojson",
         data: { type: "Feature", geometry: { type: "LineString", coordinates: coords } },
       }, sourceIds);
-      _trackLayer(map, {
+      trackLayer(map, {
         id:     `route-walk-line-${i}`,
         type:   "line",
         source: `route-walk-${i}`,
@@ -77,11 +57,11 @@ function renderPolylines(map, legs, legGeoCoords, legColors, allGeoCoords, layer
       const coords = legGeoCoords[i];
       if (coords.length < 2) return;
       coords.forEach(c => allGeoCoords.push(c));
-      _trackSource(map, `route-transit-${i}`, {
+      trackSource(map, `route-transit-${i}`, {
         type: "geojson",
         data: { type: "Feature", geometry: { type: "LineString", coordinates: coords } },
       }, sourceIds);
-      _trackLayer(map, {
+      trackLayer(map, {
         id:     `route-transit-line-${i}`,
         type:   "line",
         source: `route-transit-${i}`,
@@ -104,7 +84,7 @@ function renderStopMarkers(map, legs, legGeoCoords, legColors, layerIds, sourceI
     if (isValidCoord(leg.to_coords))   boardExit.push({ coord: toGeo(leg.to_coords),   label: `Exit ${leg.line}`,  color });
 
     if (boardExit.length) {
-      _trackSource(map, `route-boardexit-${i}`, {
+      trackSource(map, `route-boardexit-${i}`, {
         type: "geojson",
         data: {
           type: "FeatureCollection",
@@ -115,7 +95,7 @@ function renderStopMarkers(map, legs, legGeoCoords, legColors, layerIds, sourceI
           })),
         },
       }, sourceIds);
-      _trackLayer(map, {
+      trackLayer(map, {
         id:     `route-boardexit-circle-${i}`,
         type:   "circle",
         source: `route-boardexit-${i}`,
@@ -140,11 +120,11 @@ function renderStopMarkers(map, legs, legGeoCoords, legColors, layerIds, sourceI
         });
       }
       if (intermFeatures.length) {
-        _trackSource(map, `route-stops-${i}`, {
+        trackSource(map, `route-stops-${i}`, {
           type: "geojson",
           data: { type: "FeatureCollection", features: intermFeatures },
         }, sourceIds);
-        _trackLayer(map, {
+        trackLayer(map, {
           id:     `route-stops-circle-${i}`,
           type:   "circle",
           source: `route-stops-${i}`,
@@ -176,14 +156,18 @@ function renderRoute(map, route, layerIds, sourceIds) {
     renderStopMarkers(map, legs, legGeoCoords, legColors, layerIds, sourceIds);
 
     if (allGeoCoords.length > 0) {
-      const bounds = allGeoCoords.reduce(
-        ([sw, ne], [lon, lat]) => [
-          [Math.min(sw[0], lon), Math.min(sw[1], lat)],
-          [Math.max(ne[0], lon), Math.max(ne[1], lat)],
-        ],
-        [[Infinity, Infinity], [-Infinity, -Infinity]],
-      );
-      map.fitBounds(bounds, { padding: 60, animate: false });
+      // Single-pass scalar mins/maxes; reduce-with-tuples allocated 4 sub-arrays
+      // per coordinate, which adds up over long polylines (OPT-FE-205).
+      let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
+      for (let i = 0; i < allGeoCoords.length; i++) {
+        const lon = allGeoCoords[i][0];
+        const lat = allGeoCoords[i][1];
+        if (lon < minLng) minLng = lon;
+        if (lat < minLat) minLat = lat;
+        if (lon > maxLng) maxLng = lon;
+        if (lat > maxLat) maxLat = lat;
+      }
+      map.fitBounds([[minLng, minLat], [maxLng, maxLat]], { padding: 60, animate: false });
     }
   } catch (err) {
     console.error("[useRouteLayers] renderRoute failed:", err);
@@ -198,19 +182,19 @@ export function useRouteLayers(map, route) {
     if (!map) return;
 
     const render = () => {
-      clearRouteLayers(map, layerIds.current, sourceIds.current);
+      clearLayers(map, layerIds.current, sourceIds.current);
       if (!route) return;
       renderRoute(map, route, layerIds.current, sourceIds.current);
     };
 
     if (map.isStyleLoaded()) {
       render();
-      return () => clearRouteLayers(map, layerIds.current, sourceIds.current);
+      return () => clearLayers(map, layerIds.current, sourceIds.current);
     }
     map.once("load", render);
     return () => {
       map.off("load", render);
-      clearRouteLayers(map, layerIds.current, sourceIds.current);
+      clearLayers(map, layerIds.current, sourceIds.current);
     };
   }, [map, route]);
 

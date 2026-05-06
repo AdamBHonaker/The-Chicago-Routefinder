@@ -1,4 +1,11 @@
 
+/* Touch-state family system (FEAT-012) — see layout.css for the full system.
+ * This file mixes families:
+ *   • INK-FILL — .form > button[type="submit"] (uses --opacity-hover/--opacity-pressed).
+ *   • GHOST    — .swap-btn (transparent → border-color/color shift on hover;
+ *                pressed inverts to ink/paper).
+ */
+
 /* ── Form ────────────────────────────────────────────────────────────────── */
 
 .form {
@@ -18,7 +25,7 @@
 }
 
 .form label > span {
-  width: 80px;
+  width: var(--form-label-width, 80px);
   flex-shrink: 0;
   font-family: var(--serif);
   font-size: 14px;
@@ -37,7 +44,13 @@
 .form label > .geo-denied-banner,
 .form label > .label-save-panel {
   width: 100%;
-  padding-inline-start: 90px;
+  padding-inline-start: calc(var(--form-label-width, 80px) + 10px);
+}
+
+/* Very-narrow viewports (320–400px): shrink the label column to give back at
+ * least 24px of label-to-input horizontal space. */
+@media (max-width: 400px) {
+  .form { --form-label-width: 56px; }
 }
 
 .form input {
@@ -95,7 +108,7 @@
 }
 
 .form > button[type="submit"]:active:not(:disabled) {
-  opacity: 0.68;
+  opacity: var(--opacity-pressed);
 }
 
 .form > button[type="submit"]:disabled {
@@ -136,9 +149,9 @@
 }
 
 .swap-btn:active {
-  color: var(--ink);
+  background: var(--ink);
+  color: var(--paper);
   border-color: var(--ink);
-  background: var(--paper-folio);
 }
 
 /* ── Error ───────────────────────────────────────────────────────────────── */

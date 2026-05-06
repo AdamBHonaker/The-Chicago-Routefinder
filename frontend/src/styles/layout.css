@@ -1,4 +1,16 @@
 
+/* Touch-state family system (FEAT-012)
+ * Three families govern :hover / :active behavior across the codebase:
+ *   1. Ghost buttons   — transparent → --paper-folio on hover; pressed inverts
+ *                        to background:--ink; color:--paper.
+ *   2. Ink-fill primaries — opacity:--opacity-hover on hover; pressed deepens
+ *                        to opacity:--opacity-pressed.
+ *   3. Icon/link buttons  — color-shift on hover; NO :active rule (the
+ *                        :focus-visible ring + hover transition is sufficient
+ *                        and the color-flash doesn't register on tap).
+ * This file contains ghost-family classes (.side-rail__tab, .tab-bar__tab).
+ */
+
 /* ── Layout ─────────────────────────────────────────────────────────────── */
 
 .app {
@@ -100,6 +112,11 @@
   background: var(--paper-folio);
 }
 
+.side-rail__tab:active {
+  background: var(--ink);
+  color: var(--paper);
+}
+
 .side-rail__tab--active,
 .side-rail__tab--active:hover {
   background: var(--ink);
@@ -166,6 +183,7 @@
   .panel-cards,
   .panel-map {
     transition: none;
+    transform: none !important;
   }
 }
 
@@ -187,13 +205,21 @@
     overflow: hidden;
   }
 
+  /* Mobile uses position:absolute on inactive panels (rather than display:none)
+     so panels stay mounted across tab switches — preserves scrollTop natively
+     and keeps the WebGL canvas alive. The .layout--split flex container is
+     position:relative below to anchor the absolutely-positioned inactive panel. */
+  .layout--split {
+    position: relative;
+  }
+
   /* Panel-cards: scrollable column, clears tab bar */
   .panel-cards {
     width: 100%;
     flex: 1;
     overflow-y: auto;
     min-height: 0;
-    padding-bottom: calc(56px + env(safe-area-inset-bottom) + 1rem);
+    padding-bottom: calc(var(--tab-bar-height) + env(safe-area-inset-bottom) + 1rem);
   }
 
   /* Map panel: fill remaining height */
@@ -203,12 +229,37 @@
     min-height: 0;
   }
 
-  /* Mobile screen-swap: hide the inactive panel so the active one fills
-     the viewport. Desktop keeps both panels visible at all times. */
-  [data-active-tab="map"] .panel-cards { display: none; }
+  /* Mobile tab-swap (FEAT-012): unified with desktop. Visible panels fade+slide
+     in over --dur-base; inactive panels become position:absolute (so they don't
+     claim flex space) and fade+translate out. Panels stay mounted across tab
+     swaps so scrollTop is preserved natively without JS plumbing. */
+  .panel-cards,
+  .panel-map {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    transform: translateX(0);
+    transition:
+      opacity var(--dur-base) var(--ease-out),
+      transform var(--dur-base) var(--ease-out),
+      visibility 0s linear 0s;
+  }
+
+  [data-active-tab="map"] .panel-cards,
   [data-active-tab="home"] .panel-map,
   [data-active-tab="alerts"] .panel-map,
-  [data-active-tab="saved"] .panel-map { display: none; }
+  [data-active-tab="saved"] .panel-map {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transform: translateX(8px);
+    transition:
+      opacity var(--dur-base) var(--ease-out),
+      transform var(--dur-base) var(--ease-out),
+      visibility 0s linear var(--dur-base);
+  }
 
   /* Tab bar — D2 spec: serif word labels (no icons), 2px ink top border on
    * paper, active tab is roman 13/700 ink with a 2px ink underline that
@@ -220,19 +271,20 @@
     position: fixed;
     bottom: 0;
     inset-inline: 0;
+    min-height: var(--tab-bar-height);
     background: var(--paper);
     border-top: var(--rule-thick);
     z-index: var(--z-nav);
-    padding-bottom: max(10px, env(safe-area-inset-bottom));
+    padding-bottom: max(var(--sp-3), env(safe-area-inset-bottom));
   }
 
   .tab-bar__tab {
     background: transparent;
     border: none;
     cursor: pointer;
-    padding: 10px 6px 4px;
+    padding: var(--sp-3) var(--sp-2) var(--sp-2);
     text-align: center;
-    min-height: 44px;
+    min-height: var(--touch-min);
     font-family: var(--serif);
     font-size: 13px;
     font-style: italic;
@@ -241,11 +293,18 @@
     line-height: 1.2;
     border-bottom: 2px solid transparent;
     margin-bottom: -2px;  /* underline overlaps the bar's top border */
-    transition: background var(--dur-quick) var(--ease-out);
+    transition:
+      background var(--dur-quick) var(--ease-out),
+      color var(--dur-quick) var(--ease-out);
   }
 
   .tab-bar__tab:hover {
     background: var(--paper-folio);
+  }
+
+  .tab-bar__tab:active {
+    background: var(--ink);
+    color: var(--paper);
   }
 
   .tab-bar__tab--active {

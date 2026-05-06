@@ -179,5 +179,16 @@
   "footprint_marker_aria_walk_to_transit": "{{station}} પર બોર્ડ કરો",
   "footprint_marker_aria_walk_to_transit_passed": "{{station}} પર બોર્ડિંગ પસાર કર્યો",
   "footprint_marker_aria_transit_to_walk": "{{station}} પર ઉતરો",
-  "footprint_marker_aria_transit_to_walk_passed": "{{station}} પર ઉતરવું પસાર કર્યું"
+  "footprint_marker_aria_transit_to_walk_passed": "{{station}} પર ઉતરવું પસાર કર્યું",
+  "ad_sponsored_kicker": "સ્પોન્સર કરેલ",
+  "mt_review_notice": "આ ભાષા મશીન દ્વારા અનુવાદિત છે અને તેમાં ભૂલો હોઈ શકે છે. તેને સુધારવામાં મદદ કરો — અનુવાદ સમસ્યાની જાણ કરો.",
+  "feedback_link_label": "અનુવાદ સમસ્યાની જાણ કરો.",
+  "continent_africa": "આફ્રિકા",
+  "continent_americas": "અમેરિકાસ",
+  "continent_asia": "એશિયા",
+  "continent_europe": "યુરોપ",
+  "continent_middle_east": "મધ્ય પૂર્વ",
+  "continent_oceania": "ઓશેનિયા",
+  "continent_picker_back": "મહાદેશો પર પાછા ફરો",
+  "continent_oceania_placeholder": "ઓશેનિયાની ભાષાઓ શીઘ્રમાં આવશે — ટોક પિસીન, માઓરી, સામોઆન, ʻŌલેલો હવાઈ આયોજિત છે."
 }

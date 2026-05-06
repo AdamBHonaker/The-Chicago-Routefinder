@@ -88,9 +88,17 @@ async def record(name: str) -> None:
         loop = asyncio.get_running_loop()
 
         if today != _current_day:
+            # Flush any pending in-memory updates first so up to
+            # _FLUSH_EVERY_N_WRITES - 1 unflushed previous-day increments
+            # aren't discarded by the reload.
+            if _counts and _writes_since_flush > 0:
+                await loop.run_in_executor(None, _save, _counts)
             new_counts = await loop.run_in_executor(None, _load)
-            _counts.clear()
-            _counts.update(new_counts)
+            # Merge instead of clearing so any in-memory rows that the disk
+            # snapshot lacks are preserved.
+            for d, day_counts in new_counts.items():
+                if d not in _counts:
+                    _counts[d] = day_counts
             _current_day = today
             _writes_since_flush = 0
 

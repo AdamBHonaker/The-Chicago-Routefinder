@@ -5,7 +5,7 @@
  * Requires ANTHROPIC_API_KEY environment variable.
  */
 
-import { readFileSync, writeFileSync, readdirSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -43,6 +43,7 @@ if (!API_KEY) {
 }
 
 const LOCALE_NAMES = {
+  // Originally shipped (21 non-English; en is the source).
   ar:  'Arabic',
   es:  'Spanish',
   fr:  'French',
@@ -64,7 +65,88 @@ const LOCALE_NAMES = {
   yo:  'Yoruba',
   yue: 'Cantonese',
   zh:  'Mandarin Chinese',
+  // LocaleExpansion — 54 new (Chunks 2–12 of Feature LocaleExpansion).
+  ht:  'Haitian Creole',
+  my:  "Burmese",
+  ksw: "S'gaw Karen",
+  eky: 'Karenni / Red Karen',
+  am:  'Amharic',
+  ti:  'Tigrinya',
+  prs: 'Dari (Afghan Persian)',
+  fa:  'Persian (Farsi)',
+  bs:  'Bosnian',
+  sr:  'Serbian',
+  hr:  'Croatian',
+  lt:  'Lithuanian',
+  bn:  'Bengali',
+  aii: 'Assyrian Neo-Aramaic',
+  el:  'Greek',
+  sw:  'Swahili',
+  th:  'Thai',
+  sv:  'Swedish',
+  so:  'Somali',
+  he:  'Hebrew',
+  tr:  'Turkish',
+  arz: 'Egyptian Arabic',
+  mr:  'Marathi',
+  te:  'Telugu',
+  ta:  'Tamil',
+  id:  'Indonesian',
+  de:  'German',
+  ha:  'Hausa',
+  pt:  'Portuguese',
+  bho: 'Bhojpuri',
+  kg:  'Kongo (Kikongo)',
+  lol: 'Mongo (Lomongo)',
+  mey: 'Hassaniya Arabic',
+  af:  'Afrikaans',
+  xh:  'Xhosa',
+  om:  'Oromo',
+  nl:  'Dutch',
+  mn:  'Mongolian',
+  lo:  'Lao',
+  km:  'Khmer',
+  kn:  'Kannada',
+  uz:  'Uzbek',
+  sd:  'Sindhi',
+  ml:  'Malayalam',
+  or:  'Odia',
+  mai: 'Maithili',
+  kmr: 'Kurmanji Kurdish',
+  ckb: 'Sorani Kurdish (Central Kurdish)',
+  ms:  'Malay',
+  ceb: 'Cebuano',
+  nan: 'Hokkien (Min Nan)',
+  kk:  'Kazakh',
+  si:  'Sinhala',
+  rhg: 'Rohingya',
 };
+
+// Per-locale variant-sensitive instructions. Each entry is appended to the
+// translation prompt for that locale to keep Claude on the correct script,
+// dialect, or written variant. Source: Feature LocaleExpansion → Scoping
+// decision 3 in docs/FEATURE_PLANS.md.
+const LOCALE_INSTRUCTIONS = {
+  arz: 'Translate into Egyptian Arabic colloquial (Masri). NOT Modern Standard Arabic.',
+  ksw: 'Translate into S\'gaw Karen specifically (variant written in Burmese-derived Karen script). NOT Karenni / Red Karen.',
+  eky: 'Translate into Karenni / Red Karen, Kayah Li script. NOT S\'gaw Karen.',
+  kmr: 'Translate into Kurmanji Kurdish using the Latin (Hawar) alphabet. NOT Sorani.',
+  ckb: 'Translate into Sorani / Central Kurdish using Arabic script. NOT Kurmanji.',
+  lol: 'Translate into Mongo / Lomongo, the Bantu language of the Democratic Republic of the Congo. NOT Mongolian (mn).',
+  mey: 'Translate into Hassaniya Arabic dialect (Mauritania / Western Sahara). NOT Modern Standard Arabic.',
+  nan: 'Translate into Hokkien (Min Nan) using traditional Han characters as used in Taiwan/Fujian. NOT Cantonese (yue) or Mandarin (zh).',
+  rhg: 'Translate into Rohingya using Hanifi Rohingya script.',
+  aii: 'Translate into Modern Assyrian Neo-Aramaic (Sureth) using Syriac script.',
+  bho: 'Translate into Bhojpuri using Devanagari script. NOT Hindi.',
+  mai: 'Translate into Maithili using Devanagari script. NOT Hindi.',
+};
+
+// CLI: optional `--only=<csv>` flag restricts the run to specific locales.
+// Useful for chunked rollouts (e.g. `--only=de,sv,nl,pt,lt` for Chunk 2).
+const ONLY_ARG = (process.argv.find(a => a.startsWith('--only=')) || '').slice('--only='.length);
+const ONLY_LOCALES = ONLY_ARG
+  ? new Set(ONLY_ARG.split(',').map(s => s.trim()).filter(Boolean))
+  : null;
 
 // Keys whose English value is correct in all locales — never attempt to translate.
 const KEEP_ENGLISH = new Set([
@@ -105,7 +187,12 @@ async function callAnthropic(prompt) {
     },
     body: JSON.stringify({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 4096,
+      // 16384 needed for Kannada (composite Unicode chars are very
+      // token-heavy in this script — 8K truncated mid-dictionary on a
+      // ~180-key payload). 8K was sufficient for Greek/Devanagari/Tamil/etc.
+      // Haiku 4.5 supports up to 64K output tokens; 16K is the safe
+      // ceiling for the 76-locale set without burning unnecessary budget.
+      max_tokens: 16384,
       messages: [{ role: 'user', content: prompt }],
     }),
   });
@@ -150,6 +237,8 @@ async function translateLocale(locale, enData, localeData) {
     .map(([k, v]) => `- ${k}: ${v}`)
     .join('\n');
 
+  const localeNote = LOCALE_INSTRUCTIONS[locale];
+
   const prompt = `You are translating a public-transit app UI into ${langName} (BCP-47 code: ${locale}).
 
 Translate the JSON values below from English into ${langName}. Return ONLY a valid JSON object with the same keys and translated values — no markdown, no explanation.
@@ -159,8 +248,8 @@ Translation rules:
 2. Preserve every interpolation variable exactly: {{minutes}} {{count}} {{code}} {{line}} {{stop}} {{to}} {{temp}} {{mph}} {{headline}} {{min}}
 3. Preserve all emoji and Unicode symbols exactly: 🔓 ☆ ★ ■ ▶ ⟶ — ·
 4. For aria_* keys: write natural screen-reader text in ${langName}.
-5. For RTL languages (Arabic, Urdu, Pashto): write right-to-left text naturally; do not add bidi markers.
-${specials ? `\nPer-key special rules:\n${specials}` : ''}
+5. For RTL languages (Arabic, Urdu, Pashto, Hebrew, Persian/Dari, Egyptian Arabic, Hassaniya Arabic, Sindhi, Sorani Kurdish, Assyrian, Rohingya): write right-to-left text naturally; do not add bidi markers.
+${localeNote ? `\nLocale-specific instruction:\n${localeNote}\n` : ''}${specials ? `\nPer-key special rules:\n${specials}` : ''}
 
 Keys to translate:
 ${JSON.stringify(untranslated, null, 2)}`;
@@ -192,30 +281,79 @@ ${JSON.stringify(untranslated, null, 2)}`;
 
 async function main() {
   const enData = JSON.parse(readFileSync(`${LOCALES_DIR}/en/translation.json`, 'utf8'));
-  const locales = readdirSync(LOCALES_DIR).filter(d => d !== 'en' && !d.startsWith('.'));
 
-  console.log(`Found ${locales.length} non-English locales.\n`);
+  // Pool of locales to consider:
+  //   - existing directories under public/locales (sans en), plus
+  //   - any code in LOCALE_NAMES that doesn't yet have a directory (these
+  //     get created on first write — supports the LocaleExpansion rollout
+  //     where 54 codes ship before their files do).
+  const onDisk = readdirSync(LOCALES_DIR).filter(d => d !== 'en' && !d.startsWith('.'));
+  const known = Object.keys(LOCALE_NAMES);
+  const all = Array.from(new Set([...onDisk, ...known])).sort();
+
+  const locales = ONLY_LOCALES ? all.filter(c => ONLY_LOCALES.has(c)) : all;
+
+  if (ONLY_LOCALES) {
+    const skippedFromCli = [...ONLY_LOCALES].filter(c => !locales.includes(c));
+    if (skippedFromCli.length) {
+      console.warn(`  --only includes unknown codes (skipped): ${skippedFromCli.join(', ')}`);
+    }
+    console.log(`Restricted to ${locales.length} locale(s) via --only.\n`);
+  } else {
+    console.log(`Found ${locales.length} non-English locales (${onDisk.length} on disk, ${all.length - onDisk.length} new).\n`);
+  }
 
   let updated = 0;
   let skipped = 0;
 
+  // Inter-call pacing. Anthropic's per-minute output-token rate limit on
+  // Haiku 4.5 is 10K tokens/min. A full locale dictionary in a multi-byte
+  // script can reach ~9K output tokens, so two locales back-to-back will
+  // trip the limit. 60s between calls keeps a single chunk (5 locales)
+  // well under the budget. Pacing must trigger any time the previous
+  // iteration *attempted* an API call, including parse-failure cases —
+  // a 429 doesn't care whether we successfully read the response back.
+  const PACING_MS = 60_000;
+  let didApiCall = false;
+
   for (const locale of locales) {
-    const filePath = `${LOCALES_DIR}/${locale}/translation.json`;
-    let localeData;
-    try {
-      localeData = JSON.parse(readFileSync(filePath, 'utf8'));
-    } catch {
-      console.warn(`  ${locale}: could not read file — skipping`);
-      skipped++;
-      continue;
+    if (didApiCall) {
+      console.log(`  …pausing ${PACING_MS / 1000}s for rate-limit budget`);
+      await new Promise(r => setTimeout(r, PACING_MS));
     }
 
+    const dirPath = `${LOCALES_DIR}/${locale}`;
+    const filePath = `${dirPath}/translation.json`;
+    let localeData = {};
+    if (existsSync(filePath)) {
+      try {
+        localeData = JSON.parse(readFileSync(filePath, 'utf8'));
+      } catch {
+        console.warn(`  ${locale}: could not parse file — skipping`);
+        skipped++;
+        // No API call attempted on bad-file skip; preserve prior pacing state.
+        continue;
+      }
+    }
+
+    // Decide whether this iteration will attempt an API call BEFORE we
+    // call translateLocale, so a downstream parse failure (which makes
+    // translateLocale return null even though the API was hit) still
+    // causes the next iteration to pace. Mirrors the no-op condition
+    // inside translateLocale: a locale with every non-KEEP_ENGLISH key
+    // already present in localeData makes no API call.
+    const willCallApi = Object.keys(enData).some(
+      (k) => k !== '_comment' && !KEEP_ENGLISH.has(k) && !(k in localeData),
+    );
+
     const result = await translateLocale(locale, enData, localeData);
+    didApiCall = willCallApi;
     if (result === null) {
       skipped++;
       continue;
     }
 
+    if (!existsSync(dirPath)) mkdirSync(dirPath, { recursive: true });
     writeFileSync(filePath, JSON.stringify(result, null, 2) + '\n', 'utf8');
     console.log(`  ${locale}: written ✓`);
     updated++;
@@ -224,9 +362,10 @@ async function main() {
   console.log(`\nDone — ${updated} locales updated, ${skipped} skipped.`);
   console.log('\nValidation (should print nothing if complete):');
 
-  // Quick completeness check
+  // Quick completeness check — only over locales we actually touched.
   for (const locale of locales) {
     const filePath = `${LOCALES_DIR}/${locale}/translation.json`;
+    if (!existsSync(filePath)) continue;
     let t;
     try { t = JSON.parse(readFileSync(filePath, 'utf8')); } catch { continue; }
     const missing = Object.keys(enData).filter(

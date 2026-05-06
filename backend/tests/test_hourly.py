@@ -68,3 +68,33 @@ def test_save_load_roundtrip(tmp_path):
         hourly._save(payload)
         out = hourly._load()
     assert out == payload
+
+
+@pytest.mark.asyncio
+async def test_day_rollover_preserves_unflushed_increments():
+    """Regression test: BUG-004 — day rollover used to clobber unflushed counts.
+
+    Records a few increments on day A (fewer than _FLUSH_EVERY_N_WRITES so they
+    stay in memory only), advances the clock to day B, then verifies the day-A
+    bucket is still present in the in-memory counts.
+    """
+    day_a = "2026-05-05"
+    day_b = "2026-05-06"
+
+    with patch.object(hourly, "_today_chi", return_value=day_a), \
+         patch.object(hourly, "_now_hour_chi", return_value=10):
+        await hourly.record_recommend()
+        await hourly.record_recommend()
+        await hourly.record_recommend()
+
+    assert hourly._counts[day_a][10] == 3
+    assert hourly._writes_since_flush == 3  # not yet flushed (default 20)
+
+    with patch.object(hourly, "_today_chi", return_value=day_b), \
+         patch.object(hourly, "_now_hour_chi", return_value=8):
+        await hourly.record_recommend()
+
+    counts = await hourly.get_counts()
+    # Both days survive — day A's 3 increments must NOT be lost on rollover.
+    assert counts[day_a][10] == 3
+    assert counts[day_b][8] == 1

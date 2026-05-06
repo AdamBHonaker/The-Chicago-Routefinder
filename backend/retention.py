@@ -94,12 +94,19 @@ _FLUSH_EVERY_N_WRITES = 10
 # ---------------------------------------------------------------------------
 
 def _bloom_bit_positions(fingerprint: bytes) -> list[int]:
-    """Return BLOOM_K bit positions for ``fingerprint`` in [0, BLOOM_M)."""
-    positions: list[int] = []
-    for i in range(BLOOM_K):
-        h = hashlib.sha256(fingerprint + i.to_bytes(2, "big")).digest()
-        positions.append(int.from_bytes(h[:4], "big") % BLOOM_M)
-    return positions
+    """Return BLOOM_K bit positions for ``fingerprint`` in [0, BLOOM_M).
+
+    Uses Kirsch–Mitzenmacher double hashing: one SHA-256 of the fingerprint is
+    split into two 16-byte halves h1, h2, and the K positions are derived as
+    (h1 + i*h2) mod BLOOM_M. This produces the same false-positive rate as K
+    independent hashes (proven in Kirsch & Mitzenmacher 2008) at the cost of
+    one SHA-256 per call instead of K (~7×) — a meaningful saving on every
+    /ping where retention.record_visit fires both check and add (OPT-BE-219).
+    """
+    digest = hashlib.sha256(fingerprint).digest()
+    h1 = int.from_bytes(digest[:16], "big")
+    h2 = int.from_bytes(digest[16:], "big") | 1  # force h2 odd so it's coprime with most BLOOM_M values
+    return [(h1 + i * h2) % BLOOM_M for i in range(BLOOM_K)]
 
 
 def _bloom_add(bits: bytearray, fingerprint: bytes) -> None:

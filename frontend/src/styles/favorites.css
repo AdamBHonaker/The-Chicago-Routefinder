@@ -1,4 +1,16 @@
 
+/* Touch-state family system (FEAT-012) — see layout.css for the full system.
+ * This file mixes families:
+ *   • GHOST — .label-cancel-btn, .save-route-btn, .route-label-cancel-btn,
+ *             .saved-dropdown-item (transparent ground; pressed inverts to
+ *             ink/paper).
+ *   • INK-FILL — .label-save-btn, .route-label-save-btn (uses --opacity-hover
+ *             / --opacity-pressed).
+ *   • ICON/LINK — .star-btn, .geo-btn, .geo-denied-dismiss,
+ *             .saved-dropdown-delete, .saved-route-go, .saved-route-delete
+ *             (color-shift only; no :active rule per decision #14).
+ */
+
 /* ── Favorites — Location field star + dropdown ─────────────────────────── */
 
 .field-wrapper {
@@ -126,6 +138,7 @@
   white-space: nowrap;
 }
 .label-save-btn:hover { opacity: var(--opacity-hover); }
+.label-save-btn:active { opacity: var(--opacity-pressed); }
 
 .label-cancel-btn {
   background: transparent;
@@ -139,6 +152,7 @@
   white-space: nowrap;
 }
 .label-cancel-btn:hover { border-color: var(--ink); color: var(--ink); }
+.label-cancel-btn:active { background: var(--ink); color: var(--paper); border-color: var(--ink); }
 
 .fav-limit-error {
   font-family: var(--sans);
@@ -174,6 +188,7 @@
 }
 .saved-dropdown-item:last-child { border-bottom: none; }
 .saved-dropdown-item:hover { background: var(--paper-folio); }
+.saved-dropdown-item:active { background: var(--ink); color: var(--paper); }
 
 /* Editorial section marker for saved places (§N). Italic Fraunces, mute color. */
 .saved-marker {
@@ -251,6 +266,7 @@
   white-space: nowrap;
 }
 .save-route-btn:hover { border-color: var(--ink); color: var(--ink); }
+.save-route-btn:active:not(.save-route-btn--saved) { background: var(--ink); color: var(--paper); border-color: var(--ink); }
 .save-route-btn--saved { border-color: var(--field); color: var(--field); }
 
 .route-label-save-panel {
@@ -289,6 +305,7 @@
   transition: opacity var(--dur-quick) var(--ease-out);
 }
 .route-label-save-btn:hover { opacity: var(--opacity-hover); }
+.route-label-save-btn:active { opacity: var(--opacity-pressed); }
 
 .route-label-cancel-btn {
   background: transparent;
@@ -302,6 +319,7 @@
   transition: border-color var(--dur-quick) var(--ease-out), color var(--dur-quick) var(--ease-out);
 }
 .route-label-cancel-btn:hover { border-color: var(--ink); color: var(--ink); }
+.route-label-cancel-btn:active { background: var(--ink); color: var(--paper); border-color: var(--ink); }
 
 /* ── Saved Routes Panel ──────────────────────────────────────────────────── */
 

@@ -1,0 +1,17 @@
+<!--
+  Oceania silhouette for the continent-first language picker. Australia
+  dominant, with simplified suggestions of New Zealand and a Pacific island
+  cluster. The tile is currently a placeholder — no languages are assigned
+  to Oceania yet (planned: Tok Pisin, Māori, Sāmoan, ʻŌlelo Hawaiʻi).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">
+  <!-- Australia -->
+  <path d="M22 46 L40 42 L60 42 L74 46 L78 54 L74 64 L62 70 L46 70 L30 66 L20 58 Z" />
+  <!-- New Zealand (two-island sketch) -->
+  <path d="M82 70 L86 72 L86 78 L82 76 Z" />
+  <path d="M84 80 L88 82 L86 86 L82 84 Z" />
+  <!-- Pacific island cluster (NE) -->
+  <circle cx="84" cy="34" r="2" />
+  <circle cx="76" cy="28" r="1.5" />
+  <circle cx="88" cy="42" r="1.5" />
+</svg>

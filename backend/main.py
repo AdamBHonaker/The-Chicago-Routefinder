@@ -628,11 +628,12 @@ async def _resolve_locations(
     Raises HTTPException(400) if either location is unresolvable or they are
     the same location.
     """
-    (origin_stations, origin_bus_stops, _), (dest_stations, dest_bus_stops, dest_match) = (
-        await asyncio.gather(
-            loop.run_in_executor(None, resolve_location, request.origin),
-            loop.run_in_executor(None, resolve_location, request.destination),
-        )
+    (
+        (origin_stations, origin_bus_stops, _, origin_coords),
+        (dest_stations,   dest_bus_stops,   dest_match, dest_coords),
+    ) = await asyncio.gather(
+        loop.run_in_executor(None, resolve_location, request.origin),
+        loop.run_in_executor(None, resolve_location, request.destination),
     )
     if not origin_stations and not origin_bus_stops:
         raise HTTPException(
@@ -652,10 +653,17 @@ async def _resolve_locations(
             ),
         )
 
-    origin_coords, dest_coords = await asyncio.gather(
-        loop.run_in_executor(None, coords_for_location, request.origin, origin_stations),
-        loop.run_in_executor(None, coords_for_location, request.destination, dest_stations),
-    )
+    # If resolve_location produced stations but no coords (rare — e.g. the
+    # geocoder cache has a None entry but find_nearest_* still returned hits
+    # via a previous resolution path), fall back to coords_for_location's
+    # station-centroid logic so routing still has a starting point.
+    if origin_coords is None or dest_coords is None:
+        fallback_origin, fallback_dest = await asyncio.gather(
+            loop.run_in_executor(None, coords_for_location, request.origin, origin_stations),
+            loop.run_in_executor(None, coords_for_location, request.destination, dest_stations),
+        )
+        origin_coords = origin_coords or fallback_origin
+        dest_coords   = dest_coords   or fallback_dest
 
     if origin_coords and dest_coords:
         dlat = origin_coords[0] - dest_coords[0]
@@ -835,9 +843,20 @@ async def _run_routing(
                     [r for _t, _w, r in transfer_ranked_raw],
                     effective_speed,
                 )
-                # Rebuild totals after walk scaling (total was computed before scaling)
+                # Rebuild totals after walk scaling (total was computed before scaling).
+                # Include `route.transfers * TRANSFER_PENALTY_MINUTES` so this matches
+                # the train-route shape (_rank_routes adds the same penalty), keeping
+                # _apply_transfer_wait_estimates() — which assumes the penalty is in
+                # the total and subtracts it before re-adding live waits — correct
+                # for bus+bus routes too.
                 transfer_ranked_raw = [
-                    (route.total_minutes_no_wait + (w or 0), w, route)
+                    (
+                        route.total_minutes_no_wait
+                        + (w or 0)
+                        + route.transfers * TRANSFER_PENALTY_MINUTES,
+                        w,
+                        route,
+                    )
                     for _t, w, route in transfer_ranked_raw
                 ]
                 transfer_ranked = _rank_bus_routes(transfer_ranked_raw)
@@ -1294,7 +1313,14 @@ async def autocomplete(
             ranked.append((tier, score, idx))
 
     ranked.sort(key=lambda x: (x[0], x[1]))
-    return {"suggestions": [_ac_master[idx] for _, _, idx in ranked[:8]]}
+    # Project to the public shape so internal indexing fields (_nl, _words)
+    # don't leak into the response payload (OPT-BE-223).
+    return {
+        "suggestions": [
+            {"label": s["label"], "value": s["value"], "type": s["type"]}
+            for s in (_ac_master[idx] for _, _, idx in ranked[:8])
+        ]
+    }
 
 
 # ---------------------------------------------------------------------------

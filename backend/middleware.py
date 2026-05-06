@@ -10,6 +10,7 @@ to wire in.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from urllib.parse import urlparse
@@ -115,22 +116,31 @@ def register_middlewares(
         is_recommend = (path == "/recommend")
         ip = _client_ip(request)
 
-        try:
-            await dau.record_visit(ip)
-        except Exception as e:
-            logger.debug("[analytics] dau.record_visit failed: %s", e)
-        try:
-            await geography.record_visit(ip)
-        except Exception as e:
-            logger.debug("[analytics] geography.record_visit failed: %s", e)
+        # All analytics counters use independent asyncio.Locks and write to
+        # separate files, so they have no data dependencies between them.
+        # Run them concurrently with asyncio.gather so the response isn't
+        # held while each one completes one-by-one (OPT-BE-222). Each task
+        # is wrapped so an analytics-layer fault never breaks the request.
 
-        if not is_recommend:
-            # Device class + referrer fire on /ping, which the frontend hits once
-            # per page load on App mount. /recommend reuses the existing session.
+        async def _safe_dau() -> None:
+            try:
+                await dau.record_visit(ip)
+            except Exception as e:
+                logger.debug("[analytics] dau.record_visit failed: %s", e)
+
+        async def _safe_geography() -> None:
+            try:
+                await geography.record_visit(ip)
+            except Exception as e:
+                logger.debug("[analytics] geography.record_visit failed: %s", e)
+
+        async def _safe_devices() -> None:
             try:
                 await devices.record_visit(request.headers.get("user-agent"))
             except Exception as e:
                 logger.debug("[analytics] devices.record_visit failed: %s", e)
+
+        async def _safe_referrers() -> None:
             try:
                 await referrers.record_visit(
                     request.headers.get("referer"),
@@ -139,18 +149,52 @@ def register_middlewares(
             except Exception as e:
                 logger.debug("[analytics] referrers.record_visit failed: %s", e)
 
-        if is_recommend:
+        async def _safe_hourly() -> None:
             try:
                 await hourly.record_recommend()
             except Exception as e:
                 logger.debug("[analytics] hourly.record_recommend failed: %s", e)
 
-        try:
-            sid = await sessions.touch(
-                request.cookies.get(sessions.COOKIE_NAME),
-                is_recommend=is_recommend,
-            )
-            secure = os.getenv("APP_ENV") == "production"
+        async def _safe_sessions() -> str | None:
+            try:
+                return await sessions.touch(
+                    request.cookies.get(sessions.COOKIE_NAME),
+                    is_recommend=is_recommend,
+                )
+            except Exception as e:
+                logger.debug("[analytics] sessions.touch failed: %s", e)
+                return None
+
+        async def _safe_retention() -> str | None:
+            try:
+                return await retention.record_visit(
+                    request.cookies.get(retention.COOKIE_NAME) or None
+                )
+            except Exception as e:
+                logger.debug("[analytics] retention.record_visit failed: %s", e)
+                return None
+
+        # Build the task list per path. sessions/retention return values
+        # used to set cookies; capture them by index after gather.
+        tasks: list = [_safe_dau(), _safe_geography(), _safe_sessions()]
+        sid_idx = 2
+        rid_idx: int | None = None
+        if is_recommend:
+            tasks.append(_safe_hourly())
+        else:
+            # Device class + referrer fire on /ping, which the frontend hits once
+            # per page load on App mount. /recommend reuses the existing session.
+            # FEAT-002 retention also fires only on /ping so the same browser
+            # opening multiple tabs doesn't inflate the counter.
+            tasks.extend([_safe_devices(), _safe_referrers(), _safe_retention()])
+            rid_idx = len(tasks) - 1
+
+        results = await asyncio.gather(*tasks)
+        sid = results[sid_idx]
+        rid = results[rid_idx] if rid_idx is not None else None
+
+        secure = os.getenv("APP_ENV") == "production"
+        if sid is not None:
             response.set_cookie(
                 key=sessions.COOKIE_NAME,
                 value=sid,
@@ -160,27 +204,15 @@ def register_middlewares(
                 samesite="lax",
                 path="/",
             )
-        except Exception as e:
-            logger.debug("[analytics] sessions.touch failed: %s", e)
-
-        # FEAT-002: new vs returning visitors. Fires only on /ping (app load)
-        # so the same browser opening multiple tabs doesn't inflate the counter.
-        if not is_recommend:
-            try:
-                rid = await retention.record_visit(
-                    request.cookies.get(retention.COOKIE_NAME) or None
-                )
-                secure = os.getenv("APP_ENV") == "production"
-                response.set_cookie(
-                    key=retention.COOKIE_NAME,
-                    value=rid,
-                    max_age=retention.COOKIE_MAX_AGE,
-                    httponly=True,
-                    secure=secure,
-                    samesite="lax",
-                    path="/",
-                )
-            except Exception as e:
-                logger.debug("[analytics] retention.record_visit failed: %s", e)
+        if rid is not None:
+            response.set_cookie(
+                key=retention.COOKIE_NAME,
+                value=rid,
+                max_age=retention.COOKIE_MAX_AGE,
+                httponly=True,
+                secure=secure,
+                samesite="lax",
+                path="/",
+            )
 
         return response

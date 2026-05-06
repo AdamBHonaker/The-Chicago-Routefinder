@@ -1,4 +1,9 @@
 
+/* Touch-state family system (FEAT-012) — see layout.css for the full system.
+ * .share-btn is GHOST family: transparent ground → border-color/color shift
+ * on hover; pressed inverts to background:--ink; color:--paper.
+ */
+
 /* ── Share button on route card ─────────────────────────────────────────── */
 
 .route-card-actions {
@@ -25,6 +30,7 @@
 }
 
 .share-btn:hover { border-color: var(--ink); color: var(--ink); }
+.share-btn:active:not(.share-btn--copied) { background: var(--ink); color: var(--paper); border-color: var(--ink); }
 
 .share-btn--copied {
   border-color: var(--field);

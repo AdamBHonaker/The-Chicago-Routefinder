@@ -6,7 +6,10 @@ import "./App.css";
 // app background colour) so cold loads don't flash a skeleton.
 const MapView = lazy(() => import("./MapView.jsx"));
 import LoadingSkeleton from "./components/LoadingSkeleton.jsx";
-import SettingsPanel from "./components/SettingsPanel.jsx";
+// SettingsPanel + SavedRoutesPanel are only opened on user click (gear / star)
+// — keep them out of the eager bundle (OPT-FE-204).
+const SettingsPanel    = lazy(() => import("./components/SettingsPanel.jsx"));
+const SavedRoutesPanel = lazy(() => import("./components/SavedRoutesPanel.jsx"));
 import RouteCard from "./components/RouteCard.jsx";
 import PinnedStopsBoard from "./components/PinnedStopsBoard.jsx";
 import ServiceAlertsBar from "./components/ServiceAlertsBar.jsx";
@@ -24,10 +27,13 @@ import {
   RETRY_DELAYS_MS,
   BYOK_ENABLED,
   WALK_SPEED_FACTORS,
+  HOUSE_AD_ENABLED,
+  HOUSE_AD_URL,
+  HOUSE_AD_TEXT,
+  ARRIVED_TOAST_DISMISS_MS,
 } from "./constants.js";
 import LabelSavePanel from "./components/LabelSavePanel.jsx";
 import LocationInput from "./components/LocationInput.jsx";
-import SavedRoutesPanel from "./components/SavedRoutesPanel.jsx";
 import SharedRouteBanner from "./components/SharedRouteBanner.jsx";
 import SideRail from "./components/SideRail.jsx";
 import { useApiQuery } from "./hooks/useApiQuery.js";
@@ -42,6 +48,26 @@ import { track } from "./analytics.js";
 // Full implementation and JSDoc live in utils/fetchWithRetry.js (TD-040).
 function fetchWithRetry(url, options, onRetrying) {
   return _fetchWithRetry(url, options, RETRY_DELAYS_MS, onRetrying);
+}
+
+// House ad slot (Feature Monetization, Chunk 1). Renders only when
+// VITE_HOUSE_AD_ENABLED=true and both URL+TEXT env vars are set. Mounted
+// at the bottom of the results column and hidden during an active trip.
+// FTC: rel="sponsored" + visible "SPONSORED" kicker. The body copy is
+// intentionally not translated — affiliate links are typically en-US.
+function AdSlot({ kicker }) {
+  if (!HOUSE_AD_ENABLED || !HOUSE_AD_URL || !HOUSE_AD_TEXT) return null;
+  return (
+    <a
+      className="ad-slot"
+      href={HOUSE_AD_URL}
+      target="_blank"
+      rel="sponsored noopener noreferrer"
+    >
+      <span className="ad-slot__kicker">{kicker}</span>
+      <span className="ad-slot__body">{HOUSE_AD_TEXT}</span>
+    </a>
+  );
 }
 
 export default function App() {
@@ -214,7 +240,7 @@ export default function App() {
   // Auto-dismiss after 5 s; clear the timer on unmount or re-trigger.
   useEffect(() => {
     if (!showArrivedToast) return;
-    const id = setTimeout(() => setShowArrivedToast(false), 5000);
+    const id = setTimeout(() => setShowArrivedToast(false), ARRIVED_TOAST_DISMISS_MS);
     return () => clearTimeout(id);
   }, [showArrivedToast]);
 
@@ -379,32 +405,36 @@ export default function App() {
           />
 
           {settingsOpen && (
-            <SettingsPanel
-              apiKey={byokKey}
-              onSave={handleSaveByokKey}
-              onClose={() => setSettingsOpen(false)}
-              aiEnabled={aiEnabled}
-              onAiChange={setAiEnabled}
-              walkSpeed={walkSpeed}
-              onWalkSpeedChange={setWalkSpeed}
-            />
+            <Suspense fallback={null}>
+              <SettingsPanel
+                apiKey={byokKey}
+                onSave={handleSaveByokKey}
+                onClose={() => setSettingsOpen(false)}
+                aiEnabled={aiEnabled}
+                onAiChange={setAiEnabled}
+                walkSpeed={walkSpeed}
+                onWalkSpeedChange={setWalkSpeed}
+              />
+            </Suspense>
           )}
 
           {effectiveShowSavedRoutes && (
-            <SavedRoutesPanel
-              savedRoutes={savedRoutes}
-              onDeleteRoute={handleDeleteRoute}
-              onRouteSelect={(orig, dest) => {
-                setOrigin(orig);
-                setDestination(dest);
-                setShowSavedRoutes(false);
-                setActiveTab("home");
-              }}
-              onClose={() => {
-                setShowSavedRoutes(false);
-                if (activeTab === "saved") setActiveTab("home");
-              }}
-            />
+            <Suspense fallback={null}>
+              <SavedRoutesPanel
+                savedRoutes={savedRoutes}
+                onDeleteRoute={handleDeleteRoute}
+                onRouteSelect={(orig, dest) => {
+                  setOrigin(orig);
+                  setDestination(dest);
+                  setShowSavedRoutes(false);
+                  setActiveTab("home");
+                }}
+                onClose={() => {
+                  setShowSavedRoutes(false);
+                  if (activeTab === "saved") setActiveTab("home");
+                }}
+              />
+            </Suspense>
           )}
 
           {activeTab === "alerts" && (
@@ -613,6 +643,7 @@ export default function App() {
                         </Fragment>
                       );
                     })}
+                    {!tripActive && <AdSlot kicker={t("ad_sponsored_kicker")} />}
                   </section>
                 )}
               </div>
@@ -634,6 +665,7 @@ export default function App() {
               onArrived={() => { track("trip_completed"); setShowArrivedToast(true); }}
               selectedTransferId={selectedTransferId}
               onSelectTransfer={setSelectedTransferId}
+              transferPoints={tripTransferPoints}
             />
           </Suspense>
         </div>

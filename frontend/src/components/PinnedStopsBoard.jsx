@@ -1,10 +1,11 @@
+import { memo } from "react";
 import { useTranslation } from "react-i18next";
 import { TRAIN_LINE_CODE_TO_NAME } from "../lineColors.js";
 import LinePill from "./LinePill.jsx";
 import SignalLamp from "./SignalLamp.jsx";
 import TwoToneHeading from "./TwoToneHeading.jsx";
 
-function ArrivalRow({ route, destination, minutes }) {
+const ArrivalRow = memo(function ArrivalRow({ route, destination, minutes }) {
   const { t } = useTranslation();
   // /stop-arrivals sends train arrivals with the raw CTA `rt` code (e.g. "Red",
   // "Brn", "G") in `route`. Bus arrivals send the bus route number/letter.
@@ -25,9 +26,9 @@ function ArrivalRow({ route, destination, minutes }) {
       <span className="psb-arrival-due">{due}</span>
     </div>
   );
-}
+});
 
-export default function PinnedStopsBoard({ stops, arrivals, onUnpin, onRefresh }) {
+function PinnedStopsBoard({ stops, arrivals, onUnpin, onRefresh }) {
   const { t } = useTranslation();
   if (!stops || stops.length === 0) return null;
 
@@ -106,3 +107,8 @@ export default function PinnedStopsBoard({ stops, arrivals, onUnpin, onRefresh }
     </section>
   );
 }
+
+// Memoized so unrelated App-state changes (search submission, BYOK toggle,
+// transfer selection) don't cause this board to re-render and rebuild every
+// ArrivalRow JSX subtree. Props are scalars / stable refs (OPT-FE-207).
+export default memo(PinnedStopsBoard);

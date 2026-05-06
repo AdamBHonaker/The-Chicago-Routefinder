@@ -34,9 +34,32 @@
   --line-pink:    #e27ea6;
   --line-yellow:  #f9e300;
 
-  /* Type */
+  /* Type
+   *
+   * --sans chain (Feature LocaleExpansion, Chunk 13): Inter is the primary
+   * for Latin / Greek / Cyrillic. The non-Latin families that follow are
+   * gated by their @font-face unicode-range (loaded in index.html), so the
+   * browser only reaches for them when a glyph in that script renders —
+   * order among non-Latin entries does not affect correctness, only the
+   * fallback if a font fails to load. System font stack closes the chain.
+   * Each family was picked to harmonize with Inter's humanist proportions
+   * where a sibling existed (Heebo, Sarabun, IBM Plex Sans Arabic, Hind),
+   * with Noto Sans <Script> as the safe baseline for scripts where no
+   * Inter-aligned alternative is available. See index.html font block for
+   * the full per-script rationale. CJK (zh / yue / ja / ko / nan) uses the
+   * system font fallback — CJK font binaries are 2–30 MB so we deliberately
+   * skip a web font for those locales.
+   */
   --serif:  "Fraunces", "GT Sectra", "Playfair Display", Georgia, serif;
-  --sans:   "Inter", -apple-system, system-ui, sans-serif;
+  --sans:
+    "Inter",
+    "IBM Plex Sans Arabic", "Heebo",
+    "Hind", "Hind Siliguri", "Hind Madurai", "Hind Guntur", "Hind Vadodara",
+    "Noto Sans Malayalam", "Noto Sans Oriya", "Noto Sans Sinhala",
+    "Sarabun", "Noto Sans Lao", "Hanuman", "Padauk",
+    "Noto Sans Kayah Li", "Abyssinica SIL", "Noto Sans Syriac",
+    "Noto Sans Hanifi Rohingya",
+    -apple-system, system-ui, sans-serif;
   --mono:   "JetBrains Mono", "IBM Plex Mono", ui-monospace, monospace;
 
   /* Type scale (D2 spec) */
@@ -47,8 +70,12 @@
   --fs-body-sm:    14px;   --lh-body-sm:    1.5;
   --fs-caps:       10px;   --lh-caps:       1.2;    --ls-caps: 2px;
   --fs-mono:       13px;   --lh-mono:       1.3;
-  /* Drop-cap duration sizes (D2 spec) — italic Fraunces 700, lh 0.82 */
+  /* Drop-cap duration sizes (D2 spec) — italic Fraunces 700, lh 0.82.
+   * Ladder: ≤359px → 56, 360–400px → mobile (72), 401–800px → tablet (60),
+   * ≥801px → desktop (52). Tablet step keeps phone-italic character on iPhone
+   * Pro Max / iPad Mini portrait without the 72px feeling oversized. */
   --drop-cap-desktop: 52px;   /* route-card, desktop column */
+  --drop-cap-tablet:  60px;   /* route-card, 401–800px intermediate */
   --drop-cap-mobile:  72px;   /* route-card, mobile/hero */
   --drop-cap-hero:    96px;   /* live-trip countdown */
 
@@ -89,9 +116,18 @@
   --dur-slow:   320ms;
 
   /* Opacity scale */
-  --opacity-hover: 0.82;  /* hover / active states */
-  --opacity-soft:  0.55;  /* subtle dimming */
-  --opacity-mute:  0.45;  /* disabled / inactive */
+  --opacity-hover:   0.82;  /* hover state on ink-fill primaries */
+  --opacity-pressed: 0.7;   /* :active pressed state on ink-fill primaries */
+  --opacity-soft:    0.55;  /* subtle dimming */
+  --opacity-mute:    0.45;  /* disabled / inactive */
+
+  /* Touch / chrome sizing */
+  --touch-min:        44px;  /* WCAG / iOS HIG minimum touch target */
+  --tab-bar-height:   56px;  /* mobile bottom tab bar (excludes safe-area inset) */
+  --map-compass-width: 100px; /* approx. width of .map-heading-btn — used by
+                                 .map-legend on narrow viewports to reserve a
+                                 right-edge corridor so legend and compass form
+                                 a coordinated bottom rail without colliding. */
 
   /* Z-index scale */
   --z-base:        1;    /* local stacking / establish context */

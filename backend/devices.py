@@ -19,6 +19,7 @@ Maintenance:
 
 import asyncio
 import logging
+from functools import lru_cache
 
 import analytics_store
 
@@ -46,9 +47,20 @@ def _save(counts: dict[str, dict[str, int]]) -> None:
 
 
 def classify(user_agent: str | None) -> str:
-    """Bucket a UA string into one of ``_BUCKETS``. Pure function — call from tests directly."""
+    """Bucket a UA string into one of ``_BUCKETS``. Pure function — call from tests directly.
+
+    Results are LRU-cached because UA strings repeat heavily across requests
+    (one user makes many /ping calls; common Chrome/Safari/iOS UAs repeat
+    across users), and the underlying ua-parser regex DB walk is the single
+    biggest CPU cost in the analytics middleware (OPT-BE-220).
+    """
     if not user_agent:
         return "unknown"
+    return _classify_cached(user_agent)
+
+
+@lru_cache(maxsize=1024)
+def _classify_cached(user_agent: str) -> str:
     try:
         from ua_parser import user_agent_parser  # type: ignore
     except ImportError:
@@ -94,9 +106,17 @@ async def record_visit(user_agent: str | None) -> str:
         loop = asyncio.get_running_loop()
 
         if today != _current_day:
+            # Flush any pending in-memory updates first so up to
+            # _FLUSH_EVERY_N_WRITES - 1 unflushed previous-day increments
+            # aren't discarded by the reload.
+            if _counts and _writes_since_flush > 0:
+                await loop.run_in_executor(None, _save, _counts)
             new_counts = await loop.run_in_executor(None, _load)
-            _counts.clear()
-            _counts.update(new_counts)
+            # Merge instead of clearing so any in-memory rows that the disk
+            # snapshot lacks are preserved.
+            for d, day_counts in new_counts.items():
+                if d not in _counts:
+                    _counts[d] = day_counts
             _current_day = today
             _writes_since_flush = 0
 

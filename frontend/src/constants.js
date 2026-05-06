@@ -133,6 +133,20 @@ export const WALK_SPEED_FACTORS = { slow: 0.75, standard: 1.0, brisk: 1.25 };
 export const SHARE_STATE_RESET_MS = 2000;
 
 // ---------------------------------------------------------------------------
+// Arrived-toast auto-dismiss (TD-FE-017). The "you've arrived" toast clears
+// itself this many ms after the trip completes.
+// ---------------------------------------------------------------------------
+export const ARRIVED_TOAST_DISMISS_MS = 5000;
+
+// ---------------------------------------------------------------------------
+// Panel-map resize delay (TD-FE-017). On desktop the .panel-map column slides
+// in over `--dur-base` (220 ms — see styles/tokens.css). MapLibre's WebGL
+// framebuffer has to be told to resize *after* the transition settles. Keep
+// this in lockstep with the CSS token; if --dur-base changes, change here too.
+// ---------------------------------------------------------------------------
+export const PANEL_MAP_RESIZE_DELAY_MS = 220;
+
+// ---------------------------------------------------------------------------
 // Masthead epoch year (TD-109). The newspaper-style "VOL." number on the
 // header is computed as (currentYear - MASTHEAD_EPOCH_YEAR). The epoch is the
 // year this project was first published.
@@ -145,3 +159,32 @@ export const MASTHEAD_EPOCH_YEAR = 2022;
 // The backend must also have BYOK_ENABLED=true to honour the key.
 // ---------------------------------------------------------------------------
 export const BYOK_ENABLED = import.meta.env.VITE_BYOK_ENABLED === "true";
+
+// ---------------------------------------------------------------------------
+// Continent-first language picker feature flag (Feature LocaleExpansion,
+// Chunk 15). Default OFF — when false, Masthead renders the existing flat
+// <select>. Set VITE_CONTINENT_PICKER_ENABLED=true once translations and
+// continent SVGs have shipped end-to-end.
+// ---------------------------------------------------------------------------
+export const CONTINENT_PICKER_ENABLED =
+  import.meta.env.VITE_CONTINENT_PICKER_ENABLED === "true";
+
+// ---------------------------------------------------------------------------
+// Translation-feedback target. Day-one acceptable: a mailto: or GitHub
+// Issues link. Used by the machine-translated review badge under the
+// language picker. Override with VITE_TRANSLATION_FEEDBACK_URL in Vercel.
+// ---------------------------------------------------------------------------
+export const TRANSLATION_FEEDBACK_URL =
+  import.meta.env.VITE_TRANSLATION_FEEDBACK_URL ||
+  "mailto:wayfarer.atlas@gmail.com?subject=Translation%20issue";
+
+// ---------------------------------------------------------------------------
+// House ad — Phase 1 monetization (Feature Monetization, Chunk 1).
+// A single static <a> rendered below the route list. URL and copy are
+// configurable via Vercel env vars so the affiliate target can be swapped
+// without a redeploy. Default OFF so dev builds never render the slot.
+// ---------------------------------------------------------------------------
+export const HOUSE_AD_ENABLED =
+  import.meta.env.VITE_HOUSE_AD_ENABLED === "true";
+export const HOUSE_AD_URL = import.meta.env.VITE_HOUSE_AD_URL || "";
+export const HOUSE_AD_TEXT = import.meta.env.VITE_HOUSE_AD_TEXT || "";

@@ -635,3 +635,71 @@ class TestApplyTransferWaitEstimates:
         assert out[1][2] is a
         assert out[0][0] == pytest.approx(33.0)
         assert out[1][0] == pytest.approx(47.0)
+
+
+class TestBusBusTransferTotalShape:
+    """Regression tests: BUG-008 — bus+bus transfer rebuild in _run_routing must
+    pass the SAME total shape as _rank_routes (no-wait + first-wait + N×penalty)
+    so _apply_transfer_wait_estimates can correctly subtract and re-add the
+    per-transfer wait. Before the fix, the rebuild dropped the penalty and
+    bus+bus totals ended up TRANSFER_PENALTY_MINUTES too low.
+    """
+
+    def _bus_bus_route(self, walk_total: float = 6.0, transit_total: float = 30.0) -> Route:
+        """5-leg route shaped like find_bus_transfer_routes() output:
+        Walk → Bus A → Walk → Bus B → Walk, transfers=1."""
+        legs = [
+            _walk_leg("Your location", "Stop A", 2.0),
+            _transit_leg("22", "Northbound", "Stop A", "Stop Sk", 15.0),
+            _walk_leg("Stop Sk", "Stop T", 1.0),
+            _transit_leg("36", "Eastbound", "Stop T", "Stop Exit", 15.0),
+            _walk_leg("Stop Exit", "Your destination", 3.0),
+        ]
+        return Route(
+            legs=legs,
+            transit_minutes=transit_total,
+            walk_minutes_total=walk_total,
+            transfers=1,
+            first_transit_leg_index=1,
+        )
+
+    def _rebuild_bus_total(self, route: Route, wait_a: int) -> float:
+        """Mirror the post-walk-scaling rebuild in main._run_routing()."""
+        return route.total_minutes_no_wait + wait_a + route.transfers * TRANSFER_PENALTY_MINUTES
+
+    def test_bus_bus_no_live_leg2_wait_uses_penalty(self):
+        """Without live leg-2 data, total = no_wait + wait_A + TRANSFER_PENALTY_MINUTES."""
+        route = self._bus_bus_route()
+        wait_a = 5
+        total = self._rebuild_bus_total(route, wait_a)
+        # leg[3] (the second TransitLeg) has transfer_wait_minutes = None by default
+        out = _apply_transfer_wait_estimates([(total, wait_a, route)])
+        adjusted, _wait, _r = out[0]
+        # Expected: 36 (no_wait) + 5 (wait_A) + 3 (fallback leg-2) = 44
+        expected = route.total_minutes_no_wait + wait_a + TRANSFER_PENALTY_MINUTES
+        assert adjusted == pytest.approx(expected)
+
+    def test_bus_bus_with_live_leg2_wait_replaces_penalty(self):
+        """With live leg-2 wait, total = no_wait + wait_A + live_leg2_wait."""
+        route = self._bus_bus_route()
+        route.legs[3].transfer_wait_minutes = 7   # live wait at transfer stop
+        wait_a = 5
+        total = self._rebuild_bus_total(route, wait_a)
+        out = _apply_transfer_wait_estimates([(total, wait_a, route)])
+        adjusted, _wait, _r = out[0]
+        # Expected: 36 + 5 + 7 = 48 (NOT 45 — that would be the BUG-008 result)
+        expected = route.total_minutes_no_wait + wait_a + 7
+        assert adjusted == pytest.approx(expected)
+
+    def test_bus_bus_total_not_3_min_understated(self):
+        """Direct assertion: the rebuild + apply pipeline does NOT silently
+        shave TRANSFER_PENALTY_MINUTES off the bus+bus total."""
+        route = self._bus_bus_route(walk_total=6.0, transit_total=30.0)
+        wait_a = 4
+        total = self._rebuild_bus_total(route, wait_a)
+        out = _apply_transfer_wait_estimates([(total, wait_a, route)])
+        adjusted, _, _ = out[0]
+        # Pre-fix bug: adjusted == 36 + 4 = 40 (3 min too low)
+        # Post-fix:    adjusted == 36 + 4 + 3 = 43 (correct)
+        assert adjusted == pytest.approx(43.0)
+        assert adjusted != pytest.approx(40.0)

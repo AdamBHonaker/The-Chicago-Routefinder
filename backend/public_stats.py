@@ -24,6 +24,9 @@ Maintenance:
 
 from __future__ import annotations
 
+from pathlib import Path
+from string import Template
+
 import funnel as _funnel_mod
 import retention as _retention_mod
 
@@ -271,311 +274,16 @@ def project_retention(raw: dict[str, dict]) -> dict:
 # Self-contained: no third-party scripts. JS hydrates panels on load; with JS
 # disabled the noscript fallback shows server-rendered headline numbers (DAU,
 # Chicago-metro %, sessions today) per the FEAT-009 acceptance criteria.
+#
+# The HTML/CSS/JS body lives in ``backend/templates/stats.html`` so it can be
+# edited with normal HTML tooling. Substitution uses ``string.Template`` —
+# placeholders are ``$lower_snake_case`` and unsubstituted slots stay literal
+# instead of crashing (``safe_substitute``). Read once at import time so the
+# request path stays I/O-free.
 
-_STATS_HTML_TEMPLATE = """<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>CTA Transit PWA — Public Stats</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="referrer" content="no-referrer">
-<style>
-  :root {
-    --bg: #faf6ef; --fg: #2a2622; --muted: #756e63; --accent: #b86b3a;
-    --card: #ffffff; --border: #e6dfd2; --grid: #f0e9da;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-    background: var(--bg); color: var(--fg); line-height: 1.5;
-  }
-  main { max-width: 720px; margin: 0 auto; padding: 32px 20px 64px; }
-  h1 { font-size: 28px; margin: 0 0 4px; letter-spacing: -0.01em; }
-  .sub { color: var(--muted); margin: 0 0 28px; font-size: 15px; }
-  .panel {
-    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
-    padding: 20px 22px; margin-bottom: 16px;
-  }
-  .panel h2 { margin: 0 0 8px; font-size: 16px; color: var(--muted); font-weight: 600;
-    text-transform: uppercase; letter-spacing: 0.04em; }
-  .big { font-size: 38px; font-weight: 700; letter-spacing: -0.02em; }
-  .stat-row { display: flex; flex-wrap: wrap; gap: 24px; margin-top: 6px; }
-  .stat-row > div small { display: block; font-size: 12px; color: var(--muted);
-    text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 2px; }
-  .stat-row > div b { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; }
-  .trend { display: flex; align-items: flex-end; gap: 3px; height: 60px; margin-top: 14px; }
-  .bar { background: var(--accent); flex: 1; min-height: 2px; border-radius: 2px 2px 0 0; }
-  .hour-grid { display: flex; align-items: flex-end; gap: 2px; height: 80px; margin-top: 14px; }
-  .hour-grid .bar { background: var(--accent); flex: 1; min-height: 2px; border-radius: 2px 2px 0 0; }
-  .hour-axis { display: flex; justify-content: space-between; font-size: 11px;
-    color: var(--muted); margin-top: 4px; }
-  .split { display: flex; height: 28px; border-radius: 6px; overflow: hidden;
-    border: 1px solid var(--border); margin-top: 12px; }
-  .split > span { display: flex; align-items: center; justify-content: center;
-    color: white; font-size: 12px; font-weight: 600; min-width: 1px; }
-  .split-legend { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 8px;
-    font-size: 13px; color: var(--muted); }
-  .split-legend i { display: inline-block; width: 10px; height: 10px;
-    border-radius: 2px; margin-right: 6px; vertical-align: middle; }
-  footer { margin-top: 32px; font-size: 13px; color: var(--muted); }
-  footer a { color: var(--accent); }
-  .err { color: #b04030; font-size: 14px; }
-  .funnel-bars { display: flex; flex-direction: column; gap: 6px; }
-  .funnel-row { display: flex; align-items: center; gap: 10px; }
-  .funnel-label { font-size: 12px; color: var(--muted); width: 150px; flex-shrink: 0; text-align: right; }
-  .funnel-bar-wrap { flex: 1; background: var(--grid); border-radius: 3px; height: 18px; }
-  .funnel-bar-fill { background: var(--accent); height: 100%; border-radius: 3px; min-width: 2px; }
-  .funnel-count { font-size: 12px; color: var(--muted); width: 60px; }
-</style>
-</head>
-<body>
-<main>
-  <h1>CTA Transit PWA — Public Stats</h1>
-  <p class="sub">Live engagement numbers, served from infrastructure we control.
-  No third-party analytics scripts on this page.</p>
+_TEMPLATE_PATH = Path(__file__).parent / "templates" / "stats.html"
+_STATS_TEMPLATE = Template(_TEMPLATE_PATH.read_text(encoding="utf-8"))
 
-  <section class="panel" id="dau-panel">
-    <h2>Daily unique visitors</h2>
-    <div class="big" id="dau-today">__DAU_TODAY__</div>
-    <div class="trend" id="dau-trend" aria-hidden="true"></div>
-  </section>
-
-  <section class="panel" id="metro-panel">
-    <h2>Chicago metro share</h2>
-    <div class="big" id="metro-today">__METRO_TODAY__</div>
-    <div class="sub" id="metro-detail">__METRO_DETAIL__</div>
-  </section>
-
-  <section class="panel" id="sessions-panel">
-    <h2>Sessions today</h2>
-    <div class="big" id="sessions-today">__SESSIONS_TODAY__</div>
-    <div class="stat-row">
-      <div><small>Avg duration</small><b id="sessions-avg">__SESSIONS_AVG__</b></div>
-      <div><small>Bounce rate</small><b id="sessions-bounce">__SESSIONS_BOUNCE__</b></div>
-    </div>
-  </section>
-
-  <section class="panel" id="hourly-panel">
-    <h2>Peak engagement hours</h2>
-    <div class="hour-grid" id="hourly-grid" aria-hidden="true"></div>
-    <div class="hour-axis"><span>12 a.m.</span><span>6 a.m.</span><span>noon</span><span>6 p.m.</span><span>11 p.m.</span></div>
-    <div class="sub" id="hourly-detail">__HOURLY_DETAIL__</div>
-  </section>
-
-  <section class="panel" id="devices-panel">
-    <h2>Device split (today)</h2>
-    <div class="split" id="devices-split" aria-hidden="true"></div>
-    <div class="split-legend" id="devices-legend">__DEVICES_LEGEND__</div>
-  </section>
-
-  <section class="panel" id="referrers-panel">
-    <h2>Traffic sources (today)</h2>
-    <div class="split" id="referrers-split" aria-hidden="true"></div>
-    <div class="split-legend" id="referrers-legend">__REFERRERS_LEGEND__</div>
-  </section>
-
-  <section class="panel" id="events-panel">
-    <h2>Engagement events (today)</h2>
-    <div class="stat-row">
-      <div><small>Recommendations served</small><b id="events-served">__EVENTS_SERVED__</b></div>
-      <div><small>Routes selected</small><b id="events-selected">__EVENTS_SELECTED__</b></div>
-      <div><small>Trips started</small><b id="events-trips">__EVENTS_TRIPS__</b></div>
-    </div>
-    <div class="sub" id="events-detail">__EVENTS_DETAIL__</div>
-  </section>
-
-  <section class="panel" id="funnel-panel">
-    <h2>Session funnel (today)</h2>
-    <div class="big" id="funnel-rate">__FUNNEL_RATE__</div>
-    <div class="sub">of sessions reached a route result</div>
-    <div class="funnel-bars" id="funnel-bars" aria-hidden="true" style="margin-top:14px"></div>
-    <div class="sub" id="funnel-detail">__FUNNEL_DETAIL__</div>
-  </section>
-
-  <section class="panel" id="retention-panel">
-    <h2>New vs returning visitors (today)</h2>
-    <div class="big" id="retention-rate">__RETENTION_RATE__</div>
-    <div class="sub">returning visitors today</div>
-    <div class="stat-row" style="margin-top:8px">
-      <div><small>New</small><b id="retention-new">__RETENTION_NEW__</b></div>
-      <div><small>Returning</small><b id="retention-returning">__RETENTION_RETURNING__</b></div>
-    </div>
-  </section>
-
-  <footer>
-    No third-party scripts on this page. See
-    <a href="/privacy">privacy notes</a>. Mean session length is
-    inflated by up to 30 min for the visitor's last request because
-    session-end is detected via server-side idle timeout.
-  </footer>
-</main>
-<script>
-(function() {
-  function fmt(n) { return new Intl.NumberFormat("en-US").format(n); }
-  function setText(id, t) { var el = document.getElementById(id); if (el) el.textContent = t; }
-  function fmtDuration(s) {
-    if (!s) return "—";
-    var m = Math.floor(s / 60), sec = Math.round(s % 60);
-    if (m < 1) return sec + "s";
-    return m + "m " + sec + "s";
-  }
-  function panelErr(panelId, msg) {
-    var p = document.getElementById(panelId);
-    var d = document.createElement("div"); d.className = "err"; d.textContent = msg;
-    p.appendChild(d);
-  }
-
-  function loadJSON(url) {
-    return fetch(url).then(function(r) {
-      if (!r.ok) throw new Error(url + " " + r.status);
-      return r.json();
-    });
-  }
-
-  // DAU + 30-day trend
-  loadJSON("/stats/dau").then(function(dau) {
-    if (dau.today) {
-      setText("dau-today", fmt(dau.today.count));
-      var trend = document.getElementById("dau-trend");
-      var last = dau.days.slice(-30);
-      var max = Math.max.apply(null, last.map(function(d){return d.count;}).concat([1]));
-      trend.innerHTML = last.map(function(d) {
-        var h = Math.max(2, Math.round(60 * d.count / max));
-        return '<div class="bar" title="' + d.date + ': ' + d.count + '" style="height:' + h + 'px"></div>';
-      }).join("");
-    }
-  }).catch(function() { panelErr("dau-panel", "Failed to load DAU."); });
-
-  // Chicago metro
-  loadJSON("/stats/geography").then(function(geo) {
-    if (geo.today && geo.today.total > 0) {
-      setText("metro-today", geo.today.share_pct.toFixed(1) + "%");
-      setText("metro-detail",
-        fmt(geo.today.metro) + " of " + fmt(geo.today.total) +
-        " visitors today are in the Chicago metro area.");
-    }
-  }).catch(function() { panelErr("metro-panel", "Failed to load geography."); });
-
-  // Sessions / bounce / duration
-  loadJSON("/stats/sessions").then(function(s) {
-    if (s.today) {
-      setText("sessions-today", fmt(s.today.sessions));
-      setText("sessions-avg", fmtDuration(s.today.avg_duration_seconds));
-      setText("sessions-bounce", s.today.bounce_rate_pct.toFixed(1) + "%");
-    }
-  }).catch(function() { panelErr("sessions-panel", "Failed to load sessions."); });
-
-  // Hour of day (24 bars)
-  loadJSON("/stats/hourly").then(function(h) {
-    var grid = document.getElementById("hourly-grid");
-    var arr = (h.today && h.today.hours) ? h.today.hours : new Array(24).fill(0);
-    var max = Math.max.apply(null, arr.concat([1]));
-    grid.innerHTML = arr.map(function(v, i) {
-      var ph = Math.max(2, Math.round(80 * v / max));
-      var label = i + ":00 — " + v + " requests";
-      return '<div class="bar" title="' + label + '" style="height:' + ph + 'px"></div>';
-    }).join("");
-    if (h.today && h.today.total > 0) {
-      var peakIdx = arr.indexOf(max);
-      setText("hourly-detail",
-        "Peak hour: " + peakIdx + ":00 (" + fmt(max) + " requests). Total today: " + fmt(h.today.total) + ".");
-    }
-  }).catch(function() { panelErr("hourly-panel", "Failed to load hourly."); });
-
-  // Device split — stacked bar
-  loadJSON("/stats/devices").then(function(d) {
-    var split = document.getElementById("devices-split");
-    var legend = document.getElementById("devices-legend");
-    if (!d.today || d.today.total === 0) return;
-    var total = d.today.total;
-    var parts = [
-      { name: "mobile",  v: d.today.mobile,  c: "#b86b3a" },
-      { name: "tablet",  v: d.today.tablet,  c: "#5a8779" },
-      { name: "desktop", v: d.today.desktop, c: "#2a2622" }
-    ];
-    split.innerHTML = parts.map(function(p) {
-      var pct = 100 * p.v / total;
-      return '<span style="background:' + p.c + ';width:' + pct.toFixed(2) + '%">' +
-        (pct >= 8 ? p.name + " " + pct.toFixed(0) + "%" : "") + '</span>';
-    }).join("");
-    legend.innerHTML = parts.map(function(p) {
-      var pct = (100 * p.v / total).toFixed(1);
-      return '<span><i style="background:' + p.c + '"></i>' + p.name + ' ' + pct + '% (' + fmt(p.v) + ')</span>';
-    }).join("");
-  }).catch(function() { panelErr("devices-panel", "Failed to load devices."); });
-
-  // Engagement events
-  loadJSON("/stats/events").then(function(e) {
-    if (!e.today) return;
-    setText("events-served",   fmt(e.today.recommend_returned));
-    setText("events-selected", fmt(e.today.route_selected));
-    setText("events-trips",    fmt(e.today.trip_completed));
-    if (e.today.recommend_submitted > 0) {
-      setText("events-detail",
-        fmt(e.today.recommend_submitted) + " recommendation searches today" +
-        (e.today.recommend_returned > 0
-          ? " (" + ((100 * e.today.recommend_returned / e.today.recommend_submitted)|0) + "% returned a result)"
-          : "."));
-    }
-  }).catch(function() { panelErr("events-panel", "Failed to load events."); });
-
-  // Session funnel
-  loadJSON("/stats/funnel").then(function(f) {
-    if (!f.today || !f.today.counts || f.today.counts[0] === 0) return;
-    setText("funnel-rate", f.today.result_rate_pct.toFixed(1) + "%");
-    var stages = f.today.stages;
-    var counts = f.today.counts;
-    var max = counts[0] || 1;
-    var bars = document.getElementById("funnel-bars");
-    bars.innerHTML = stages.map(function(s, i) {
-      var pct = (100 * counts[i] / max).toFixed(1);
-      var label = s.replace(/_/g, " ");
-      return '<div class="funnel-row">' +
-        '<div class="funnel-label">' + label + '</div>' +
-        '<div class="funnel-bar-wrap"><div class="funnel-bar-fill" style="width:' + pct + '%"></div></div>' +
-        '<div class="funnel-count">' + fmt(counts[i]) + '</div>' +
-        '</div>';
-    }).join("");
-    setText("funnel-detail",
-      fmt(counts[0]) + " sessions started · " +
-      f.today.result_rate_pct.toFixed(1) + "% reached a route result.");
-  }).catch(function() { panelErr("funnel-panel", "Failed to load funnel."); });
-
-  // New vs returning
-  loadJSON("/stats/retention").then(function(ret) {
-    if (!ret.today || ret.today.total === 0) return;
-    setText("retention-rate", ret.today.returning_pct.toFixed(1) + "%");
-    setText("retention-new", fmt(ret.today.new));
-    setText("retention-returning", fmt(ret.today.returning));
-  }).catch(function() { panelErr("retention-panel", "Failed to load retention."); });
-
-  // Referrers — stacked bar
-  loadJSON("/stats/referrers").then(function(r) {
-    var split = document.getElementById("referrers-split");
-    var legend = document.getElementById("referrers-legend");
-    if (!r.today || r.today.total === 0) return;
-    var total = r.today.total;
-    var parts = [
-      { name: "direct", v: r.today.direct, c: "#2a2622" },
-      { name: "search", v: r.today.search, c: "#b86b3a" },
-      { name: "social", v: r.today.social, c: "#5a8779" },
-      { name: "other",  v: r.today.other,  c: "#a09280" }
-    ];
-    split.innerHTML = parts.map(function(p) {
-      var pct = 100 * p.v / total;
-      return '<span style="background:' + p.c + ';width:' + pct.toFixed(2) + '%">' +
-        (pct >= 8 ? p.name + " " + pct.toFixed(0) + "%" : "") + '</span>';
-    }).join("");
-    legend.innerHTML = parts.map(function(p) {
-      var pct = (100 * p.v / total).toFixed(1);
-      return '<span><i style="background:' + p.c + '"></i>' + p.name + ' ' + pct + '% (' + fmt(p.v) + ')</span>';
-    }).join("");
-  }).catch(function() { panelErr("referrers-panel", "Failed to load referrers."); });
-})();
-</script>
-</body>
-</html>
-"""
 
 
 # Plaintext privacy notes served at ``/privacy`` (linked from the dashboard
@@ -811,24 +519,26 @@ def render_html(
         events_trips = "—"
         events_detail = "No event data yet today."
 
-    return (
-        _STATS_HTML_TEMPLATE
-        .replace("__DAU_TODAY__", dau_str)
-        .replace("__METRO_TODAY__", metro_str)
-        .replace("__METRO_DETAIL__", metro_detail)
-        .replace("__SESSIONS_TODAY__", sessions_str)
-        .replace("__SESSIONS_AVG__", sessions_avg)
-        .replace("__SESSIONS_BOUNCE__", sessions_bounce)
-        .replace("__HOURLY_DETAIL__", hourly_detail)
-        .replace("__DEVICES_LEGEND__", devices_legend)
-        .replace("__REFERRERS_LEGEND__", referrers_legend)
-        .replace("__EVENTS_SERVED__", events_served)
-        .replace("__EVENTS_SELECTED__", events_selected)
-        .replace("__EVENTS_TRIPS__", events_trips)
-        .replace("__EVENTS_DETAIL__", events_detail)
-        .replace("__FUNNEL_RATE__", funnel_rate)
-        .replace("__FUNNEL_DETAIL__", funnel_detail)
-        .replace("__RETENTION_RATE__", retention_rate)
-        .replace("__RETENTION_NEW__", retention_new_str)
-        .replace("__RETENTION_RETURNING__", retention_returning_str)
+    # safe_substitute() leaves unknown $name slots literal instead of crashing,
+    # so adding a placeholder to the HTML before wiring up its variable here
+    # degrades gracefully rather than 500-ing the whole dashboard.
+    return _STATS_TEMPLATE.safe_substitute(
+        dau_today=dau_str,
+        metro_today=metro_str,
+        metro_detail=metro_detail,
+        sessions_today=sessions_str,
+        sessions_avg=sessions_avg,
+        sessions_bounce=sessions_bounce,
+        hourly_detail=hourly_detail,
+        devices_legend=devices_legend,
+        referrers_legend=referrers_legend,
+        events_served=events_served,
+        events_selected=events_selected,
+        events_trips=events_trips,
+        events_detail=events_detail,
+        funnel_rate=funnel_rate,
+        funnel_detail=funnel_detail,
+        retention_rate=retention_rate,
+        retention_new=retention_new_str,
+        retention_returning=retention_returning_str,
     )

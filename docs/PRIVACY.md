@@ -110,6 +110,41 @@ Implemented in [backend/referrers.py](../backend/referrers.py).
   `/stats/*` — because a low-volume host could identify a single
   visitor's prior page.
 
+### Engagement events (FEAT-006)
+
+Implemented in [backend/events.py](../backend/events.py).
+
+- Named in-app actions (e.g. `recommend_submitted`, `route_selected`,
+  `trip_completed`) are reported by the frontend to a strict server-side
+  allowlist (`EVENT_ALLOWLIST`). Names outside the allowlist are
+  rejected — the on-disk schema cannot be expanded by a malicious
+  client.
+- Only a daily aggregate per event name is persisted (`{date: {event:
+  count}}`). The per-session sequence, the order in which events
+  fired, and any per-session row are never persisted.
+- The public dashboard surfaces only the four advertiser-facing event
+  volumes (`recommend_submitted`, `recommend_returned`,
+  `route_selected`, `trip_completed`). Internal/operational events
+  (`app_loaded`, `map_opened`, `start_route_tapped`,
+  `house_ad_clicked`) stay admin-only because they are navigation
+  signals an outside viewer could ratio against DAU to infer per-user
+  behaviour.
+
+### Funnel completion (FEAT-007)
+
+Implemented in [backend/funnel.py](../backend/funnel.py), driven by
+finalisation hooks in [backend/sessions.py](../backend/sessions.py).
+
+- The funnel records, per session, the highest stage reached
+  (`app_loaded` → `recommend_submitted` → `recommend_returned` →
+  `route_selected` → `start_route_tapped` → `trip_completed`). When a
+  session finalises (idle timeout or day rollover) the per-stage
+  cumulative arrays for that day are incremented.
+- Nothing per-session is ever written to disk. The on-disk file
+  (`funnel.json`) contains only the daily cumulative arrays.
+- The public dashboard reports a single derived figure
+  (`recommend_returned / app_loaded`) — the "got a result" rate.
+
 ### Public stats dashboard (FEAT-009)
 
 Implemented in [backend/public_stats.py](../backend/public_stats.py).
@@ -123,6 +158,9 @@ no third-party scripts. It exposes a strict whitelist of fields:
 - Hour-of-day per day: `{date, hours: int[24], total}`
 - Device class per day: `{date, mobile, tablet, desktop, total}` — `bot` and `unknown` are admin-only.
 - Referrers per day: `{date, direct, search, social, other, total}` — the per-hostname `other` table is admin-only.
+- Events per day: `{date, recommend_submitted, recommend_returned, route_selected, trip_completed, total}` — internal/operational event counts (`app_loaded`, `map_opened`, `start_route_tapped`, `house_ad_clicked`) stay admin-only, and `total` covers only the published events so the gap can't be back-solved.
+- Funnel per day: `{date, stages: int[6], result_rate_pct}` — derived from the FUNNEL_STAGES list; admin-only fields are never published.
+- Retention per day: `{date, new, returning, total}` — Bloom filter utilisation and per-fingerprint state stay admin-only.
 
 The per-city table is admin-only and is never reachable from `/stats/*`.
 The whitelist is enforced by
@@ -151,6 +189,8 @@ are:
 - `backend/data/hourly.json` — per-day 24-int hour histograms.
 - `backend/data/devices.json` — per-day device-class buckets.
 - `backend/data/referrers.json` — per-day traffic-source buckets.
+- `backend/data/events.json` — per-day per-event-name counts (FEAT-006).
+- `backend/data/funnel.json` — per-day funnel-stage cumulative arrays (FEAT-007).
 - `backend/data/retention.json` — per-day new/returning aggregates + Bloom filter
   bit array (no raw IDs or reversible identifiers).
 

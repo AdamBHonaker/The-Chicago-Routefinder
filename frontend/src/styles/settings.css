@@ -1,4 +1,14 @@
 
+/* Touch-state family system (FEAT-012) — see layout.css for the full system.
+ * This file mixes families:
+ *   • GHOST   — .settings-speed-btn (transparent ground; pressed inverts to
+ *               ink/paper).
+ *   • INK-FILL — .settings-byok-save, .settings-done-btn (uses --opacity-hover
+ *               / --opacity-pressed).
+ *   • ICON/LINK — .settings-sheet-close, .settings-byok-clear (color-shift
+ *               only; no :active rule per decision #14).
+ */
+
 /* ── Settings — Modal sheet ───────────────────────────────────────────────── */
 
 .settings-modal {
@@ -76,6 +86,19 @@
   transition: color var(--dur-quick) var(--ease-out);
 }
 .settings-sheet-close:hover { color: var(--ink); }
+
+/* Expand the tap area to 44×44 without changing the visual 32×32 by anchoring
+ * a transparent ::before pseudo-element. The button remains visually identical
+ * but reliably catches taps anywhere in the WCAG-recommended 44px square. */
+.settings-sheet-close::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: var(--touch-min);
+  height: var(--touch-min);
+  transform: translate(-50%, -50%);
+}
 
 .settings-sheet-rule {
   height: 2px;
@@ -185,6 +208,11 @@
   color: var(--ink);
 }
 
+.settings-speed-btn:active:not(.settings-speed-btn--active) {
+  background: var(--ink);
+  color: var(--paper);
+}
+
 .settings-speed-btn--active {
   background: var(--ink);
   color: var(--paper);
@@ -249,6 +277,7 @@
   transition: opacity var(--dur-quick) var(--ease-out);
 }
 .settings-byok-save:hover:not(:disabled) { opacity: var(--opacity-hover); }
+.settings-byok-save:active:not(:disabled) { opacity: var(--opacity-pressed); }
 .settings-byok-save:disabled { opacity: var(--opacity-mute); cursor: not-allowed; }
 
 .settings-byok-clear {
@@ -262,12 +291,25 @@
   transition: border-color var(--dur-quick) var(--ease-out), color var(--dur-quick) var(--ease-out);
 }
 .settings-byok-clear:hover { border-color: var(--ink); color: var(--ink); }
+/* No :active rule per decision #14 — .settings-byok-clear is icon/link family. */
 
 /* Sheet footer */
 .settings-sheet-footer {
   border-top: var(--hairline);
   padding-top: var(--sp-5);
   margin-top: var(--sp-3);
+}
+
+/* Mobile: pin the footer so the Done button stays reachable when sheet content
+ * overflows 80dvh (FEAT-012 decision #10). Sticky bottom keeps the printed-form
+ * footer pattern consistent with the editorial aesthetic. */
+@media (max-width: 800px) {
+  .settings-sheet-footer {
+    position: sticky;
+    bottom: 0;
+    background: var(--paper-bright);
+    padding-bottom: var(--sp-3);
+  }
 }
 
 .settings-done-btn {
@@ -284,3 +326,4 @@
   transition: opacity var(--dur-quick) var(--ease-out);
 }
 .settings-done-btn:hover { opacity: var(--opacity-hover); }
+.settings-done-btn:active { opacity: var(--opacity-pressed); }

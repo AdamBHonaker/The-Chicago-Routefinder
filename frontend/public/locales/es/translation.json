@@ -179,5 +179,16 @@
   "footprint_marker_aria_walk_to_transit": "Abordaje en {{station}}",
   "footprint_marker_aria_walk_to_transit_passed": "Abordaje pasado en {{station}}",
   "footprint_marker_aria_transit_to_walk": "Descenso en {{station}}",
-  "footprint_marker_aria_transit_to_walk_passed": "Descenso pasado en {{station}}"
+  "footprint_marker_aria_transit_to_walk_passed": "Descenso pasado en {{station}}",
+  "ad_sponsored_kicker": "Patrocinado",
+  "mt_review_notice": "Este idioma fue traducido por máquina y puede contener errores. Ayúdanos a mejorarlo — reporta un problema de traducción.",
+  "feedback_link_label": "Reportar un problema de traducción.",
+  "continent_africa": "África",
+  "continent_americas": "América",
+  "continent_asia": "Asia",
+  "continent_europe": "Europa",
+  "continent_middle_east": "Oriente Medio",
+  "continent_oceania": "Oceanía",
+  "continent_picker_back": "Volver a continentes",
+  "continent_oceania_placeholder": "Idiomas de Oceanía próximamente — Se planean Tok Pisin, Māori, Sāmoan, ʻŌlelo Hawaiʻi."
 }

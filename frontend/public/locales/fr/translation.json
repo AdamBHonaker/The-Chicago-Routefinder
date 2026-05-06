@@ -179,5 +179,16 @@
   "footprint_marker_aria_walk_to_transit": "Embarquement à {{station}}",
   "footprint_marker_aria_walk_to_transit_passed": "Embarquement passé à {{station}}",
   "footprint_marker_aria_transit_to_walk": "Débarquement à {{station}}",
-  "footprint_marker_aria_transit_to_walk_passed": "Débarquement passé à {{station}}"
+  "footprint_marker_aria_transit_to_walk_passed": "Débarquement passé à {{station}}",
+  "ad_sponsored_kicker": "Sponsorisé",
+  "mt_review_notice": "Cette langue a été traduite automatiquement et peut contenir des erreurs. Aidez-nous à l'améliorer — signalez un problème de traduction.",
+  "feedback_link_label": "Signaler un problème de traduction.",
+  "continent_africa": "Afrique",
+  "continent_americas": "Amériques",
+  "continent_asia": "Asie",
+  "continent_europe": "Europe",
+  "continent_middle_east": "Moyen-Orient",
+  "continent_oceania": "Océanie",
+  "continent_picker_back": "Retour aux continents",
+  "continent_oceania_placeholder": "Les langues d'Océanie arrivent bientôt — Tok Pisin, Māori, Sāmoan, ʻŌlelo Hawaiʻi prévus."
 }

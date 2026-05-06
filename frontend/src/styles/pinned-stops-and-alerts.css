@@ -1,4 +1,11 @@
 
+/* Touch-state family system (FEAT-012) — see layout.css for the full system.
+ * All interactive controls in this file (.pin-btn, .psb-refresh-btn,
+ * .psb-unpin-btn) are ICON/LINK family: color-shift on hover, NO :active rule
+ * per decision #14 (the existing :focus-visible ring + hover transition is
+ * sufficient and color-flash doesn't register on tap for icon-sized targets).
+ */
+
 /* ── Feature Pinned Stops + Feature Last Train ──────────────────────────── */
 
 /* Pin button on transit legs */
