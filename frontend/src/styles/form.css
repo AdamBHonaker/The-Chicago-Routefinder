@@ -176,62 +176,6 @@
   margin-top: 0.4rem;
 }
 
-/* ── Inline route alerts (in results area) ───────────────────────────────── */
-
-.alerts-section {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-}
-
-.alert-item {
-  border-inline-start: 2px solid var(--mute-fog);
-  padding: var(--sp-2) var(--sp-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-1);
-}
-
-.alert-item--major { border-color: var(--rust); }
-.alert-item--minor { border-color: var(--mute); }
-
-.alert-headline {
-  font-family: var(--serif);
-  font-size: var(--fs-body-sm);
-  font-style: italic;
-  color: var(--ink-soft);
-  line-height: 1.4;
-}
-
-.alert-item--major .alert-headline { color: var(--rust); }
-
-.alert-impact {
-  font-family: var(--sans);
-  font-size: var(--fs-caps);
-  font-weight: 700;
-  letter-spacing: var(--ls-caps);
-  text-transform: uppercase;
-  color: var(--mute);
-}
-
-.alerts-more {
-  font-family: var(--serif);
-  font-size: var(--fs-body-sm);
-  font-style: italic;
-  color: var(--mute);
-  margin: var(--sp-1) 0 0;
-}
-
-.alerts-more a {
-  color: var(--navy);
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-
-.alerts-more a:hover {
-  color: var(--ink);
-}
-
 /* ── Loading skeleton ────────────────────────────────────────────────────── */
 
 @keyframes plot-rule {

@@ -1,0 +1,62 @@
+/* ─────────────────────────────────────────────────────────────────────────
+ * SheetSegmentedControl — three-button tab control at the top of the
+ * mobile bottom sheet body. Mobile-only; the desktop layout uses the
+ * vertical SideRail instead.
+ *
+ * Sticky to the top of the sheet body so it stays visible when the user
+ * scrolls long content (route directions, alerts list).
+ *
+ * Visual language matches the existing tab-bar treatment: italic mute for
+ * inactive segments, roman 700 ink with bottom-rule underline for active.
+ * ───────────────────────────────────────────────────────────────────── */
+
+.sheet-segmented {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  border-top: var(--hairline);
+  border-bottom: var(--rule);
+  background: var(--paper);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  /* Counteract the bottom-sheet__body horizontal padding (16px) so the
+     segmented control runs edge-to-edge inside the sheet. */
+  margin: 0 -16px;
+}
+
+.sheet-segmented__btn {
+  appearance: none;
+  background: transparent;
+  border: none;
+  padding: var(--sp-4) var(--sp-3);
+  min-height: var(--touch-min);
+  font-family: var(--serif);
+  font-size: 13px;
+  font-style: italic;
+  font-weight: 400;
+  color: var(--mute);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  transition:
+    background var(--dur-quick) var(--ease-out),
+    color var(--dur-quick) var(--ease-out);
+}
+
+.sheet-segmented__btn:hover {
+  background: var(--paper-folio);
+}
+
+.sheet-segmented__btn:focus-visible {
+  outline: 2px solid var(--rust);
+  outline-offset: -2px;
+}
+
+.sheet-segmented__btn--active,
+.sheet-segmented__btn--active:hover {
+  font-style: normal;
+  font-weight: 700;
+  color: var(--ink);
+  border-bottom-color: var(--ink);
+  background: var(--paper);
+}

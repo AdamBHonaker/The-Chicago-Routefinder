@@ -130,6 +130,7 @@
 .special-dispatch--major    .special-dispatch__kicker { color: var(--rust); }
 .special-dispatch--minor    .special-dispatch__kicker { color: var(--mute); }
 .special-dispatch--advisory .special-dispatch__kicker { color: var(--navy); }
+.special-dispatch--quiet    .special-dispatch__kicker { color: var(--mute); }
 
 .special-dispatch__routes {
   font-family: var(--mono);

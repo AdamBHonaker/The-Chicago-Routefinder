@@ -140,7 +140,7 @@ function renderStopMarkers(map, legs, legGeoCoords, legColors, layerIds, sourceI
   });
 }
 
-function renderRoute(map, route, layerIds, sourceIds) {
+function renderRoute(map, route, layerIds, sourceIds, mapPadding) {
   if (!route?.legs?.length) return;
   try {
     const { legs } = route;
@@ -167,14 +167,20 @@ function renderRoute(map, route, layerIds, sourceIds) {
         if (lon > maxLng) maxLng = lon;
         if (lat > maxLat) maxLat = lat;
       }
-      map.fitBounds([[minLng, minLat], [maxLng, maxLat]], { padding: 60, animate: false });
+      // mapPadding lets a caller (mobile bottom sheet) reserve viewport
+      // space for overlaid chrome so the polyline stays visible above the
+      // sheet. MapLibre accepts either a number or {top,bottom,left,right}.
+      map.fitBounds([[minLng, minLat], [maxLng, maxLat]], {
+        padding: mapPadding ?? 60,
+        animate: false,
+      });
     }
   } catch (err) {
     console.error("[useRouteLayers] renderRoute failed:", err);
   }
 }
 
-export function useRouteLayers(map, route) {
+export function useRouteLayers(map, route, mapPadding = null) {
   const layerIds = useRef([]);
   const sourceIds = useRef([]);
 
@@ -184,7 +190,7 @@ export function useRouteLayers(map, route) {
     const render = () => {
       clearLayers(map, layerIds.current, sourceIds.current);
       if (!route) return;
-      renderRoute(map, route, layerIds.current, sourceIds.current);
+      renderRoute(map, route, layerIds.current, sourceIds.current, mapPadding);
     };
 
     if (map.isStyleLoaded()) {
@@ -196,7 +202,7 @@ export function useRouteLayers(map, route) {
       map.off("load", render);
       clearLayers(map, layerIds.current, sourceIds.current);
     };
-  }, [map, route]);
+  }, [map, route, mapPadding]);
 
   return layerIds;
 }

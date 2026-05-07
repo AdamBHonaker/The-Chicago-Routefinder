@@ -2,7 +2,10 @@
  * SideRail component tests.
  *
  * Covered:
- *  - Renders all four nav tabs (home/map/alerts/saved)
+ *  - Renders the three desktop nav tabs (home/alerts/saved). The Map tab was
+ *    removed from the desktop side rail when the persistent-map layout shipped
+ *    — the map is always visible on desktop so a Map tab there is redundant.
+ *    Mobile retains a 4-tab bar (Home/Map/Alerts/Saved) in App.jsx.
  *  - Each tab shows its single-letter code
  *  - Active tab gets aria-current="page"
  *  - Inactive tabs do not get aria-current
@@ -29,32 +32,35 @@ vi.mock("react-i18next", () => ({
 }));
 
 describe("SideRail", () => {
-  it("renders all four navigation tabs with their codes", () => {
+  it("renders the three desktop navigation tabs with their codes", () => {
     render(<SideRail activeTab="home" onTabChange={() => {}} />);
     expect(screen.getByText("H")).toBeInTheDocument();
-    expect(screen.getByText("M")).toBeInTheDocument();
     expect(screen.getByText("A")).toBeInTheDocument();
     expect(screen.getByText("S")).toBeInTheDocument();
+  });
+
+  it("does not render a Map tab (map is persistent on desktop)", () => {
+    render(<SideRail activeTab="home" onTabChange={() => {}} />);
+    expect(screen.queryByText("M")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Map" })).not.toBeInTheDocument();
   });
 
   it("uses translated aria-labels for each tab", () => {
     render(<SideRail activeTab="home" onTabChange={() => {}} />);
     expect(screen.getByRole("button", { name: "Home"   })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Map"    })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Alerts" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Saved"  })).toBeInTheDocument();
   });
 
   it("marks the active tab with aria-current='page'", () => {
-    render(<SideRail activeTab="map" onTabChange={() => {}} />);
-    expect(screen.getByRole("button", { name: "Map" })).toHaveAttribute("aria-current", "page");
+    render(<SideRail activeTab="alerts" onTabChange={() => {}} />);
+    expect(screen.getByRole("button", { name: "Alerts" })).toHaveAttribute("aria-current", "page");
   });
 
   it("does not mark inactive tabs with aria-current", () => {
-    render(<SideRail activeTab="map" onTabChange={() => {}} />);
-    expect(screen.getByRole("button", { name: "Home"   })).not.toHaveAttribute("aria-current");
-    expect(screen.getByRole("button", { name: "Alerts" })).not.toHaveAttribute("aria-current");
-    expect(screen.getByRole("button", { name: "Saved"  })).not.toHaveAttribute("aria-current");
+    render(<SideRail activeTab="alerts" onTabChange={() => {}} />);
+    expect(screen.getByRole("button", { name: "Home"  })).not.toHaveAttribute("aria-current");
+    expect(screen.getByRole("button", { name: "Saved" })).not.toHaveAttribute("aria-current");
   });
 
   it("applies the active modifier class to the active tab", () => {

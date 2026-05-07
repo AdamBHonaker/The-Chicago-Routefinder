@@ -124,6 +124,16 @@
   /* Touch / chrome sizing */
   --touch-min:        44px;  /* WCAG / iOS HIG minimum touch target */
   --tab-bar-height:   56px;  /* mobile bottom tab bar (excludes safe-area inset) */
+  --splitter-width:   6px;   /* desktop cards/map splitter handle column width */
+  --bp-mobile:        800px; /* mobile breakpoint — single source of truth shared
+                                with useMediaQuery("(max-width: 800px)") in App.jsx */
+
+  /* Safe-area insets — paired with 100dvh so the mobile bottom sheet sits
+     above the home indicator and below the dynamic island/notch. */
+  --safe-top:    env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left:   env(safe-area-inset-left, 0px);
+  --safe-right:  env(safe-area-inset-right, 0px);
   --map-compass-width: 100px; /* approx. width of .map-heading-btn — used by
                                  .map-legend on narrow viewports to reserve a
                                  right-edge corridor so legend and compass form

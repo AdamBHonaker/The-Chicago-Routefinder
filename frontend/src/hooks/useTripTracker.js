@@ -135,6 +135,17 @@ export function useTripTracker({ result, selectedRouteIndex }) {
     onVehicleRef.current = false;
   }, [activeLegIndex]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Defensive teardown: if the host component unmounts mid-trip without
+  // calling stopTrip (error boundary swap, HMR, future routing-driven
+  // unmount), watchPosition would otherwise keep firing into a dead React
+  // tree, draining battery until the page is closed.
+  useEffect(() => () => {
+    if (watchIdRef.current !== null) {
+      navigator.geolocation.clearWatch(watchIdRef.current);
+      watchIdRef.current = null;
+    }
+  }, []);
+
   // GPS position → trip state updates.
   // Intentionally deps on `userPosition` only — all other values are read via
   // refs so this effect fires on GPS tick without re-subscribing on unrelated

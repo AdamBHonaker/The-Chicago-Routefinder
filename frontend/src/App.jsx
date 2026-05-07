@@ -13,6 +13,8 @@ const SavedRoutesPanel = lazy(() => import("./components/SavedRoutesPanel.jsx"))
 import RouteCard from "./components/RouteCard.jsx";
 import PinnedStopsBoard from "./components/PinnedStopsBoard.jsx";
 import ServiceAlertsBar from "./components/ServiceAlertsBar.jsx";
+import RouteAlertsBanner from "./components/RouteAlertsBanner.jsx";
+import AlertsFilterBar from "./components/AlertsFilterBar.jsx";
 import TwoToneHeading from "./components/TwoToneHeading.jsx";
 import WeatherStrip from "./components/WeatherStrip.jsx";
 import Masthead from "./components/Masthead.jsx";
@@ -36,11 +38,15 @@ import LabelSavePanel from "./components/LabelSavePanel.jsx";
 import LocationInput from "./components/LocationInput.jsx";
 import SharedRouteBanner from "./components/SharedRouteBanner.jsx";
 import SideRail from "./components/SideRail.jsx";
+import PanelSplitter from "./components/PanelSplitter.jsx";
+import SheetSegmentedControl from "./components/SheetSegmentedControl.jsx";
+import { MobileLayout, useMediaQuery, createSheetSnapStore } from "./mobile-sheet-kit/index.js";
 import { useApiQuery } from "./hooks/useApiQuery.js";
 import { useLocalStorage } from "./hooks/useLocalStorage.js";
 import { fetchWithRetry as _fetchWithRetry } from "./utils/fetchWithRetry.js";
 import { renderMarkdown } from "./utils/renderMarkdown.js";
 import { extractTransitLines } from "./utils/routeUtils.js";
+import { LINE_COLORS } from "./lineColors.js";
 import { deriveTransferPoints } from "./utils/deriveTransferPoints.js";
 import { track } from "./analytics.js";
 
@@ -94,7 +100,59 @@ export default function App() {
     BYOK_ENABLED ? (sessionStorage.getItem("byok_api_key") || "") : ""
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState("home"); // mobile tab bar; ignored on desktop
+  const [activeTab, setActiveTab] = useState("home"); // mobile tab bar; on desktop drives cards-column content (Home/Alerts/Saved)
+
+  // Desktop cards-column width (px). User-resizable via the .panel-splitter
+  // handle between the cards and map panels. Persisted across sessions.
+  // Floors at CARDS_MIN_WIDTH; ceilings at viewport - rail - splitter - map min.
+  const CARDS_MIN_WIDTH = 520;
+  const MAP_MIN_WIDTH = 320;
+  const SIDE_RAIL_WIDTH = 60;
+  const SPLITTER_WIDTH = 6;
+  const [cardsColumnWidth, setCardsColumnWidth] = useLocalStorage("cards_column_width", CARDS_MIN_WIDTH);
+  const [cardsColumnMax, setCardsColumnMax] = useState(() =>
+    typeof window !== "undefined"
+      ? Math.max(CARDS_MIN_WIDTH, window.innerWidth - SIDE_RAIL_WIDTH - SPLITTER_WIDTH - MAP_MIN_WIDTH)
+      : CARDS_MIN_WIDTH
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const recompute = () => {
+      const max = Math.max(CARDS_MIN_WIDTH, window.innerWidth - SIDE_RAIL_WIDTH - SPLITTER_WIDTH - MAP_MIN_WIDTH);
+      setCardsColumnMax(max);
+      setCardsColumnWidth((prev) => Math.max(CARDS_MIN_WIDTH, Math.min(max, prev)));
+    };
+    recompute();
+    window.addEventListener("resize", recompute);
+    return () => window.removeEventListener("resize", recompute);
+  }, [setCardsColumnWidth]);
+
+  // ── Mobile bottom-sheet state ────────────────────────────────────────────
+  // Below 800px the layout swaps to a Passage-style full-bleed map + draggable
+  // bottom sheet. The sheet replaces the 4-tab bottom bar — Home / Alerts /
+  // Saved live as segments inside the sheet, the map is always visible behind.
+  // Sheet snap: 0=peek (140px), 1=half (50dvh), 2=full (88dvh). Persistence
+  // factory below; only USER drags persist (auto-promotes don't pollute the
+  // user's preferred opening height).
+  const SHEET_STORAGE_KEY = "crf:sheetSnap";
+  const sheetSnapStore = useMemo(() => createSheetSnapStore(SHEET_STORAGE_KEY), []);
+  const isMobile = useMediaQuery("(max-width: 800px)");
+  const [sheetSnap, setSheetSnap] = useState(() => sheetSnapStore.load() ?? 0);
+  const [mapPadding, setMapPadding] = useState(null);
+  const lastResultRef = useRef(null);
+  const userMovedSheetRef = useRef(false);
+
+  const handleSheetSnapChange = useCallback((idx) => {
+    userMovedSheetRef.current = true;
+    setSheetSnap(idx);
+  }, []);
+
+  // 80px top reserves room for the floating masthead; +16 bottom keeps the
+  // polyline visually clear of the sheet's top edge.
+  const handleObscuredChange = useCallback((bottomPx) => {
+    setMapPadding({ top: 80, bottom: bottomPx + 16, left: 16, right: 16 });
+  }, []);
 
   // AI toggle — persisted to localStorage via useLocalStorage (TD-039).
   // Defaults to false (off) so new users get faster route cards without AI latency.
@@ -134,7 +192,7 @@ export default function App() {
   const pinnedArrivals = pinnedArrivalsData?.arrivals || {};
 
   // Service Alerts — fetch + dismissal state extracted to useServiceAlerts (TD-FE-006)
-  const { undismissedAlerts, dismiss: handleAlertDismiss } = useServiceAlerts();
+  const { undismissedAlerts, dismiss: handleAlertDismiss, refetch: refetchServiceAlerts } = useServiceAlerts();
 
   const activeAlertRoutes = useMemo(
     () => new Set(
@@ -164,6 +222,55 @@ export default function App() {
     );
   }, [undismissedAlerts, currentRouteLines]);
 
+  // Notices & Delays tab — opt-in filter state. Multi-select Sets of L line
+  // names (e.g., "Red", "Blue") and bus route short names (e.g., "22", "X9").
+  // Session-scoped only; not persisted (matches the dismissal state's lifetime).
+  const [alertsTabSelectedLines, setAlertsTabSelectedLines] = useState(() => new Set());
+  const [alertsTabSelectedBuses, setAlertsTabSelectedBuses] = useState(() => new Set());
+
+  // Bus routes that currently have at least one active notice. Anything in an
+  // alert's `routes` array that isn't a known L line is treated as a bus.
+  const availableBusRoutes = useMemo(() => {
+    const out = new Set();
+    for (const a of undismissedAlerts) {
+      for (const r of a.routes ?? []) {
+        const stripped = r.replace(" Line", "");
+        if (!(stripped in LINE_COLORS)) out.add(stripped);
+      }
+    }
+    return [...out];
+  }, [undismissedAlerts]);
+
+  // Notices & Delays tab — alerts filtered by union of selected L lines + buses.
+  const filteredAlertsForTab = useMemo(() => {
+    if (alertsTabSelectedLines.size === 0 && alertsTabSelectedBuses.size === 0) {
+      return [];
+    }
+    return undismissedAlerts.filter((a) =>
+      (a.routes ?? []).some((r) => {
+        const stripped = r.replace(" Line", "");
+        return alertsTabSelectedLines.has(stripped) || alertsTabSelectedBuses.has(stripped);
+      })
+    );
+  }, [undismissedAlerts, alertsTabSelectedLines, alertsTabSelectedBuses]);
+
+  // Banner click handler: pre-select the route's L lines and bus routes, then
+  // swap the cards-column to the Notices & Delays tab. Wired only when the
+  // route has matching alerts (the static "no notices" banner does not call this).
+  function viewRouteAlerts() {
+    const lines = new Set();
+    const buses = new Set();
+    if (currentRouteLines) {
+      for (const code of currentRouteLines) {
+        if (code in LINE_COLORS) lines.add(code);
+        else buses.add(code);
+      }
+    }
+    setAlertsTabSelectedLines(lines);
+    setAlertsTabSelectedBuses(buses);
+    setActiveTab("alerts");
+  }
+
   // Fire-and-forget ping on mount for DAU/session counting — silent on failure.
   // credentials: "include" sends/receives the FEAT-001 session cookie cross-origin
   // (Vercel → Railway). Backend CORS is configured with allow_credentials=True.
@@ -172,12 +279,27 @@ export default function App() {
     track("app_loaded");
   }, []);
 
-  // Fire ``map_opened`` whenever the mobile tab bar switches to the map view.
-  // Desktop has the map permanently visible, so the natural fire site is the
-  // explicit user action of opening the tab — not the component mount.
+  // Refetch the alerts feed every time the user opens the Notices & Delays
+  // tab, so the filter renders against the freshest CTA data even on long
+  // sessions where the initial fetch happened many minutes ago.
   useEffect(() => {
-    if (activeTab === "map") track("map_opened");
-  }, [activeTab]);
+    if (activeTab === "alerts") refetchServiceAlerts();
+  }, [activeTab, refetchServiceAlerts]);
+
+  // ── Sheet auto-promote (route arrival) ───────────────────────────────────
+  // When a route result arrives on mobile, nudge the sheet from peek (0) to
+  // half (1) so the user immediately sees the routes without having to drag.
+  // Skip if the user has manually moved the sheet this session
+  // (userMovedSheetRef) so we don't fight their intent. Auto-promotes are
+  // NOT persisted — only manual settles are. Trip-start auto-promote lives
+  // after the useTripTracker destructure, where tripActive is in scope.
+  useEffect(() => {
+    if (!isMobile) return;
+    if (result && !lastResultRef.current && !userMovedSheetRef.current) {
+      setSheetSnap(prev => prev === 0 ? 1 : prev);
+    }
+    lastResultRef.current = result;
+  }, [result, isMobile]);
 
   function handleSaveByokKey(key) {
     setByokKey(key);
@@ -211,6 +333,21 @@ export default function App() {
   useEffect(() => {
     setSelectedTransferId(null);
   }, [tripActive, selectedRouteIndex, result]);
+
+  // Fire trip_off_route on each false→true transition. The dep on isOffRoute
+  // means the effect re-runs only when the flag flips, and the if-guard skips
+  // the false-side transitions — so a user who drifts, dismisses, recovers,
+  // and drifts again logs two separate events (intended diagnostic behavior).
+  useEffect(() => {
+    if (isOffRoute) track("trip_off_route");
+  }, [isOffRoute]);
+
+  // Sheet auto-promote on trip start (mobile). Same guard as the route-
+  // arrival promote above. See "Sheet auto-promote" comment for rationale.
+  useEffect(() => {
+    if (!isMobile || !tripActive || userMovedSheetRef.current) return;
+    setSheetSnap(prev => prev === 0 ? 1 : prev);
+  }, [tripActive, isMobile]);
 
   // Derive transfer points for the active trip so RouteCard can make spine rows
   // interactive. Mirrors the derivation MapView does internally, using the same
@@ -300,6 +437,7 @@ export default function App() {
 
   async function handleReroute() {
     if (!userPosition) return;
+    track("trip_rerouted");
     const gpsOrigin = `${userPosition.lat.toFixed(6)},${userPosition.lng.toFixed(6)}`;
 
     if (abortRef.current) abortRef.current.abort();
@@ -342,6 +480,13 @@ export default function App() {
 
     setSelectedRouteIndex(0);
     searchIdRef.current += 1;
+
+    // Re-arm sheet auto-promote: a fresh search should bump the sheet from
+    // peek to half on result arrival, even if the user manually settled it
+    // earlier in the session. lastResultRef must reset so the
+    // !lastResultRef.current && result check fires on the next setResult.
+    userMovedSheetRef.current = false;
+    lastResultRef.current = null;
 
     setLoading(true);
     setError("");
@@ -389,11 +534,13 @@ export default function App() {
     if (id !== "saved") setShowSavedRoutes(false);
   };
 
-  return (
-    <div className="app" data-active-tab={activeTab}>
-      <div className="layout layout--split">
-        <SideRail activeTab={activeTab} onTabChange={handleTabChange} />
-        <div className="panel-cards paper-grain">
+  // ── sidebarContents ──────────────────────────────────────────────────────
+  // The form / results / alerts / saved content. Identical in mobile and
+  // desktop branches — desktop nests it inside .panel-cards__inner; mobile
+  // nests it inside the bottom sheet (with a SheetSegmentedControl prepended
+  // to replace the desktop side rail's tab navigation).
+  const sidebarContents = (
+    <>
           <Masthead
             liveDataActive={!!(result && result.routes.length > 0)}
             byokActive={!!byokKey}
@@ -439,17 +586,34 @@ export default function App() {
 
           {activeTab === "alerts" && (
             <main className="main tab-alerts-view">
-              <TwoToneHeading
-                capsKey="caps_advisories"
-                headingKey="alerts_tab_heading"
-                italicWords={1}
-                className="tab-alerts-view__heading"
-              />
-              {undismissedAlerts.length === 0 ? (
-                <p className="tab-empty">{t("alerts_empty")}</p>
+              <div className="tab-alerts-view__heading-row">
+                <TwoToneHeading
+                  capsKey="caps_advisories"
+                  headingKey="alerts_tab_heading"
+                  italicWords={1}
+                  className="tab-alerts-view__heading"
+                />
+                <div className="tab-alerts-view__filter-bar">
+                  <AlertsFilterBar
+                    selectedLines={alertsTabSelectedLines}
+                    selectedBuses={alertsTabSelectedBuses}
+                    onSelectedLinesChange={setAlertsTabSelectedLines}
+                    onSelectedBusesChange={setAlertsTabSelectedBuses}
+                    availableBusRoutes={availableBusRoutes}
+                  />
+                </div>
+              </div>
+              {alertsTabSelectedLines.size === 0 && alertsTabSelectedBuses.size === 0 ? (
+                <p className="tab-alerts-view__prompt">
+                  {undismissedAlerts.length === 0
+                    ? t("alerts_filter_prompt_empty_feed")
+                    : t("alerts_filter_prompt_with_count", { count: undismissedAlerts.length })}
+                </p>
+              ) : filteredAlertsForTab.length === 0 ? (
+                <p className="tab-alerts-view__prompt">{t("alerts_filter_empty_for_selection")}</p>
               ) : (
                 <ServiceAlertsBar
-                  alerts={undismissedAlerts}
+                  alerts={filteredAlertsForTab}
                   onDismiss={handleAlertDismiss}
                 />
               )}
@@ -463,11 +627,6 @@ export default function App() {
               arrivals={pinnedArrivals}
               onUnpin={handleUnpin}
               onRefresh={refetchPinnedArrivals}
-            />
-
-            <ServiceAlertsBar
-              alerts={visibleAlerts}
-              onDismiss={handleAlertDismiss}
             />
 
             {isSharedLink && (
@@ -492,7 +651,16 @@ export default function App() {
                 <button
                   type="button"
                   className="swap-btn"
-                  onClick={() => { setOrigin(destination); setDestination(origin); setOriginGeoCoords(null); }}
+                  onClick={() => {
+                    // If origin came from geolocation, preserve the precise
+                    // raw "lat,lon" string in the new destination so the
+                    // backend routes from the actual GPS fix rather than
+                    // re-geocoding the reverse-geocoded address label.
+                    const newDestination = originGeoCoords ?? origin;
+                    setOrigin(destination);
+                    setDestination(newDestination);
+                    setOriginGeoCoords(null);
+                  }}
                   aria-label={t("swap_directions")}
                   title={t("swap_directions")}
                 >
@@ -526,6 +694,10 @@ export default function App() {
 
             {result && !loading && (
               <div className="results">
+                <RouteAlertsBanner
+                  hasAlerts={visibleAlerts.length > 0}
+                  onView={viewRouteAlerts}
+                />
                 <WeatherStrip weather={result.weather} />
                 {result.recommendation != null && (
                 <div className="recommendation">
@@ -538,33 +710,6 @@ export default function App() {
                 </p>
               )}
 
-                {result.alerts?.length > 0 && (
-                  <div className="alerts-section">
-                    {result.alerts.slice(0, 3).map((alert) => (
-                      <div
-                        key={alert.alert_id}
-                        className={`alert-item${alert.is_major ? " alert-item--major" : " alert-item--minor"}`}
-                      >
-                        <span className="alert-headline">{alert.headline}</span>
-                        {alert.impact && (
-                          <span className="alert-impact">{alert.impact}</span>
-                        )}
-                      </div>
-                    ))}
-                    {result.alerts.length > 3 && (
-                      <p className="alerts-more">
-                        <a
-                          href="https://www.transitchicago.com/alerts/"
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          {t("alerts_more", { count: result.alerts.length - 3 })}
-                        </a>
-                      </p>
-                    )}
-                  </div>
-                )}
-
                 {isOffRoute && (
                   <div className="special-dispatch special-dispatch--advisory" role="alert">
                     <span className="special-dispatch__kicker">{t("alerts_severity_advisory")}</span>
@@ -575,7 +720,7 @@ export default function App() {
                       </button>
                       <button
                         className="btn-ghost-text"
-                        onClick={dismissOffRoute}
+                        onClick={() => { track("off_route_dismissed"); dismissOffRoute(); }}
                       >
                         {t("trip_dismiss_btn")}
                       </button>
@@ -650,26 +795,79 @@ export default function App() {
             )}
           </main>
           )}
-        </div>
+    </>
+  );
 
-        <div className="panel-map">
-          <Suspense fallback={null}>
-            <MapView
-              route={result?.routes?.[selectedRouteIndex] ?? null}
-              originCoords={result?.originCoords ?? null}
-              destCoords={result?.destCoords ?? null}
-              userPosition={userPosition}
-              tripActive={tripActive}
-              activeLegIndex={activeLegIndex}
-              activeTab={activeTab}
-              onArrived={() => { track("trip_completed"); setShowArrivedToast(true); }}
-              selectedTransferId={selectedTransferId}
-              onSelectTransfer={setSelectedTransferId}
-              transferPoints={tripTransferPoints}
-            />
-          </Suspense>
-        </div>
+  // mapNode is rendered ONCE at the App level so it survives breakpoint
+  // flips without remounting MapLibre (which would blank the WebGL canvas
+  // and re-fetch tiles). The .map-host wrapper toggles between mobile
+  // (full-bleed inset:0) and desktop (positioned to fill the .panel-map
+  // grid cell) — see styles/bottom-sheet-host.css.
+  const mapNode = (
+    <Suspense fallback={null}>
+      <MapView
+        route={result?.routes?.[selectedRouteIndex] ?? null}
+        originCoords={result?.originCoords ?? null}
+        destCoords={result?.destCoords ?? null}
+        userPosition={userPosition}
+        tripActive={tripActive}
+        activeLegIndex={activeLegIndex}
+        cardsColumnWidth={cardsColumnWidth}
+        activeTab={activeTab}
+        mapPadding={isMobile ? mapPadding : null}
+        sheetSnap={isMobile ? sheetSnap : null}
+        onArrived={() => { track("trip_completed"); setShowArrivedToast(true); }}
+        selectedTransferId={selectedTransferId}
+        onSelectTransfer={setSelectedTransferId}
+        transferPoints={tripTransferPoints}
+      />
+    </Suspense>
+  );
+
+  return (
+    <div
+      className={`app${isMobile ? " app--mobile" : ""}`}
+      data-active-tab={activeTab}
+      style={{ "--cards-col-width": `${cardsColumnWidth}px` }}
+    >
+      <div className={isMobile ? "map-host map-host--mobile" : "map-host map-host--desktop"}>
+        {mapNode}
       </div>
+
+      {isMobile ? (
+        <MobileLayout
+          storageKey={SHEET_STORAGE_KEY}
+          handleLabel={t("bottom_sheet_handle_label")}
+          snap={sheetSnap}
+          onSnapChange={handleSheetSnapChange}
+          onObscuredChange={handleObscuredChange}
+        >
+          <SheetSegmentedControl activeTab={activeTab} onTabChange={handleTabChange} />
+          {sidebarContents}
+        </MobileLayout>
+      ) : (
+        <div className="layout layout--split">
+          <SideRail activeTab={activeTab} onTabChange={handleTabChange} />
+          <div className="panel-cards paper-grain">
+            <div className="panel-cards__inner">
+              {sidebarContents}
+            </div>
+          </div>
+          <PanelSplitter
+            value={cardsColumnWidth}
+            min={CARDS_MIN_WIDTH}
+            max={cardsColumnMax}
+            offsetLeft={SIDE_RAIL_WIDTH}
+            onChange={setCardsColumnWidth}
+            onCommit={setCardsColumnWidth}
+          />
+          {/* Layout placeholder for the .panel-map grid cell. The visible
+              MapView lives in .map-host--desktop above, positioned to
+              fill this cell. Kept in DOM so the .layout--split grid math
+              (4 columns) stays simple. */}
+          <div className="panel-map" aria-hidden="true" />
+        </div>
+      )}
 
       {showArrivedToast && (
         <div
@@ -681,25 +879,6 @@ export default function App() {
           <p className="special-dispatch__body">{t("map_arrived_body")}</p>
         </div>
       )}
-
-      <nav className="tab-bar" aria-label={t("aria_main_nav")}>
-        {[
-          { id: "home",   label: t("tab_home") },
-          { id: "map",    label: t("tab_map") },
-          { id: "alerts", label: t("tab_alerts") },
-          { id: "saved",  label: t("tab_saved") },
-        ].map(({ id, label }) => (
-          <button
-            key={id}
-            type="button"
-            className={`tab-bar__tab${activeTab === id ? " tab-bar__tab--active" : ""}`}
-            onClick={() => handleTabChange(id)}
-            aria-current={activeTab === id ? "page" : undefined}
-          >
-            <span className="tab-bar__label">{label}</span>
-          </button>
-        ))}
-      </nav>
     </div>
   );
 }

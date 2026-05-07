@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BACKEND_URL } from "../constants.js";
 
 const DISMISSED_KEY = "dismissed_alert_ids";
@@ -13,19 +13,31 @@ function loadDismissed() {
 
 // Owns the service-alerts feature: fetch on mount, dismissal persistence in
 // sessionStorage, and the derived `undismissedAlerts` list. Extracted from
-// App.jsx (TD-FE-006).
+// App.jsx (TD-FE-006). Exposes `refetch()` so callers can re-pull the feed
+// when the user navigates to a surface that should reflect the latest data
+// (e.g., opening the Notices & Delays tab).
 export function useServiceAlerts() {
   const [serviceAlerts, setServiceAlerts] = useState([]);
   const [dismissedAlertIds, setDismissedAlertIds] = useState(loadDismissed);
+  const inFlightRef = useRef(null);
 
-  useEffect(() => {
+  const refetch = useCallback(() => {
+    if (inFlightRef.current) inFlightRef.current.abort();
     const ctrl = new AbortController();
-    fetch(`${BACKEND_URL}/alerts`, { signal: ctrl.signal })
+    inFlightRef.current = ctrl;
+    return fetch(`${BACKEND_URL}/alerts`, { signal: ctrl.signal })
       .then((res) => res.ok ? res.json() : { alerts: [] })
       .then((data) => setServiceAlerts(data.alerts || []))
-      .catch(() => {});
-    return () => ctrl.abort();
+      .catch(() => {})
+      .finally(() => {
+        if (inFlightRef.current === ctrl) inFlightRef.current = null;
+      });
   }, []);
+
+  useEffect(() => {
+    refetch();
+    return () => inFlightRef.current?.abort();
+  }, [refetch]);
 
   function dismiss(alertId) {
     setDismissedAlertIds((prev) => {
@@ -43,5 +55,5 @@ export function useServiceAlerts() {
     [serviceAlerts, dismissedAlertIds]
   );
 
-  return { undismissedAlerts, dismiss };
+  return { undismissedAlerts, dismiss, refetch };
 }

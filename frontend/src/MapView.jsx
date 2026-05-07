@@ -202,6 +202,9 @@ export default function MapView({
   tripActive           = false,
   activeLegIndex       = null,
   activeTab            = "home",
+  cardsColumnWidth     = null,
+  mapPadding           = null,
+  sheetSnap            = null,
   onArrived            = null,
   selectedTransferId   = null,
   onSelectTransfer     = null,
@@ -331,7 +334,7 @@ export default function MapView({
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Render route polylines + stop circles via the layer-management hook.
-  useRouteLayers(map, route);
+  useRouteLayers(map, route, mapPadding);
 
   // Reset arrived latch when the route or destination changes.
   useEffect(() => {
@@ -506,15 +509,33 @@ export default function MapView({
     map.rotateTo(0, { duration: 300 });
   }, [map, tripActive, setHeadingUp]);
 
-  // On desktop, panel-map transitions in over `--dur-base` (see tokens.css).
-  // PANEL_MAP_RESIZE_DELAY_MS mirrors that value — keep in lockstep. Notify
-  // MapLibre after the transition so the WebGL framebuffer matches the new
-  // container dimensions. Safe to call on every tab change — resize is cheap.
+  // On desktop the cards/map split is user-resizable via .panel-splitter; on
+  // mobile, tab changes swap the visible panel. In both cases the map's
+  // containing column may change width, so notify MapLibre after the relevant
+  // transition or drag tick. PANEL_MAP_RESIZE_DELAY_MS mirrors --dur-base.
+  // Resize is cheap; safe to call on every change.
   useEffect(() => {
     if (!map) return;
     const id = setTimeout(() => map.resize(), PANEL_MAP_RESIZE_DELAY_MS);
     return () => clearTimeout(id);
   }, [map, activeTab]);
+
+  // Splitter drag — resize on every committed value change. The rAF throttling
+  // happens upstream in PanelSplitter; here we just react.
+  useEffect(() => {
+    if (!map || cardsColumnWidth == null) return;
+    map.resize();
+  }, [map, cardsColumnWidth]);
+
+  // Mobile bottom-sheet snap change — visible map area shrinks/grows when
+  // the user drags the sheet between snap points. Debounced via the same
+  // PANEL_MAP_RESIZE_DELAY_MS that the activeTab effect uses, so MapLibre
+  // measures the new container after the sheet's CSS transition completes.
+  useEffect(() => {
+    if (!map || sheetSnap == null) return;
+    const id = setTimeout(() => map.resize(), PANEL_MAP_RESIZE_DELAY_MS);
+    return () => clearTimeout(id);
+  }, [map, sheetSnap]);
 
   function handleUnlock() {
     if (!map) return;

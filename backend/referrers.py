@@ -33,12 +33,16 @@ _SEARCH_HOSTS: frozenset[str] = frozenset({
     "duckduckgo.com", "ecosia.org", "kagi.com", "brave.com", "yahoo.com",
     "yandex.com", "baidu.com", "qwant.com", "startpage.com", "you.com",
     "perplexity.ai", "search.marginalia.nu",
+    # Google/Bing apex hosts — checked exactly, NOT as a suffix, so a
+    # look-alike like "notgoogle.com" does not bucket as "search".
+    "google.com", "bing.com",
 })
-# Patterns matched as suffix because Google/Bing have many TLDs (.com, .co.uk,
-# .com.au, etc.) and their subdomains (www.google.com, m.google.com).
+# Subdomain-only patterns. ``host.endswith(".google.com")`` matches
+# ``www.google.com`` / ``m.google.com`` but not ``notgoogle.com``. The bare
+# apex host is in ``_SEARCH_HOSTS`` above and matched by exact equality.
 _SEARCH_SUFFIXES: tuple[str, ...] = (
     ".google.com", ".google.co.uk", ".google.ca", ".google.de", ".google.fr",
-    "google.com", "bing.com", ".bing.com",
+    ".bing.com",
 )
 
 _SOCIAL_HOSTS: frozenset[str] = frozenset({

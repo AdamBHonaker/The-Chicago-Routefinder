@@ -43,10 +43,18 @@ async def close_session() -> None:
 
 
 def _get_session() -> aiohttp.ClientSession:
-    if _session is not None:
-        return _session
-    # Fallback for tests / isolated calls — caller is responsible for closing
-    return aiohttp.ClientSession()
+    """Return the module-level shared session, lazy-initialising it on first use.
+
+    The previous fallback returned a brand-new ``ClientSession`` per call and
+    expected the caller to close it — but no caller did, so tests and standalone
+    scripts (anything not running through the FastAPI lifespan) leaked one
+    session per CTA call. Lazy-initialising the module-level ``_session`` keeps
+    the leak fixed without forcing every test to wire up ``init_session()``.
+    """
+    global _session
+    if _session is None:
+        _session = aiohttp.ClientSession()
+    return _session
 
 TRAIN_BASE = f"{_CTA_TRAIN_BASE}/ttarrivals.aspx"
 BUS_BASE   = f"{_CTA_BUS_BASE}/getpredictions"
@@ -212,9 +220,10 @@ async def _fetch_bus_chunk(
     arrivals = []
     for prd in prd_list:
         try:
-            # Use `or ""` so an explicit API null ("prdctdn": null) defaults to ""
-            # rather than raising AttributeError on None.isdigit().
-            prdctdn = prd.get("prdctdn") or ""
+            # str() coerces both an explicit API null and a numeric value
+            # (e.g. JSON int instead of the documented string) into something
+            # .isdigit() can run on, instead of AttributeError'ing the whole arrival.
+            prdctdn = str(prd.get("prdctdn") or "").strip()
             # "DUE" and "APPROACHING" both mean ≤0 minutes; any other
             # non-numeric value (unexpected API change) is also treated as 0
             # rather than raising ValueError and silently dropping the arrival.

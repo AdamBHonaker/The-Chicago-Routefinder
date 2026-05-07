@@ -111,4 +111,22 @@ describe("useServiceAlerts", () => {
     unmount();
     expect(capturedSignal.aborted).toBe(true);
   });
+
+  it("refetch() re-pulls /alerts and replaces the list", async () => {
+    let call = 0;
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(() => {
+      call += 1;
+      const payload = call === 1
+        ? { alerts: [{ alert_id: "a1", headline: "stale" }] }
+        : { alerts: [{ alert_id: "a2", headline: "fresh" }] };
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(payload) });
+    }));
+    const { result } = renderHook(() => useServiceAlerts());
+    await waitFor(() => expect(result.current.undismissedAlerts).toHaveLength(1));
+    expect(result.current.undismissedAlerts[0].alert_id).toBe("a1");
+
+    await act(() => result.current.refetch());
+    expect(result.current.undismissedAlerts[0].alert_id).toBe("a2");
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
 });

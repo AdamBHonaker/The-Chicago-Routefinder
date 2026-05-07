@@ -314,12 +314,12 @@ Approximate geography
   cannot be re-identified.
 
 Sessions
-  A short-lived random session ID is set in an httpOnly Secure
-  SameSite=Lax cookie with a 30-min sliding TTL. It is hashed with the
-  same daily-rotating salt as DAU before any internal logging. No
-  per-session row is persisted — only an aggregate-per-day record of
-  sessions, total duration, and bounces. The cookie is discarded at
-  midnight Chicago.
+  A short-lived random session ID is set in an httpOnly Secure cookie
+  (SameSite=None in production for cross-site delivery, SameSite=Lax in
+  local dev) with a 30-min sliding TTL. It is hashed with the same daily-
+  rotating salt as DAU before any internal logging. No per-session row is
+  persisted — only an aggregate-per-day record of sessions, total
+  duration, and bounces. The cookie is discarded at midnight Chicago.
 
 Hour-of-day distribution
   A 24-int array per day, incremented when a recommendation is requested.

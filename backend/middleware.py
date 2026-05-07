@@ -193,15 +193,23 @@ def register_middlewares(
         sid = results[sid_idx]
         rid = results[rid_idx] if rid_idx is not None else None
 
-        secure = os.getenv("APP_ENV") == "production"
+        # Cookie attributes — production ships cross-site (Vercel frontend ↔
+        # Railway backend, different eTLD+1) so SameSite=Lax would drop the
+        # cookie on every fetch/XHR and silently break sessions, the FEAT-007
+        # funnel, and FEAT-002 retention. ``samesite=None`` requires
+        # ``secure=True`` per spec; both conditions hold in production.
+        # Local dev keeps Lax + insecure so cookies still work over plain HTTP.
+        is_prod = os.getenv("APP_ENV") == "production"
+        cookie_secure = is_prod
+        cookie_samesite = "none" if is_prod else "lax"
         if sid is not None:
             response.set_cookie(
                 key=sessions.COOKIE_NAME,
                 value=sid,
                 max_age=sessions.IDLE_TIMEOUT_SECONDS,
                 httponly=True,
-                secure=secure,
-                samesite="lax",
+                secure=cookie_secure,
+                samesite=cookie_samesite,
                 path="/",
             )
         if rid is not None:
@@ -210,8 +218,8 @@ def register_middlewares(
                 value=rid,
                 max_age=retention.COOKIE_MAX_AGE,
                 httponly=True,
-                secure=secure,
-                samesite="lax",
+                secure=cookie_secure,
+                samesite=cookie_samesite,
                 path="/",
             )
 

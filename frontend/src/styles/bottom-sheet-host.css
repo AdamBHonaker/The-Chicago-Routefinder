@@ -1,0 +1,53 @@
+/* ─────────────────────────────────────────────────────────────────────────
+ * Host bindings for mobile-sheet-kit.
+ *
+ * Maps CRF's design tokens (--paper, --ink, --mute-fog, --rule, --ease-out,
+ * --dur-slow, --safe-bottom, --rust) onto the kit's --bsk-* contract
+ * (see mobile-sheet-kit/tokens.example.css).
+ *
+ * The kit's bottom-sheet.css reads these variables; this file is the
+ * single seam between CRF's design system and the portable kit.
+ *
+ * NOTE on dur: the kit's Passage-style 320ms snap-settle reads more
+ * editorial than CRF's --dur-base (220ms) — using --dur-slow (320ms)
+ * here matches Passage's feel. Tune if real-device testing reads sticky.
+ * ───────────────────────────────────────────────────────────────────── */
+
+:root {
+  --bsk-paper:        var(--paper);
+  --bsk-ink:          var(--ink);
+  --bsk-mute-fog:     var(--mute-fog);
+  --bsk-rule:         var(--rule);
+  --bsk-ease:         var(--ease-out);
+  --bsk-dur:          var(--dur-slow);
+  --bsk-safe-bottom:  var(--safe-bottom);
+  --bsk-safe-top:     var(--safe-top);
+  --bsk-handle-focus: var(--rust);
+}
+
+/* ── App-level map host ───────────────────────────────────────────────────
+ * MapView is rendered ONCE at the App level so it survives breakpoint
+ * flips without remounting (which would blank the WebGL canvas and
+ * re-fetch tiles). These two classes position the same DOM element
+ * differently for mobile vs. desktop layouts — the App component
+ * toggles the className based on isMobile. */
+
+.map-host {
+  position: absolute;
+}
+
+.map-host--mobile {
+  inset: 0;
+  z-index: 0;          /* below the sheet (z-index 20) and masthead (z-index 10) */
+}
+
+.map-host--desktop {
+  /* Aligns with the right-side .panel-map column in .layout--split:
+       60px side rail | --cards-col-width cards | --splitter-width splitter | 1fr map
+     On desktop the .panel-map div is an empty placeholder; the visible
+     map lives here, positioned to fill the same area. */
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: calc(60px + var(--cards-col-width, 520px) + var(--splitter-width));
+}

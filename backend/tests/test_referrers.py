@@ -63,6 +63,18 @@ def test_classify_unknown_host_is_other():
     assert host == "chicagotribune.com"
 
 
+def test_classify_lookalike_google_is_other():
+    # Regression for BUG-015: ``host.endswith("google.com")`` used to match
+    # ``notgoogle.com`` and bucket it as ``search``. The apex ``google.com``
+    # now lives in _SEARCH_HOSTS (exact match) and the suffix list contains
+    # only dotted subdomain patterns, so look-alikes fall through to "other".
+    assert referrers.classify("https://notgoogle.com/foo")  == ("other", "notgoogle.com")
+    assert referrers.classify("https://evilbing.com/foo")   == ("other", "evilbing.com")
+    # The bare apex itself is still classified correctly.
+    assert referrers.classify("https://google.com/")[0] == "search"
+    assert referrers.classify("https://bing.com/")[0]   == "search"
+
+
 def test_classify_strips_path_and_query():
     # The hostname returned should never include path or query.
     bucket, host = referrers.classify("https://example.com/very/deep/path?utm_source=secret")

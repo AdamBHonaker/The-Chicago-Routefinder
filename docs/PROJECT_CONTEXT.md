@@ -345,7 +345,7 @@ CTA-Transit-PWA/
 │   ├── route_scoring.py                ← Weather-adjusted ranking weights; prompt-only hint injection
 │   ├── dau.py                          ← HMAC-SHA256 privacy-safe DAU counter; batched writes to /app/data/dau.json
 │   ├── geography.py                    ← FEAT-003: per-day per-city counter via MaxMind GeoLite2-City; privacy floor + Chicago-metro rollup; /app/data/geography.json
-│   ├── sessions.py                     ← FEAT-001: random sid cookie (httpOnly Secure SameSite=Lax, 30-min sliding TTL); idle-finalised session aggregates; /app/data/sessions.json
+│   ├── sessions.py                     ← FEAT-001: random sid cookie (httpOnly Secure, SameSite=None in prod / Lax in dev, 30-min sliding TTL); idle-finalised session aggregates; /app/data/sessions.json
 │   ├── hourly.py                       ← FEAT-004: per-day 24-int /recommend histogram in Chicago tz; /app/data/hourly.json
 │   ├── devices.py                      ← FEAT-005: ua-parser-driven mobile/tablet/desktop/bot/unknown buckets; raw UA never persisted; /app/data/devices.json
 │   ├── referrers.py                    ← FEAT-008: Referer hostname → direct/search/social/other buckets; path/query stripped pre-storage; /app/data/referrers.json

@@ -2,7 +2,6 @@ import { useTranslation } from "react-i18next";
 
 const TABS = [
   { id: "home",   code: "H" },
-  { id: "map",    code: "M" },
   { id: "alerts", code: "A" },
   { id: "saved",  code: "S" },
 ];

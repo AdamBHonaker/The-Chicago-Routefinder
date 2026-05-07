@@ -76,3 +76,11 @@ Known issues catalogued for future fixing. Severity: 🔴 High · 🟡 Medium ·
 - **Suggested Fix**: Update the docstring to match the actual 3-min estimate, or change `_LEG2_WAIT_ESTIMATE` to 7.5 if that better matches CTA bus headways. If the value is changed, the BUG-008 fix should still keep the constant consistent across the rebuild and the apply step.
 
 ---
+
+
+## Bug Scan — 2026-05-07 (backend)
+
+> Scanned: `backend/` — `events.py`, `analytics_store.py`, `utils.py`, `sessions.py`, `rate_limit.py`, `main.py`, `dau.py`, `geography.py`, `funnel.py`, `middleware.py`, `devices.py`, `retention.py`, `cta_client.py`, `weather_service.py`, `route_scoring.py`, `walking.py`, `routes/admin.py`, `routes/stats.py`, `active_routes.py`, `hourly.py`, `referrers.py`, `prompt_builder.py`, `public_stats.py`, `gtfs_loader.py`, `transit_graph.py` (skim). Focus on logic, runtime, and integration bugs not already in this file.
+> Found: 5 bug(s) — 2 🟡 Medium, 3 🟢 Low. **All resolved 2026-05-07** — see `docs/archive/RESOLVED_HISTORY.md`.
+
+---

@@ -151,9 +151,12 @@ None — built on `secrets` and `hmac` from the standard library.
 
 ### Cookie and CORS
 
-- Cookie attributes: `httpOnly` `Secure` `SameSite=Lax`, set by
-  `backend/main.py` `_analytics_middleware`. `Secure` is conditional
-  on `APP_ENV=production` so local dev over plain HTTP still works.
+- Cookie attributes: `httpOnly` `Secure`, with `SameSite=None` in
+  production (cross-site Vercel↔Railway requires it for the cookie to
+  ride along on `fetch`/XHR) and `SameSite=Lax` in local dev. Set by
+  `backend/middleware.py` `_analytics_middleware`. Both `Secure` and the
+  `SameSite=None` switch are gated on `APP_ENV=production` so local dev
+  over plain HTTP still works.
 - CORS: `allow_credentials=True` is required for the cookie to flow
   cross-origin. `ALLOWED_ORIGINS` must remain an explicit list — the
   combination of `allow_credentials=True` and a wildcard origin is a

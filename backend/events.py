@@ -42,6 +42,9 @@ EVENT_ALLOWLIST: frozenset[str] = frozenset({
     "map_opened",
     "house_ad_clicked",
     "trip_completed",
+    "trip_off_route",
+    "trip_rerouted",
+    "off_route_dismissed",
 })
 
 _lock = asyncio.Lock()

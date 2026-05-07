@@ -3,9 +3,11 @@ New vs returning visitor tracking (FEAT-002).
 
 Privacy design:
   * A 90-day opaque random ID (``returnId``) is set in an ``httpOnly``
-    ``Secure`` ``SameSite=Lax`` cookie. The raw value is held in memory
-    for the duration of the request only; it is HMAC-SHA256-hashed with a
-    stable per-deployment retention key before any comparison or storage.
+    ``Secure`` cookie. SameSite is ``None`` in production (cross-site
+    Vercel↔Railway requires it) and ``Lax`` in local dev. The raw value is
+    held in memory for the duration of the request only; it is HMAC-SHA256-
+    hashed with a stable per-deployment retention key before any comparison
+    or storage.
   * The raw ``returnId`` value is never written to disk.
   * The only persistent cross-day artifact is the Bloom filter bit array,
     which stores fixed-salt fingerprints. Even with the filter in hand an

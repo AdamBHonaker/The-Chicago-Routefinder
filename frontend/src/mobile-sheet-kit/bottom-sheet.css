@@ -1,0 +1,98 @@
+/* ─────────────────────────────────────────────────────────────────────────
+ * mobile-sheet-kit — bottom-sheet styles.
+ *
+ * All theming reads --bsk-* CSS custom properties supplied by the host
+ * project. See tokens.example.css for the contract; required vars are
+ * --bsk-paper, --bsk-ink, --bsk-mute-fog, --bsk-rule, --bsk-ease,
+ * --bsk-dur, --bsk-safe-bottom. Optional: --bsk-safe-top, --bsk-shadow,
+ * --bsk-handle-focus.
+ *
+ * Inline styles in BottomSheet.jsx own the *dynamic* properties (height,
+ * transform, transition) — everything else lives here so it can be
+ * customised without re-rendering.
+ * ───────────────────────────────────────────────────────────────────── */
+
+.bottom-sheet {
+  background: var(--bsk-paper, #f2ece0);
+  border-top: var(--bsk-rule, 1px solid #171310);
+  color: var(--bsk-ink, #171310);
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--bsk-shadow, 0 -8px 24px rgba(23, 19, 16, 0.18), 0 -1px 0 rgba(23, 19, 16, 0.05));
+}
+
+.bottom-sheet__handle {
+  appearance: none;
+  background: transparent;
+  border: none;
+  padding: 10px 0 6px;
+  width: 100%;
+  cursor: grab;
+  touch-action: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.bottom-sheet__handle:focus-visible {
+  outline: 2px solid var(--bsk-handle-focus, #9c2a1a);
+  outline-offset: -2px;
+}
+
+.bottom-sheet__handle-pill {
+  display: block;
+  width: 44px;
+  height: 4px;
+  background: var(--bsk-mute-fog, #a89a82);
+  border-radius: 2px;
+}
+
+.bottom-sheet__handle-rule {
+  display: block;
+  height: 1px;
+  width: 100%;
+  background: var(--bsk-ink, #171310);
+  opacity: 0.85;
+}
+
+.bottom-sheet__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 0 16px max(16px, var(--bsk-safe-bottom, 0px));
+}
+
+/* ── Mobile shell ─────────────────────────────────────────────────────────
+ * The kit's recommended layout: full-bleed map slot + optional floating
+ * masthead + bottom sheet, all anchored to a 100dvh container.
+ * Host can override or replace by not rendering MobileLayout. */
+
+.mobile-shell {
+  position: relative;
+  height: 100dvh;
+  width: 100%;
+  overflow: hidden;
+}
+
+.mobile-shell-map {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+.mobile-shell-header {
+  position: absolute;
+  top: var(--bsk-safe-top, 0px);
+  inset-inline: 0;
+  z-index: 10;
+  pointer-events: auto;
+  padding: 12px 16px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bottom-sheet { transition: none !important; }
+}

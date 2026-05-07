@@ -1,0 +1,279 @@
+/* Touch-state family system (FEAT-012) — see layout.css for the full system.
+ *
+ * .route-alerts-banner--present is GHOST family (transparent → paper-folio on
+ * hover; pressed inverts to ink/paper). The --absent variant is a static <p>
+ * with no interactive states — see RouteAlertsBanner.jsx.
+ *
+ * .alerts-filter__trigger inherits .masthead-select (GHOST family) and gets
+ * the same family-rule press treatment.
+ *
+ * .alerts-filter__clear is ICON/LINK family — no :active rule per decision #14.
+ */
+
+/* ── Route-alerts banner (replaces home-column ServiceAlertsBar) ─────────── */
+
+.route-alerts-banner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  width: 100%;
+  text-align: left;
+}
+
+.route-alerts-banner--present {
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  transition: background var(--dur-quick) var(--ease-out);
+}
+
+.route-alerts-banner--present:hover,
+.route-alerts-banner--present:focus-visible {
+  background-color: var(--paper-folio);
+  outline: none;
+}
+
+.route-alerts-banner--present:active {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.route-alerts-banner--present:active .special-dispatch__kicker,
+.route-alerts-banner--present:active .route-alerts-banner__cta {
+  color: var(--paper);
+}
+
+.route-alerts-banner__body {
+  font-family: var(--serif);
+  font-size: 13px;
+  font-style: italic;
+  line-height: 1.45;
+  color: var(--ink-soft);
+}
+
+.route-alerts-banner__cta {
+  font-family: var(--sans);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--rust);
+  margin-top: var(--sp-1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .route-alerts-banner--present { transition: none; }
+}
+
+/* ── Alerts filter bar (Notices & Delays tab) ────────────────────────────── */
+
+.alerts-filter {
+  position: relative;
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.alerts-filter__trigger {
+  /* Inherits .masthead-select for ghost-button visual language. Class kept
+   * for future targeting. */
+}
+
+.alerts-filter__popover {
+  position: absolute;
+  top: calc(100% + var(--sp-2));
+  left: 0;
+  background: var(--paper-bright);
+  border: var(--rule);
+  box-shadow: 0 4px 16px rgba(23, 19, 16, 0.12);
+  z-index: var(--z-dropdown);
+  min-width: 220px;
+  max-height: 70vh;
+  overflow-y: auto;
+  padding: var(--sp-2) 0;
+}
+
+.alerts-filter__popover--bus {
+  /* Bus list can grow long; popover already scrolls (max-height above). */
+  min-width: 200px;
+}
+
+.alerts-filter__help {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--mute);
+  padding: var(--sp-2) var(--sp-3);
+  margin: 0 0 var(--sp-2);
+  border-bottom: var(--hairline);
+}
+
+.alerts-filter__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.alerts-filter__row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  min-height: 44px;
+  padding: var(--sp-2) var(--sp-3);
+  cursor: pointer;
+  font-family: var(--sans);
+  font-size: var(--fs-body-sm);
+  color: var(--ink);
+  transition: background var(--dur-quick) var(--ease-out);
+}
+
+.alerts-filter__row:hover,
+.alerts-filter__row:focus-within {
+  background: var(--paper-folio);
+}
+
+.alerts-filter__row--checked {
+  font-weight: 700;
+}
+
+.alerts-filter__checkbox {
+  /* Native checkbox; sized to match touch-target without overwhelming the row */
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  accent-color: var(--ink);
+  cursor: pointer;
+}
+
+.alerts-filter__swatch {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+  border-radius: 2px;
+}
+
+.alerts-filter__row-label {
+  flex: 1;
+}
+
+.alerts-filter__row-label--mono {
+  font-family: var(--mono);
+  font-size: var(--fs-mono);
+}
+
+.alerts-filter__empty {
+  padding: var(--sp-3);
+  margin: 0;
+  font-family: var(--serif);
+  font-style: italic;
+  color: var(--mute);
+  font-size: var(--fs-body-sm);
+}
+
+.alerts-filter__clear {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-top: var(--hairline);
+  padding: var(--sp-2) var(--sp-3);
+  margin-top: var(--sp-2);
+  color: var(--mute);
+  font-family: var(--sans);
+  font-size: var(--fs-caps);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  font-weight: 700;
+  cursor: pointer;
+  transition: color var(--dur-quick) var(--ease-out);
+}
+
+.alerts-filter__clear:hover,
+.alerts-filter__clear:focus-visible {
+  color: var(--rust);
+  outline: none;
+}
+
+/* ── Alerts tab heading row ──────────────────────────────────────────────── */
+
+.tab-alerts-view__heading-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: 0 var(--sp-6);
+  margin-bottom: var(--sp-4);
+  flex-wrap: wrap;
+}
+
+.tab-alerts-view__filter-bar {
+  flex-shrink: 0;
+}
+
+.tab-alerts-view__prompt {
+  padding: var(--sp-6) var(--sp-6);
+  margin: 0;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: var(--fs-body-sm);
+  line-height: 1.5;
+  color: var(--mute);
+  text-align: center;
+}
+
+/* RTL: anchor popover to the right edge of the trigger */
+[dir="rtl"] .alerts-filter__popover {
+  left: auto;
+  right: 0;
+}
+
+/* ── Mobile contextualization ────────────────────────────────────────────── */
+
+@media (max-width: 800px) {
+  .tab-alerts-view__heading-row {
+    /* Heading and filter bar stack on narrow viewports; filter bar drops to its
+     * own line directly below the heading. */
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .tab-alerts-view__filter-bar {
+    align-self: flex-start;
+  }
+
+  .alerts-filter__popover {
+    /* Right-align so a left-edge button doesn't push the popover off-screen on
+     * the right. The popover is anchored to its trigger, but we shift the
+     * anchor so it grows leftward instead of rightward. */
+    left: auto;
+    right: 0;
+    min-width: 240px;
+  }
+
+  /* Reset RTL flip in the mobile context — RTL still wants right-edge */
+  [dir="rtl"] .alerts-filter__popover {
+    left: 0;
+    right: auto;
+  }
+}
+
+@media (max-width: 400px) {
+  .alerts-filter__popover {
+    /* Below 400px, popover is full-width relative to the alerts tab so nothing
+     * clips off the viewport edge. */
+    left: 0;
+    right: 0;
+    min-width: 0;
+    width: calc(100vw - 2 * var(--sp-4));
+  }
+
+  [dir="rtl"] .alerts-filter__popover {
+    left: 0;
+    right: 0;
+  }
+}

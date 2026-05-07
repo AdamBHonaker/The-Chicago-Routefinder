@@ -39,8 +39,9 @@ Implemented in [backend/geography.py](../backend/geography.py).
 Implemented in [backend/retention.py](../backend/retention.py).
 
 - A 90-day opaque random ID (`returnId`) is set in an `httpOnly` `Secure`
-  `SameSite=Lax` cookie. The raw value is never written to disk — only a
-  stable HMAC fingerprint derived from it is stored.
+  cookie (`SameSite=None` in production for cross-site Vercel↔Railway
+  delivery, `SameSite=Lax` in local dev). The raw value is never written to
+  disk — only a stable HMAC fingerprint derived from it is stored.
 - Server stores a **rolling Bloom filter** of fingerprints (HMAC-SHA256
   with a stable per-deployment retention key). The filter is the only
   persistent cross-day artifact.
@@ -63,9 +64,10 @@ Implemented in [backend/retention.py](../backend/retention.py).
 
 Implemented in [backend/sessions.py](../backend/sessions.py).
 
-- A short-lived random session ID is set in an `httpOnly` `Secure`
-  `SameSite=Lax` cookie with a 30-min sliding TTL. The raw ID lives in
-  memory only for the lifetime of the cookie.
+- A short-lived random session ID is set in an `httpOnly` `Secure` cookie
+  (`SameSite=None` in production for cross-site Vercel↔Railway delivery,
+  `SameSite=Lax` in local dev) with a 30-min sliding TTL. The raw ID lives
+  in memory only for the lifetime of the cookie.
 - Before any internal logging or comparison the ID is HMAC-SHA256-hashed
   with the same daily-rotating salt that DAU uses, so a debugging
   breadcrumb can never correlate a session across days.

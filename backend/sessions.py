@@ -3,9 +3,11 @@ Sessions counter (FEAT-001).
 
 Privacy design:
   * The session ID is a UUID-strength random token (``secrets.token_urlsafe``)
-    set in an ``httpOnly`` ``Secure`` ``SameSite=Lax`` cookie with a 30-min
-    sliding TTL. The cookie is *never* persisted across days — a fresh
-    session begins after midnight Chicago even if the same browser returns.
+    set in an ``httpOnly`` ``Secure`` cookie with a 30-min sliding TTL.
+    SameSite is ``None`` in production (cross-site Vercel↔Railway requires
+    it for the cookie to be sent on fetch) and ``Lax`` in local dev.
+    The cookie is *never* persisted across days — a fresh session begins
+    after midnight Chicago even if the same browser returns.
   * The raw session ID is held in memory only for the lifetime of the
     cookie. Before any internal logging or comparison the ID is
     HMAC-SHA256-hashed with the same daily-rotating salt that ``dau.py``

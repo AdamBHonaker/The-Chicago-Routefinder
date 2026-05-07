@@ -262,11 +262,11 @@ app.add_middleware(
     allow_origins=ALLOWED_ORIGINS,
     allow_methods=["POST", "GET"],
     allow_headers=["Content-Type", "Accept", "Accept-Language", "Authorization"],
-    # FEAT-001: the session cookie is httpOnly + Secure + SameSite=Lax. For the
-    # browser to send/receive it cross-origin (Vercel frontend → Railway
-    # backend) the response must include `Access-Control-Allow-Credentials:
-    # true`, and ALLOWED_ORIGINS must be an explicit list (not "*"). Both
-    # conditions hold here.
+    # FEAT-001: the session cookie is httpOnly + Secure, and SameSite=None in
+    # production (so it survives the cross-site Vercel↔Railway hop) or Lax in
+    # local dev. For the browser to send/receive it cross-origin the response
+    # must include `Access-Control-Allow-Credentials: true`, and ALLOWED_ORIGINS
+    # must be an explicit list (not "*"). Both conditions hold here.
     allow_credentials=True,
     max_age=3600,
 )

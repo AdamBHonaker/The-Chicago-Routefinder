@@ -485,9 +485,26 @@ def reverse_geocode_google(lat: float, lon: float) -> str | None:
 
     The returned string has the zip code and country stripped so it fits
     cleanly in the location input, e.g. "78 E Washington St, Chicago, IL".
+
+    Counts against the same monthly Google Geocoding quota as the forward
+    geocoder — both the pre-flight cap check and post-call counter increment
+    use ``_geocode_lock`` so a flood of /reverse-geocode requests can't
+    silently exhaust the budget without the in-process counter moving.
     """
     if not _GOOGLE_MAPS_API_KEY:
         return None
+
+    # Pre-flight quota check under the lock; release before the network call
+    # so concurrent requests for different points proceed in parallel.
+    with _geocode_lock:
+        current_count = _geocode_call_count()
+        if _GEOCODE_CALL_LIMIT > 0 and current_count >= _GEOCODE_CALL_LIMIT:
+            print(
+                f"[gtfs_loader] Monthly geocoding limit reached "
+                f"({current_count}/{_GEOCODE_CALL_LIMIT}) — skipping reverse geocode for ({lat},{lon})"
+            )
+            return None
+
     try:
         resp = _http_session.get(
             _GOOGLE_MAPS_GEOCODE_URL,
@@ -502,7 +519,15 @@ def reverse_geocode_google(lat: float, lon: float) -> str | None:
         print(f"[gtfs_loader] Reverse geocoding failed for ({lat},{lon}): {exc}")
         return None
 
-    if data.get("status") == "OK" and data.get("results"):
+    status = data.get("status")
+    # OK and ZERO_RESULTS both bill one credit; transient errors
+    # (OVER_QUERY_LIMIT, REQUEST_DENIED, UNKNOWN_ERROR) don't, so they're
+    # excluded from the counter — same policy as geocode_google.
+    if status in ("OK", "ZERO_RESULTS"):
+        with _geocode_lock:
+            _increment_geocode_call_count()
+
+    if status == "OK" and data.get("results"):
         addr = data["results"][0].get("formatted_address", "")
         # Strip zip code and country suffix, e.g. ", 60602, USA" or ", IL 60602, USA"
         addr = re.sub(r",\s*\d{5}(-\d{4})?(?=,|$)", "", addr)

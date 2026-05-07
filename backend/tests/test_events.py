@@ -21,9 +21,10 @@ def reset_state(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_allowlist_contains_documented_events():
-    """The eight names documented in docs/FEATURE_PLANS.md FEAT-006 must all
-    be in the allowlist; a future contributor reading the scope should not
-    find a name listed there that the code rejects."""
+    """Every event name documented in docs/FEATURE_PLANS.md FEAT-006 (plus the
+    off-route flow's three diagnostic signals) must be in the allowlist; a
+    future contributor reading the scope should not find a name listed there
+    that the code rejects."""
     expected = {
         "app_loaded",
         "recommend_submitted",
@@ -33,6 +34,9 @@ def test_allowlist_contains_documented_events():
         "map_opened",
         "house_ad_clicked",
         "trip_completed",
+        "trip_off_route",
+        "trip_rerouted",
+        "off_route_dismissed",
     }
     assert events.EVENT_ALLOWLIST == frozenset(expected)
 

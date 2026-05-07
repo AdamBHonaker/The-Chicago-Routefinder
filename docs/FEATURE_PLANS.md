@@ -846,6 +846,55 @@ Hours, phone, branch type, and other CPL metadata are explicitly **out of scope*
 
 ---
 
+### FEAT-016 --- Translate the new alerts-flow strings across all 76 locales
+
+**Type:** Bolt-On --- frontend-only data work; no logic, component, or backend changes.
+
+**Status:** Scoping stub. Spawned 2026-05-07 alongside the alerts-flow rework that introduced the [`RouteAlertsBanner`](../frontend/src/components/RouteAlertsBanner.jsx) and [`AlertsFilterBar`](../frontend/src/components/AlertsFilterBar.jsx) components. The parent FEAT shipped English-only strings; non-English locales fall back to English at runtime via i18next.
+
+**Dependency:** Parent alerts-flow FEAT must ship first (and the new keys must be present in `frontend/public/locales/en/translation.json`).
+
+**User story / motivation:** The parent FEAT added 14 new i18n keys (banner present/absent, filter labels, filter prompts, helper text). These are wrapped in `useTranslation().t()` calls so they're translation-ready, but only the English `translation.json` was populated. Riders on non-English locales currently see English copy in two new high-traffic surfaces: (a) the banner above each route's results column, and (b) the Notices & Delays tab heading. Bringing the new keys up to the locale-coverage bar already established by FEAT for the rest of the app (commit `680f077 — Locale expansion (22→76)…`) restores parity.
+
+**Keys to translate (per `frontend/public/locales/en/translation.json`):**
+
+- `route_alerts_banner_present`
+- `route_alerts_banner_present_cta`
+- `route_alerts_banner_present_aria`
+- `route_alerts_banner_absent`
+- `alerts_filter_l_label`
+- `alerts_filter_bus_label`
+- `alerts_filter_l_count` (uses `{{count}}` interpolation)
+- `alerts_filter_bus_count` (uses `{{count}}` interpolation)
+- `alerts_filter_l_aria`
+- `alerts_filter_bus_aria`
+- `alerts_filter_clear`
+- `alerts_filter_prompt`
+- `alerts_filter_empty_for_selection`
+- `alerts_bus_filter_help`
+
+**Provisional scoping notes:**
+
+1. **Translation source.** Use the same translation pipeline used for the 22→76 locale expansion. The 8 `RESEARCH_LOCALES` flagged in [i18n.js:121-123](../frontend/src/i18n.js#L121-L123) should continue to surface the `mt-review-notice` MT badge for these keys.
+2. **Editorial register.** Source English follows the project's period-newspaper register: declarative, em-dashes preferred, no exclamation points, "notices" in user-facing copy (matching `alerts_tab_heading: "Notices & Delays"`). Translators should preserve that voice — these are short copy, so a single tonal misstep is disproportionately visible.
+3. **Pluralisation.** `alerts_filter_l_count` and `alerts_filter_bus_count` use simple `{{count}}` interpolation today (e.g., "L (2)"). Languages with non-trivial plural rules — Russian, Polish, Arabic, Hebrew, Welsh — may want explicit `_one` / `_few` / `_many` variants per i18next pluralisation conventions. Decide per-locale during translation.
+4. **The unicode arrow.** `route_alerts_banner_present_cta` ends with `⟶` (long right arrow). RTL locales (`ar`, `he`, `fa`, `ur`) should mirror to `⟵` or rely on the `[dir="rtl"]` automatic mirror — verify rendering in the per-locale review.
+5. **No code changes required** in this FEAT. All component code in the parent FEAT is already i18n-ready (variables passed via `t(key, { count })`, no string concatenation across JSX nodes).
+
+**Acceptance criteria:**
+
+- All 14 keys present in every `frontend/public/locales/<locale>/translation.json` file (76 locales).
+- Spot-check on the 8 `RESEARCH_LOCALES` confirms the MT badge surfaces correctly when these keys render.
+- Manual switch to at least one RTL locale (e.g., `ar`) and one CJK locale (e.g., `ja`) confirms the banner and the filter popover render without layout breakage or dangling English fallbacks.
+
+**Files likely touched:**
+
+- `frontend/public/locales/*/translation.json` (76 files)
+
+**When to revisit:** Schedule alongside the next routine locale-coverage pass, or sooner if rider analytics show non-English usage of the Notices & Delays surface.
+
+---
+
 ## Consideration — Geocoding Provider Migration (Google Maps → alternatives)
 
 ### Context

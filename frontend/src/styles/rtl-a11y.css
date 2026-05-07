@@ -25,8 +25,6 @@
 
 /* .leg-steps border/padding use logical properties — no RTL override needed */
 
-/* .alert-item border RTL handled via border-inline-start (logical property) */
-
 /* .settings-sheet uses logical properties — no RTL override needed */
 /* .settings-byok-actions uses logical gap — no RTL override needed */
 

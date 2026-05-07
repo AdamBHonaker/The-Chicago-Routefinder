@@ -28,23 +28,36 @@
   min-height: 0; /* required for flex children to scroll independently */
 }
 
-/* Desktop default: 3-column grid, both panels visible regardless of activeTab.
+/* Desktop default: 4-column grid — side rail, cards (user-resizable), splitter
+   handle, map. Both panels are always visible on desktop; side-rail tabs only
+   swap content inside the cards column. The cards column width is driven by the
+   --cards-col-width custom property (default 520px), which the splitter mutates
+   on drag. The minimum cards width is enforced in JS clamp logic, not CSS, so
+   the grid template can stay simple.
    Mobile breakpoint below switches to a single-column flex with screen-swap. */
 .layout--split {
   display: grid;
-  grid-template-columns: 60px minmax(0, 520px) 1fr;
+  grid-template-columns: 60px var(--cards-col-width, 520px) var(--splitter-width) 1fr;
   min-height: 0;
 }
 
-/* Left panel — route cards, form, results */
+/* Left panel — route cards, form, results. Children are wrapped in
+   .panel-cards__inner which caps their reading width (~720px) so dragging the
+   cards column wider keeps line lengths comfortable instead of producing
+   1000-character lines. */
 .panel-cards {
   flex-shrink: 0;
   overflow-y: auto;
+  background-color: var(--paper);
+}
+
+.panel-cards__inner {
   display: flex;
   flex-direction: column;
   gap: 2rem;
   padding: 1.5rem 1.375rem env(safe-area-inset-bottom, 1.5rem);
-  background-color: var(--paper);
+  max-width: 720px;
+  margin-inline: auto;
 }
 
 /* Right panel — map (always in DOM) */
@@ -52,6 +65,34 @@
   position: relative;
   background: var(--paper-folio);
   overflow: hidden;
+}
+
+/* Splitter handle — sits between cards and map, drag horizontally to resize.
+   Ghost-button family (per FEAT-012 touch-state system at top of file): paper
+   base, paper-folio on hover, ink-press on :active. Hairline rule on each side
+   anchors it visually inside the broadside grid. Hidden on mobile. */
+.panel-splitter {
+  background: var(--paper);
+  border-inline-start: var(--hairline);
+  border-inline-end: var(--hairline);
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+  transition: background var(--dur-quick) var(--ease-out);
+}
+
+.panel-splitter:hover {
+  background: var(--paper-folio);
+}
+
+.panel-splitter:active,
+.panel-splitter[data-dragging="true"] {
+  background: var(--ink);
+}
+
+.panel-splitter:focus-visible {
+  outline: 2px solid var(--rust);
+  outline-offset: -2px;
 }
 
 /* ── Side rail (desktop only) ───────────────────────────────────────────── */
@@ -134,48 +175,19 @@
   display: none; /* shown only inside the mobile breakpoint */
 }
 
-/* ── Desktop tab switching ───────────────────────────────────────────────── */
-/* On Home/Alerts/Saved: hide map. On Map: hide cards and expand map to fill. */
+/* ── Desktop pane visibility ─────────────────────────────────────────────── */
+/* Both cards and map are always visible on desktop. Side-rail tabs swap the
+   content inside the cards column (Home form / Alerts / Saved); the map
+   never hides. The cards/map split is user-resizable via .panel-splitter
+   (driven by the --cards-col-width custom property on .layout--split). */
 
 @media (min-width: 801px) {
-  /* Base visible state — entering panels animate in from translateX(8px) */
   .panel-cards,
   .panel-map {
     opacity: 1;
     visibility: visible;
     pointer-events: auto;
     transform: translateX(0);
-    transition:
-      opacity var(--dur-base) var(--ease-out),
-      transform var(--dur-base) var(--ease-out),
-      visibility 0s linear 0s;
-  }
-
-  /* Hidden panel state — fades + slides out, then removed from a11y tree */
-  [data-active-tab="map"] .panel-cards,
-  [data-active-tab="home"] .panel-map,
-  [data-active-tab="alerts"] .panel-map,
-  [data-active-tab="saved"] .panel-map {
-    opacity: 0;
-    visibility: hidden;
-    pointer-events: none;
-    transform: translateX(8px);
-    transition:
-      opacity var(--dur-base) var(--ease-out),
-      transform var(--dur-base) var(--ease-out),
-      visibility 0s linear var(--dur-base);
-  }
-
-  /* Grid collapse — visibility:hidden keeps elements in layout so the hidden
-     panel's column must be collapsed to 0 (not removed) to keep all 3 grid
-     children placed correctly. Removing a column entirely auto-flows the
-     third child into a 0-width implicit column → black map canvas. */
-  [data-active-tab="map"] .layout--split {
-    grid-template-columns: 60px 0 1fr;
-  }
-  [data-active-tab="alerts"] .layout--split,
-  [data-active-tab="saved"] .layout--split {
-    grid-template-columns: 60px 1fr 0;
   }
 }
 
@@ -219,7 +231,15 @@
     flex: 1;
     overflow-y: auto;
     min-height: 0;
+  }
+
+  .panel-cards__inner {
     padding-bottom: calc(var(--tab-bar-height) + env(safe-area-inset-bottom) + 1rem);
+  }
+
+  /* Splitter is desktop-only — hide on mobile (no horizontal resize on phones). */
+  .panel-splitter {
+    display: none;
   }
 
   /* Map panel: fill remaining height */
@@ -317,6 +337,18 @@
   .tab-bar__label {
     display: block;
   }
+}
+
+/* ── Mobile bottom-sheet branch ──────────────────────────────────────────── */
+/* When .app--mobile is set, App.jsx renders a MobileLayout (full-bleed map
+ * + draggable bottom sheet) instead of the .layout--split tab-swap UI. The
+ * existing mobile media-query rules (.tab-bar grid, .panel-cards swap)
+ * become inert because their target elements aren't rendered, but the
+ * tab-bar <nav> stays in JSX as desktop scaffolding — hide it explicitly
+ * on the mobile branch so the sheet has the bottom edge to itself. */
+
+.app--mobile .tab-bar {
+  display: none;
 }
 
 /* ── Alerts tab view ─────────────────────────────────────────────────────── */
