@@ -13,7 +13,7 @@ The download queries the OpenStreetMap Overpass API — it takes 3–10 minutes
 depending on your connection. After the first run the server loads from the
 local cache file in under a second.
 
-Geographic scope: two polygons merged into a MultiPolygon.
+Geographic scope: two boxes unioned into a single polygon (they share an edge).
   - Main Chicago box: Howard St (N) → ~100th St (S) | Lakefront (E) → Austin Blvd (W)
   - Purple Line corridor: narrow Evanston strip (Howard → Linden) covering the 9
     Evanston Purple Line stations without pulling in all of Evanston (~1.4 mi wide)
@@ -98,15 +98,19 @@ def _step_end(detail: str = "") -> None:
 
 def _build_coverage_polygon():
     """
-    Build the MultiPolygon that defines the street graph's geographic scope:
+    Build the polygon that defines the street graph's geographic scope:
     a main Chicago box (south of Howard) plus a narrow Evanston corridor that
     covers the 9 Purple Line stations without pulling in all of Evanston.
     """
-    from shapely.geometry import box, MultiPolygon
+    # The two boxes share an edge along y=STREET_GRAPH_NORTH (=PURPLE_LINE_CORRIDOR_SOUTH),
+    # which makes a MultiPolygon invalid (components may only touch at finite points).
+    # unary_union merges them into a single Polygon along the shared edge.
+    from shapely.geometry import box
+    from shapely.ops import unary_union
     main = box(STREET_GRAPH_WEST, STREET_GRAPH_SOUTH, STREET_GRAPH_EAST, STREET_GRAPH_NORTH)
     corridor = box(PURPLE_LINE_CORRIDOR_WEST, PURPLE_LINE_CORRIDOR_SOUTH,
                    PURPLE_LINE_CORRIDOR_EAST, PURPLE_LINE_CORRIDOR_NORTH)
-    return MultiPolygon([main, corridor])
+    return unary_union([main, corridor])
 
 COVERAGE_POLYGON = _build_coverage_polygon()
 
@@ -159,7 +163,7 @@ def download_and_save(verbose: bool = False) -> None:
 
     ox.settings.max_query_area_size = 2_500_000_000  # ~2,500 km²; restores pre-2.x default so bbox is fetched in one pass
 
-    _step_begin("Querying OpenStreetMap for the Chicago walk network (MultiPolygon)")
+    _step_begin("Querying OpenStreetMap for the Chicago walk network")
     G = ox.graph_from_polygon(COVERAGE_POLYGON, network_type="walk")
     raw_nodes = G.number_of_nodes()
     raw_edges = G.number_of_edges()
