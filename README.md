@@ -25,7 +25,7 @@ A user enters their origin and destination. The app:
 - **Pinned stops** — Pin any train station or bus stop from a result to a persistent home-screen arrivals board; each card shows live arrivals and a "Last train in X min" countdown badge for late-night use
 - **GPS trip tracking** — "Start Trip" activates GPS following: active leg highlighted, walk steps checked off as the user passes them, off-route detection with a one-tap re-route from current position
 - **Saved locations & routes** — Star any typed location or origin+destination pair; saved items appear in a quick-fill dropdown or one-tap panel
-- **Multi-language** — 76 languages with full RTL support across 12 RTL codes; continent-first language picker (feature-flagged) with diaspora-aware groupings; machine-translated review badge for low-resource locales; browser language auto-detected; Claude responds in the selected language
+- **Multi-language** — 27 Chicago-focused languages with full RTL support across 6 RTL codes (`ur`, `ar`, `ps`, `prs`, `aii`, `rhg`); continent-first language picker (feature-flagged) with diaspora-aware groupings; machine-translated review badge for low-resource locales (`aii`, `ksw`, `rhg`); browser language auto-detected; Claude responds in the selected language
 - **Walking speed** — Slow / Standard / Brisk pace selector in settings; applied to all walk legs and route ranking
 - **BYOK** — Bring Your Own Anthropic API key (opt-in, sessionStorage only)
 - **Rate limiting** — Per-IP sliding-window limiter (opt-in via Railway env var)
@@ -36,7 +36,7 @@ A user enters their origin and destination. The app:
 
 | Layer | Technologies |
 |-------|-------------|
-| **Frontend** | React (PWA), MapLibre GL JS v4, OpenFreeMap Liberty tiles, Vite, i18next (76 languages) |
+| **Frontend** | React (PWA), MapLibre GL JS v4, OpenFreeMap Liberty tiles, Vite, i18next (27 languages) |
 | **Backend** | Python, FastAPI, NetworkX (transit graph), igraph (walking graph), OSMnx, scikit-learn, aiohttp |
 | **AI** | Claude (`claude-sonnet-4-6` / `claude-haiku-4-5-20251001`) via Anthropic Python SDK |
 | **Data** | CTA GTFS (static schedules), CTA Bus & Train Tracker APIs (real-time), CTA Alerts API, CTA Route Status API, NWS Weather API, Google Maps Geocoding API |
@@ -121,7 +121,7 @@ Standalone scripts that run independently of the server:
 | Script | Purpose |
 |--------|---------|
 | `backend/fetch_gtfs.py` | Download/update CTA GTFS static data to `backend/gtfs_data/` |
-| `backend/fetch_street_graph.py` | Download and cache the OSMnx Chicago pedestrian street graph (Linden/Dempster-Skokie → 95th/Dan Ryan, lakefront → Midway corridor). Run with `--force` to regenerate over an existing cache. |
+| `backend/fetch_street_graph.py` | Download and cache the OSMnx Chicago pedestrian street graph (Howard St → 95th/Dan Ryan, lakefront → Austin Blvd, plus a narrow Purple Line corridor through Evanston to Linden). Run with `--force` to regenerate over an existing cache. |
 | `backend/fetch_station_exits.py` | Refresh `backend/station_exits.json` (per-station exit metadata used by Feature A train-station exit guidance). |
 | `backend/active_routes.py` | **Print all active CTA bus routes and train lines right now.** Uses Bus Tracker `/getroutes` (returns only in-service routes) and Train Tracker `/ttpositions` (active = has live train positions). Useful for debugging, data exploration, or verifying API keys. Requires `CTA_TRAIN_API_KEY` and `CTA_BUS_API_KEY` in `backend/.env`. |
 | `backend/scripts/check_dau.py` | **Fetch daily unique visitor counts from the production backend.** Usage: `python backend/scripts/check_dau.py <DAU_ADMIN_TOKEN>` |

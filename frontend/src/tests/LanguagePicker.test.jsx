@@ -58,11 +58,11 @@ describe("LanguagePicker", () => {
     expect(document.querySelector(".language-picker-popover--continents")).not.toBeNull();
   });
 
-  it("renders 6 continent tiles", () => {
+  it("renders 5 continent tiles (empty continents are filtered out)", () => {
     render(<LanguagePicker />);
     fireEvent.click(screen.getByRole("button", { name: "aria_language" }));
     const tiles = document.querySelectorAll(".continent-tile");
-    expect(tiles.length).toBe(6);
+    expect(tiles.length).toBe(5);
   });
 
   it("clicking a continent shows its language list", () => {
@@ -82,13 +82,6 @@ describe("LanguagePicker", () => {
 
     expect(i18nState.changeLanguage).toHaveBeenCalledWith("es");
     expect(document.querySelector(".language-picker-popover")).toBeNull();
-  });
-
-  it("Oceania (empty) shows the placeholder", () => {
-    render(<LanguagePicker />);
-    fireEvent.click(screen.getByRole("button", { name: "aria_language" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "continent_oceania" }));
-    expect(document.querySelector(".language-picker-empty")).not.toBeNull();
   });
 
   it("Escape on language list returns to continent grid", () => {

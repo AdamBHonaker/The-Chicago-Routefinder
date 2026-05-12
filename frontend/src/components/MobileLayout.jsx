@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { BottomSheet } from "./BottomSheet.jsx";
-import { createSheetSnapStore } from "./sheetSnap.js";
+import { createSheetSnapStore } from "../utils/sheetSnap.js";
 
 /* ─────────────────────────────────────────────────────────────────────────
  * MobileLayout — recommended composition root for a mobile map screen.

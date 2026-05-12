@@ -12,7 +12,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
-import { createSheetSnapStore } from "../mobile-sheet-kit/sheetSnap.js";
+import { createSheetSnapStore } from "../utils/sheetSnap.js";
 
 describe("createSheetSnapStore", () => {
   beforeEach(() => {

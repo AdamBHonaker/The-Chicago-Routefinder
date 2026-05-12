@@ -272,8 +272,9 @@ Open bugs: [`docs/BUGS.md`](BUGS.md) · Technical debt: [`docs/TECH_DEBT.md`](TE
 | `DAILY_SALT` | Railway | Random secret for DAU HMAC hashing |
 | `DAU_ADMIN_TOKEN` | Railway | Protects `GET /admin/dau` and `GET /admin/geography` |
 | `GITHUB_TOKEN` | Railway build arg | PAT with Contents:Read — needed for Dockerfile to pull street graph from GitHub Release street-graph-v1 |
-| `MAXMIND_LICENSE_KEY` | Railway build arg | Free MaxMind key — Dockerfile downloads GeoLite2-City.mmdb for FEAT-003 (geography). If unset, geography counting silently no-ops at runtime. |
-| `VITE_CONTINENT_PICKER_ENABLED` | Vercel | `true` to flip the continent-first language picker on. Default `false` — flat 76-entry `<select>` renders. Feature LocaleExpansion is fully shipped (all 76 locales translated, fonts wired up); flip to `true` once in-browser verification of glyph rendering passes. |
+| `MAXMIND_LICENSE_KEY` | Railway build arg | Free MaxMind key — Dockerfile downloads GeoLite2-City.mmdb for FEAT-003 (geography). If unset, geography counting silently no-ops at runtime. **Currently unset** to save ~60–80 MB of Railway memory; re-add when traffic warrants restoring city-level analytics. |
+| `RESPONSE_CACHE_ENABLED` | Railway | Default `true`. Set `false` to bypass the `/recommend` TTL response cache (~5–25 MB RAM savings). Currently set to `false` to reduce memory while traffic is low; flip back to `true` when caching becomes worth the footprint. |
+| `VITE_CONTINENT_PICKER_ENABLED` | Vercel | `true` to flip the continent-first language picker on. Default `false` — flat 27-entry `<select>` renders. Locale set retrenched 2026-05-11 to 27 Chicago-focused languages; flip to `true` once in-browser verification of glyph rendering passes. |
 | `VITE_TRANSLATION_FEEDBACK_URL` | Vercel | Override target for the machine-translated review badge feedback link. Default `mailto:wayfarer.atlas@gmail.com?subject=Translation%20issue`. Swap to a GitHub Issues URL if a structured intake is preferred. |
 | `VITE_HOUSE_AD_ENABLED` | Vercel | `true` to render the house ad slot below the route list. Default `false` — slot is hidden. Feature Monetization Chunk 1 shipped 2026-05-05 behind this flag. |
 | `VITE_HOUSE_AD_URL` | Vercel | Affiliate URL for the house ad. Read at build time (Vite). Leave blank to suppress the slot even when the flag is on. |
@@ -375,7 +376,7 @@ CTA-Transit-PWA/
     ├── .env.production                 ← Production env vars — update VITE_BACKEND_URL before deploy
     ├── src/
     │   ├── main.jsx                    ← Entry point; i18n Suspense wrapper
-    │   ├── i18n.js                     ← i18next config: 76 language codes (all with full translation files), RESEARCH_LOCALES (8 low-resource codes), LANGUAGES_BY_CONTINENT, HttpBackend, LanguageDetector
+    │   ├── i18n.js                     ← i18next config: 27 active language codes (Chicago-focused; 49 inactive translation files preserved under frontend/locales-archive/ for easy re-enabling), RESEARCH_LOCALES (3 low-resource codes), LANGUAGES_BY_CONTINENT, HttpBackend, LanguageDetector
     │   ├── index.css
     │   ├── App.jsx                     ← Top-level state; split layout; LocationInput; GPS trip tracking; off-route detection
     │   ├── App.css                     ← Design tokens; layout--split; 800px mobile breakpoint
@@ -405,12 +406,14 @@ CTA-Transit-PWA/
     │   │   ├── LanguagePicker/         ← Continent-first language picker (feature-flagged via VITE_CONTINENT_PICKER_ENABLED) — 2-step flow with continent grid + scoped language list
     │   │   └── LoadingSkeleton.jsx     ← Loading skeleton animation
     │   └── MapView.jsx                 ← MapLibre GL JS map; renderPolylines + stop/origin/dest markers; user position dot
-    └── public/
-        ├── icon-192.png
-        ├── icon-512.png
-        ├── apple-touch-icon.png
-        ├── locales/                    ← 76 language JSON files for i18next HttpBackend (each with the full 191-key dictionary)
-        └── transit-photos/             ← PENDING: place ≥10 transit photos here (see HUMAN_TODO.md)
+    ├── public/
+    │   ├── icon-192.png
+    │   ├── icon-512.png
+    │   ├── icon-512-maskable.png       ← PWA maskable icon (purpose: maskable)
+    │   ├── apple-touch-icon.png
+    │   ├── locales/                    ← 27 active Chicago-focused language JSON files (retrenched 2026-05-11 from 76)
+    │   └── transit-photos/             ← PENDING: place ≥10 transit photos here (see HUMAN_TODO.md)
+    └── locales-archive/                ← 49 inactive locale JSON files preserved outside the Vite public/ root so they do not ship to production. Re-enable a locale by moving its folder back into public/locales/ and appending a row to LANGUAGES in src/i18n.js.
 ```
 
 ---
@@ -474,7 +477,7 @@ CTA-Transit-PWA/
 
 ## Where to Resume
 
-The app is live on Railway + Vercel. All phases through 6.5 are complete; Feature Heritage, MapMarkers, and NorthExpansion/SouthExpansion shipped 2026-05-01. Feature HeadingTwoTone and Feature ItinerarySpine shipped 2026-05-03, completing the deferred D2 design-system work for panel headings and itinerary leg rows. Feature LocaleExpansion shipped 2026-05-05/06: i18n coverage went from 22 → 76 languages, with a continent-first picker (feature-flagged), a machine-translated review badge for low-resource locales, and Inter-aligned non-Latin web fonts.
+The app is live on Railway + Vercel. All phases through 6.5 are complete; Feature Heritage, MapMarkers, and NorthExpansion/SouthExpansion shipped 2026-05-01. Feature HeadingTwoTone and Feature ItinerarySpine shipped 2026-05-03, completing the deferred D2 design-system work for panel headings and itinerary leg rows. Feature LocaleExpansion shipped 2026-05-05/06: i18n coverage went from 22 → 76 languages, with a continent-first picker (feature-flagged), a machine-translated review badge for low-resource locales, and Inter-aligned non-Latin web fonts. Locale set retrenched to 27 Chicago-focused languages on 2026-05-11; the 27 active translation files live in `frontend/public/locales/` and the 49 inactive ones are preserved under `frontend/locales-archive/` (outside the Vite `public/` root so they do not ship to production). Re-enable a locale by moving its folder back into `public/locales/` and appending a row to `LANGUAGES` in `frontend/src/i18n.js`.
 
 **Next steps (in order):**
 
@@ -494,7 +497,7 @@ The app is live on Railway + Vercel. All phases through 6.5 are complete; Featur
 - **The unified NetworkX graph is the canonical routing surface.** `find_bus_routes()` was deprecated and removed by Feature J. All routing goes through `find_routes()` on the unified graph, plus `find_bus_transfer_routes()` for bus+bus transfers.
 - **The street graph uses igraph, not NetworkX.** `walking.py` loads `street_graph_igraph.pkl` (igraph) not the graphml directly. The KDTree is built from LCC vertices only.
 - **BYOK and Rate Limiting are code-complete but OFF by default.** Do not activate them without explicit instruction.
-- **i18n is live in 76 languages.** The `LANGUAGES` array in `frontend/src/i18n.js` is the single source of truth — adding a language means adding a row there and dropping a `frontend/public/locales/<code>/translation.json` file. Any new user-facing string in React components must have keys added to all 76 locale files; run `node scripts/translate-missing.mjs` (with `ANTHROPIC_API_KEY` set) to backfill new keys across every locale at once. The continent-first picker (`VITE_CONTINENT_PICKER_ENABLED`) is wired up but off by default — flip it on in Vercel after in-browser verification of glyph rendering for the non-Latin locales. Two locales (`mey`, `ceb`) are flagged for native-speaker review; the machine-translated review badge surfaces this to riders via the `feedback_link_label` link.
+- **i18n is live in 27 languages** (Chicago-focused; retrenched 2026-05-11 from 76). The `LANGUAGES` array in `frontend/src/i18n.js` is the single source of truth — adding a language means adding a row there and dropping a `frontend/public/locales/<code>/translation.json` file. Any new user-facing string in React components must have keys added to all 27 active locale files; run `node scripts/translate-missing.mjs` (with `ANTHROPIC_API_KEY` set) to backfill new keys across every locale at once. The continent-first picker (`VITE_CONTINENT_PICKER_ENABLED`) is wired up but off by default — flip it on in Vercel after in-browser verification of glyph rendering for the non-Latin locales. Three locales (`aii`, `ksw`, `rhg`) are low-resource and surface the machine-translated review badge to riders via the `feedback_link_label` link.
 - **When resolving bugs or debt**, delete the entry from `BUGS.md` or `TECH_DEBT.md` and add an entry to `RESOLVED_HISTORY.md`. Do not leave resolved items in the open files.
 - **When implementing features**, delete the entry from `FEATURE_PLANS.md` and add an entry to `FEATURE_HISTORY.md`. Do not mark features as ✅ in the plans file; remove them.
 

@@ -28,7 +28,7 @@
 @import "./styles/alerts-filter.css";
 @import "./styles/house-ad.css";
 
-/* mobile-sheet-kit (portable) + CRF host bindings + segmented control glue */
-@import "./mobile-sheet-kit/bottom-sheet.css";
+/* bottom sheet (folded in from former mobile-sheet-kit) + host bindings + segmented control glue */
+@import "./styles/bottom-sheet.css";
 @import "./styles/bottom-sheet-host.css";
 @import "./styles/sheet-segmented.css";

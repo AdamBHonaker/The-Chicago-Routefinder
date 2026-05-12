@@ -1,12 +1,13 @@
 /* ─────────────────────────────────────────────────────────────────────────
- * Host bindings for mobile-sheet-kit.
+ * Host bindings for the bottom-sheet styles.
  *
  * Maps CRF's design tokens (--paper, --ink, --mute-fog, --rule, --ease-out,
- * --dur-slow, --safe-bottom, --rust) onto the kit's --bsk-* contract
- * (see mobile-sheet-kit/tokens.example.css).
+ * --dur-slow, --safe-bottom, --rust) onto the --bsk-* contract used by
+ * styles/bottom-sheet.css. A portable snapshot of the original kit
+ * (including tokens.example.css) lives under Implementation Plans/mobile-sheet-kit/.
  *
- * The kit's bottom-sheet.css reads these variables; this file is the
- * single seam between CRF's design system and the portable kit.
+ * styles/bottom-sheet.css reads these variables; this file is the
+ * single seam between CRF's design system and the sheet styles.
  *
  * NOTE on dur: the kit's Passage-style 320ms snap-settle reads more
  * editorial than CRF's --dur-base (220ms) — using --dur-slow (320ms)

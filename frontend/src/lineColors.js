@@ -1,7 +1,7 @@
 // frontend/src/lineColors.js
 //
 // Canonical CTA line colors — single source of truth.
-// Mirrors `Chicago Routefinder - Design System/designs/data.jsx`.
+// Mirrors `Design Documents/design-system/data.jsx`.
 // Do NOT add, remove, or recolor lines without updating the design system in lockstep.
 
 export const LINE_COLORS = {

@@ -163,8 +163,10 @@ export const BYOK_ENABLED = import.meta.env.VITE_BYOK_ENABLED === "true";
 // ---------------------------------------------------------------------------
 // Continent-first language picker feature flag (Feature LocaleExpansion,
 // Chunk 15). Default OFF — when false, Masthead renders the existing flat
-// <select>. Set VITE_CONTINENT_PICKER_ENABLED=true once translations and
-// continent SVGs have shipped end-to-end.
+// <select>. Translations (27 active Chicago-focused locales, retrenched
+// 2026-05-11 from 76) and continent SVGs have shipped; flip
+// VITE_CONTINENT_PICKER_ENABLED=true in Vercel after in-browser glyph
+// verification for non-Latin locales.
 // ---------------------------------------------------------------------------
 export const CONTINENT_PICKER_ENABLED =
   import.meta.env.VITE_CONTINENT_PICKER_ENABLED === "true";

@@ -54,8 +54,8 @@ describe("useDocumentLanguage", () => {
     expect(document.documentElement.dir).toBe("rtl");
   });
 
-  it("sets dir='rtl' for Hebrew", () => {
-    i18nState.resolvedLanguage = "he";
+  it("sets dir='rtl' for Pashto", () => {
+    i18nState.resolvedLanguage = "ps";
     renderHook(() => useDocumentLanguage());
     expect(document.documentElement.dir).toBe("rtl");
   });

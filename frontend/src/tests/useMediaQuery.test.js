@@ -12,7 +12,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import { useMediaQuery } from "../mobile-sheet-kit/useMediaQuery.js";
+import { useMediaQuery } from "../hooks/useMediaQuery.js";
 
 function makeMatchMediaMock() {
   const listeners = new Map();

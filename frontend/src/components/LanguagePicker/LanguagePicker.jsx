@@ -24,9 +24,10 @@ import oceaniaSvg from "../../assets/continents/oceania.svg?raw";
 //   Step 2: scoped vertical menu of languages assigned to that continent.
 //
 // Continent assignment lives in i18n.js → LANGUAGES_BY_CONTINENT and is
-// diaspora-aware: each language is listed under exactly one continent.
-// Oceania is intentionally empty in V1 — tapping it surfaces a
-// "coming soon" placeholder rather than an empty menu.
+// diaspora-aware: languages spoken across multiple continents (e.g. es, pt)
+// appear in each relevant continent list.
+// Continents with zero languages (currently Oceania) are filtered out of
+// the grid and appear automatically once languages are added to their array.
 //
 // Persistence: i18n.changeLanguage() writes to localStorage["cta_language"]
 // via the existing LanguageDetector config — no schema change here.
@@ -110,7 +111,7 @@ export default function LanguagePicker() {
           role="menu"
           aria-label={t("aria_language")}
         >
-          {CONTINENT_IDS.map((id) => {
+          {CONTINENT_IDS.filter((id) => (LANGUAGES_BY_CONTINENT[id] ?? []).length > 0).map((id) => {
             const langs = LANGUAGES_BY_CONTINENT[id] ?? [];
             const labelKey = `continent_${id}`;
             return (
@@ -151,30 +152,24 @@ export default function LanguagePicker() {
           >
             ← {t("continent_picker_back")}
           </button>
-          {LANGUAGES_BY_CONTINENT[continent].length === 0 ? (
-            <p className="language-picker-empty">
-              {t("continent_oceania_placeholder")}
-            </p>
-          ) : (
-            <ul className="language-picker-list" role="none">
-              {LANGUAGES_BY_CONTINENT[continent].map((code) => (
-                <li key={code} role="none">
-                  <button
-                    type="button"
-                    role="menuitemradio"
-                    aria-checked={code === activeCode}
-                    className={
-                      "language-picker-item" +
-                      (code === activeCode ? " language-picker-item--active" : "")
-                    }
-                    onClick={() => handleSelect(code)}
-                  >
-                    {LANGUAGE_NAMES[code] ?? code}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
+          <ul className="language-picker-list" role="none">
+            {LANGUAGES_BY_CONTINENT[continent].map((code) => (
+              <li key={code} role="none">
+                <button
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={code === activeCode}
+                  className={
+                    "language-picker-item" +
+                    (code === activeCode ? " language-picker-item--active" : "")
+                  }
+                  onClick={() => handleSelect(code)}
+                >
+                  {LANGUAGE_NAMES[code] ?? code}
+                </button>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
     </div>

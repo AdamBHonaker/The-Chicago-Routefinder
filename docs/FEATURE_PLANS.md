@@ -27,6 +27,7 @@ Chunked plans for upcoming major features, followed by ideas deferred until post
 - FEAT-013 — Curated Chicago Public Library tier in autocomplete — **Bolt-On**. Scoped, ready to implement after FEAT-011a ships.
 - FEAT-014 — Fallback-learning cache (persistent + index-promotion) — **Bolt-On**. Scoping stub; ready to revisit after FEAT-011a accumulates production traffic data.
 - FEAT-015 — Bus-stop platform-level disambiguation in autocomplete — **Bolt-On**. Scoping stub; ready to revisit after FEAT-011 ships.
+- FEAT-017 — Remove redundant `line_code` edge attribute from transit graph — **Bolt-On**. Scoping stub; `line_code` is always identical to `route_id` on every edge. Audit consumers and remove the duplicate attribute to trim ~1–2 MB from the in-memory transit graph.
 
 ---
 
@@ -431,7 +432,7 @@ The single FEAT-011 work is split into two sequential PRs per Decision 3.
 - All 11 env vars added to `backend/.env.example`
 - Frontend `LocationInput.jsx` polymorphic suggestion handling (inline coords vs `/resolve` round-trip), `session_id` generation
 - Frontend `App.css` badge styling for `address` (plus shared base styles for future badges)
-- `frontend/public/locales/*/translation.json` — `address` badge string across all 76 locales
+- `frontend/public/locales/*/translation.json` — `address` badge string across all 27 locales
 - `docs/PRIVACY.md` — Decision 9 updates
 - Tests: TIGER ingestion, merge ranking, fallback-trigger conditions, daily-cap behavior, breaker state transitions, `/resolve` polymorphic dispatch, cache LRU behavior, env-var disable
 
@@ -439,7 +440,7 @@ The single FEAT-011 work is split into two sequential PRs per Decision 3.
 - `scripts/build_geo_index.py` extended with OSM Geofabrik extract fetch + tag filtering + ranking
 - Backend index loader: register the **OSM POI tier** on the existing scaffolding (additive)
 - Frontend `App.css` badge styling for `poi`
-- `frontend/public/locales/*/translation.json` — `poi` badge string across all 76 locales
+- `frontend/public/locales/*/translation.json` — `poi` badge string across all 27 locales
 - Tests: OSM ingestion, POI ranking heuristic, library-vs-POI dedupe (Decision 7.C)
 - No new env vars, no scaffolding changes, no fallback-policy changes
 
@@ -454,7 +455,7 @@ The single FEAT-011 work is split into two sequential PRs per Decision 3.
 - `backend/tests/` — extensive new tests
 - `frontend/src/components/LocationInput.jsx` — `session_id` generation, polymorphic resolution
 - `frontend/src/App.css` — `address` badge + shared base
-- `frontend/public/locales/*/translation.json` — `autocomplete.badge.address` across 76 locales
+- `frontend/public/locales/*/translation.json` — `autocomplete.badge.address` across 27 locales
 - `docs/PRIVACY.md` — Decision 9 updates
 
 *FEAT-011b:*
@@ -463,7 +464,7 @@ The single FEAT-011 work is split into two sequential PRs per Decision 3.
 - `scripts/build_geo_index.py` — OSM Geofabrik download + processing
 - `backend/tests/` — POI-specific tests
 - `frontend/src/App.css` — `poi` badge
-- `frontend/public/locales/*/translation.json` — `autocomplete.badge.poi` across 76 locales
+- `frontend/public/locales/*/translation.json` — `autocomplete.badge.poi` across 27 locales
 
 **Decisions captured (in progress — sequence walked via `/resolve-item`, latest first):**
 
@@ -722,7 +723,7 @@ All gaps are within the existing design system's vocabulary — the fix is **app
 - `backend/main.py` (registers the CPL tier with the index loader; small dedupe rule for the OSM-overlap case)
 - `frontend/src/components/LocationInput.jsx` (handles `library` suggestion type)
 - `frontend/src/App.css` (badge styling for the `library` type, consistent with existing badges)
-- `frontend/public/locales/*/translation.json` (new key `autocomplete.badge.library` rolled out across all 76 locales)
+- `frontend/public/locales/*/translation.json` (new key `autocomplete.badge.library` rolled out across all 27 locales)
 - `backend/tests/` (CPL fixture, ranking tests, OSM-dedupe test)
 
 **Data source:**
@@ -839,14 +840,14 @@ Hours, phone, branch type, and other CPL metadata are explicitly **out of scope*
 - `backend/main.py` (modify the existing bus-stop dedupe pass)
 - `frontend/src/components/LocationInput.jsx` (UX pattern for expanded/disambiguated entries, if going that route)
 - `frontend/src/App.css` (styling for the chosen UX)
-- `frontend/public/locales/*/translation.json` (any new direction or platform labels — 76 locales)
+- `frontend/public/locales/*/translation.json` (any new direction or platform labels — 27 locales)
 - `backend/tests/`
 
 **When to revisit:** After FEAT-011 has shipped and accumulated some weeks of usage data. Observed dropdown-pick patterns for bus-stop suggestions (do riders often pick a deduped entry and immediately re-route? do they search for direction-specific names like "Belmont southbound"?) will inform which option is right.
 
 ---
 
-### FEAT-016 --- Translate the new alerts-flow strings across all 76 locales
+### FEAT-016 --- Translate the new alerts-flow strings across all 27 locales
 
 **Type:** Bolt-On --- frontend-only data work; no logic, component, or backend changes.
 
@@ -875,23 +876,53 @@ Hours, phone, branch type, and other CPL metadata are explicitly **out of scope*
 
 **Provisional scoping notes:**
 
-1. **Translation source.** Use the same translation pipeline used for the 22→76 locale expansion. The 8 `RESEARCH_LOCALES` flagged in [i18n.js:121-123](../frontend/src/i18n.js#L121-L123) should continue to surface the `mt-review-notice` MT badge for these keys.
+1. **Translation source.** Use the same translation pipeline used for the 22→76 locale expansion. The locale set was retrenched to 27 Chicago-focused languages on 2026-05-11. The 3 `RESEARCH_LOCALES` flagged in [i18n.js](../frontend/src/i18n.js) (`aii`, `ksw`, `rhg`) should continue to surface the `mt-review-notice` MT badge for these keys.
 2. **Editorial register.** Source English follows the project's period-newspaper register: declarative, em-dashes preferred, no exclamation points, "notices" in user-facing copy (matching `alerts_tab_heading: "Notices & Delays"`). Translators should preserve that voice — these are short copy, so a single tonal misstep is disproportionately visible.
-3. **Pluralisation.** `alerts_filter_l_count` and `alerts_filter_bus_count` use simple `{{count}}` interpolation today (e.g., "L (2)"). Languages with non-trivial plural rules — Russian, Polish, Arabic, Hebrew, Welsh — may want explicit `_one` / `_few` / `_many` variants per i18next pluralisation conventions. Decide per-locale during translation.
-4. **The unicode arrow.** `route_alerts_banner_present_cta` ends with `⟶` (long right arrow). RTL locales (`ar`, `he`, `fa`, `ur`) should mirror to `⟵` or rely on the `[dir="rtl"]` automatic mirror — verify rendering in the per-locale review.
+3. **Pluralisation.** `alerts_filter_l_count` and `alerts_filter_bus_count` use simple `{{count}}` interpolation today (e.g., "L (2)"). Languages with non-trivial plural rules — Russian, Polish, Arabic — may want explicit `_one` / `_few` / `_many` variants per i18next pluralisation conventions. Decide per-locale during translation.
+4. **The unicode arrow.** `route_alerts_banner_present_cta` ends with `⟶` (long right arrow). RTL locales (`ar`, `ur`, `ps`, `prs`, `aii`, `rhg`) should mirror to `⟵` or rely on the `[dir="rtl"]` automatic mirror — verify rendering in the per-locale review.
 5. **No code changes required** in this FEAT. All component code in the parent FEAT is already i18n-ready (variables passed via `t(key, { count })`, no string concatenation across JSX nodes).
 
 **Acceptance criteria:**
 
-- All 14 keys present in every `frontend/public/locales/<locale>/translation.json` file (76 locales).
-- Spot-check on the 8 `RESEARCH_LOCALES` confirms the MT badge surfaces correctly when these keys render.
-- Manual switch to at least one RTL locale (e.g., `ar`) and one CJK locale (e.g., `ja`) confirms the banner and the filter popover render without layout breakage or dangling English fallbacks.
+- All 14 keys present in every `frontend/public/locales/<locale>/translation.json` file (27 locales).
+- Spot-check on the 3 `RESEARCH_LOCALES` (`aii`, `ksw`, `rhg`) confirms the MT badge surfaces correctly when these keys render.
+- Manual switch to at least one RTL locale (e.g., `ar`) and one CJK locale (e.g., `zh`) confirms the banner and the filter popover render without layout breakage or dangling English fallbacks.
 
 **Files likely touched:**
 
-- `frontend/public/locales/*/translation.json` (76 files)
+- `frontend/public/locales/*/translation.json` (27 files)
 
 **When to revisit:** Schedule alongside the next routine locale-coverage pass, or sooner if rider analytics show non-English usage of the Notices & Delays surface.
+
+---
+
+### FEAT-017 --- Remove redundant `line_code` edge attribute from transit graph
+
+**Type:** Bolt-On — backend-only refactor; no frontend changes.
+
+**Status:** Scoping stub. Identified during memory-reduction audit on 2026-05-11.
+
+**Background:** Every edge in `G_base` (the NetworkX DiGraph built in `backend/transit_graph.py`) carries a `line_code` attribute that is always set to the same value as `route_id` on the same edge (e.g., both are `"Red"`, `"22"`, etc.). This has been a duplicate attribute since graph construction was written. With ~25,000 edges in the transit graph, removing the attribute saves ~1–2 MB of in-memory overhead.
+
+**Work required:**
+
+1. Grep all read sites for `line_code` across `backend/transit_graph.py`, `backend/main.py`, and any other consumer files.
+2. For each consumer, verify that substituting `route_id` produces identical behavior.
+3. Remove `line_code=best_route` (and its equivalents) from every `G.add_edge(...)` call in `transit_graph.py`.
+4. Update all read sites to use `route_id` instead.
+
+**Acceptance criteria:**
+
+- `line_code` no longer appears as a key in any edge's attribute dict after graph construction.
+- All routing and display logic that previously read `line_code` reads `route_id` instead and produces identical output.
+- Existing routing integration tests pass unchanged.
+
+**Files likely touched:**
+
+- `backend/transit_graph.py` — `add_edge` calls
+- `backend/main.py` — any edge attribute reads referencing `line_code`
+
+**When to revisit:** Low priority — savings are modest. Worth bundling with a future transit graph refactor pass.
 
 ---
 

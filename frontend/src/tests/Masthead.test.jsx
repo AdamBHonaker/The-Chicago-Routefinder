@@ -117,7 +117,7 @@ describe("Masthead", () => {
   });
 
   it("renders MT-review badge for a research locale", () => {
-    i18nState.resolvedLanguage = "mai"; // Maithili — in RESEARCH_LOCALES
+    i18nState.resolvedLanguage = "aii"; // Assyrian Neo-Aramaic — in RESEARCH_LOCALES
     render(<Masthead {...baseProps()} />);
     expect(document.querySelector(".mt-review-notice")).not.toBeNull();
   });

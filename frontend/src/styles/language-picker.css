@@ -147,15 +147,6 @@
   font-weight: 700;
 }
 
-.language-picker-empty {
-  padding: var(--sp-3);
-  color: var(--mute);
-  font-family: var(--serif);
-  font-style: italic;
-  font-size: var(--fs-body-sm);
-  line-height: var(--lh-body-sm);
-}
-
 /* RTL: anchor popover to the left edge of the trigger so it doesn't run off
  * the right side of an Arabic/Hebrew/etc. masthead. */
 [dir="rtl"] .language-picker-popover {

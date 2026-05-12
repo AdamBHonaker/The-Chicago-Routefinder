@@ -98,6 +98,16 @@ CTA_MAX_ARRIVALS_PER_STATION: int = int(os.getenv("CTA_MAX_ARRIVALS_PER_STATION"
 CTA_API_TIMEOUT_SECONDS: float = float(os.getenv("CTA_API_TIMEOUT_SECONDS", "8"))
 
 # ---------------------------------------------------------------------------
+# Street graph memory management (see walking.py)
+# ---------------------------------------------------------------------------
+
+# Seconds of walk-request inactivity before the in-memory street graph is freed
+# so Railway can reclaim ~300–600 MB during quiet periods (e.g. overnight).
+# The graph reloads automatically on the next request (~2–3 s penalty for one user).
+# Set to 0 to disable eviction entirely (e.g. on a busy instance).  Range: 0–3600 s.
+WALK_GRAPH_EVICT_TTL_S: int = int(os.getenv("WALK_GRAPH_EVICT_TTL_S", "600"))
+
+# ---------------------------------------------------------------------------
 # Geocoding cache maintenance (see gtfs_loader.py)
 # ---------------------------------------------------------------------------
 

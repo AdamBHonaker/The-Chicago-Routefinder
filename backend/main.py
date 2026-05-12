@@ -61,6 +61,9 @@ weather_service = WeatherService()
 _CACHE_TTL_SECONDS = 120      # seconds
 _CACHE_MAX_SIZE    = 500      # entries
 _response_cache: TTLCache = TTLCache(maxsize=_CACHE_MAX_SIZE, ttl=_CACHE_TTL_SECONDS)
+# Set RESPONSE_CACHE_ENABLED=false to bypass the cache (e.g. to reduce Railway memory while
+# traffic is low). Default true. Re-enable by setting the var to "true" or removing it.
+_CACHE_ENABLED: bool = os.getenv("RESPONSE_CACHE_ENABLED", "true").lower() == "true"
 
 # Cache hit/miss counters — logged every _CACHE_LOG_INTERVAL requests for tuning.
 _cache_hits:   int = 0
@@ -1470,7 +1473,7 @@ async def recommend(
                 detail="Daily request limit reached. Try again tomorrow.",
             )
         _cache_requests_total += 1
-        cached = _response_cache.get(key)
+        cached = _response_cache.get(key) if _CACHE_ENABLED else None
         if cached is not None:
             _cache_hits += 1
             _maybe_log_cache_stats()
@@ -1542,8 +1545,9 @@ async def recommend(
             ranked_routes=ranked_routes,
             weather=walk_weather,
         )
-        async with _store_lock:
-            _response_cache[key] = response
+        if _CACHE_ENABLED:
+            async with _store_lock:
+                _response_cache[key] = response
         try:
             await _events.record("recommend_returned")
         except Exception as e:
@@ -1621,8 +1625,9 @@ async def recommend(
         weather=weather,
     )
 
-    async with _store_lock:
-        _response_cache[key] = response
+    if _CACHE_ENABLED:
+        async with _store_lock:
+            _response_cache[key] = response
 
     try:
         await _events.record("recommend_returned")

@@ -137,20 +137,42 @@ CHICAGO_BBOX_OVERPASS: str = f"{CHICAGO_SOUTH},{CHICAGO_WEST},{CHICAGO_NORTH},{C
 CHICAGO_BBOX_OSMNX: tuple  = (CHICAGO_WEST, CHICAGO_SOUTH, CHICAGO_EAST, CHICAGO_NORTH)
 
 # ---------------------------------------------------------------------------
-# Street-graph bounding box — Chicago city limits + Evanston (Purple Line).
+# Street-graph coverage — Chicago city limits + narrow Purple Line corridor.
 #
-# Coverage:
-#   North 42.083 — Linden (Wilmette, Purple Line terminal)
-#   South 41.712 — ~100th St, just south of 95th/Dan Ryan (Red Line terminal)
-#   West  -87.800 — Chicago west side; covers Austin (Blue Line) but excludes
-#                   Oak Park, Forest Park, Cicero, Skokie, and Rosemont suburbs
-#   East  -87.520 — Chicago lakefront
+# The graph is built from two polygons merged into a shapely MultiPolygon:
 #
-# Includes Chicago + Evanston only. Pace and Metra service areas are out of scope
-# (see docs/FEATURE_PLANS.md → Feature PaceMetraCoverage).
+#   Main Chicago box:
+#     North 42.019 — Howard St (Chicago/Evanston boundary)
+#     South 41.712 — ~100th St, just south of 95th/Dan Ryan (Red Line terminal)
+#     West  -87.775 — Austin Blvd; covers Blue Line (Jefferson Park at -87.758)
+#                     but excludes Oak Park, Forest Park, Cicero, and Skokie
+#     East  -87.520 — Chicago lakefront
+#
+#   Purple Line corridor (Evanston only):
+#     North 42.083 — Linden (Purple Line terminal)
+#     South 42.019 — Howard St (meets main box)
+#     West  -87.710 — ~0.7 mi buffer west of Linden station (-87.691)
+#     East  -87.660 — ~0.7 mi buffer east of Howard station (-87.673)
+#
+# The corridor is ~1.4 miles wide and covers all 9 Evanston Purple Line stations
+# without pulling in the rest of Evanston, saving ~20% vs the prior full-width
+# Evanston strip.
+#
+# Includes Chicago + Evanston (Purple Line only). Pace and Metra service areas
+# are out of scope (see docs/FEATURE_PLANS.md → Feature PaceMetraCoverage).
 # ---------------------------------------------------------------------------
 STREET_GRAPH_SOUTH: float = 41.7120
-STREET_GRAPH_NORTH: float = 42.0830
-STREET_GRAPH_WEST:  float = -87.8000
+STREET_GRAPH_NORTH: float = 42.0190  # Howard St; main box stops here
+STREET_GRAPH_WEST:  float = -87.7750  # Austin Blvd
 STREET_GRAPH_EAST:  float = -87.5200
-STREET_GRAPH_BBOX_OSMNX: tuple = (STREET_GRAPH_WEST, STREET_GRAPH_SOUTH, STREET_GRAPH_EAST, STREET_GRAPH_NORTH)
+
+# Purple Line Evanston corridor (north of Howard)
+PURPLE_LINE_CORRIDOR_SOUTH: float = 42.0190
+PURPLE_LINE_CORRIDOR_NORTH: float = 42.0830
+PURPLE_LINE_CORRIDOR_WEST:  float = -87.7100
+PURPLE_LINE_CORRIDOR_EAST:  float = -87.6600
+
+# Legacy single-bbox constant — kept for any callers that use it as an
+# approximate bounds check (e.g. is_within_chicago_area). It now covers
+# the union of both polygons and is slightly larger than the actual graph.
+STREET_GRAPH_BBOX_OSMNX: tuple = (STREET_GRAPH_WEST, STREET_GRAPH_SOUTH, STREET_GRAPH_EAST, PURPLE_LINE_CORRIDOR_NORTH)

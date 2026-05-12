@@ -13,13 +13,12 @@ The download queries the OpenStreetMap Overpass API — it takes 3–10 minutes
 depending on your connection. After the first run the server loads from the
 local cache file in under a second.
 
-Geographic scope: Chicago city limits + Evanston (Purple Line). North bound is
-Linden (Wilmette); south bound is ~100th St, just south of 95th/Dan Ryan (Red
-Line terminal); west bound is Chicago's west side covering Austin (Blue Line)
-but excluding Oak Park, Forest Park, Cicero, Skokie, and Rosemont suburbs;
-east bound is the lakefront. Points outside fall back to Haversine estimates.
-Pace and Metra service areas are out of scope. Bounds are defined in
-`utils.STREET_GRAPH_BBOX_OSMNX`.
+Geographic scope: two polygons merged into a MultiPolygon.
+  - Main Chicago box: Howard St (N) → ~100th St (S) | Lakefront (E) → Austin Blvd (W)
+  - Purple Line corridor: narrow Evanston strip (Howard → Linden) covering the 9
+    Evanston Purple Line stations without pulling in all of Evanston (~1.4 mi wide)
+Points outside fall back to Haversine estimates. Pace and Metra service areas are
+out of scope. Bounds are defined in utils.py (STREET_GRAPH_* / PURPLE_LINE_CORRIDOR_*).
 
 NOTE: Both `street_graph.graphml` and `street_graph_igraph.pkl` are gitignored.
 For production, the pkl is uploaded as an asset on the `street-graph` GitHub
@@ -33,7 +32,11 @@ import sys
 import time
 from pathlib import Path
 
-from utils import STREET_GRAPH_BBOX_OSMNX
+from utils import (
+    STREET_GRAPH_SOUTH, STREET_GRAPH_NORTH, STREET_GRAPH_WEST, STREET_GRAPH_EAST,
+    PURPLE_LINE_CORRIDOR_SOUTH, PURPLE_LINE_CORRIDOR_NORTH,
+    PURPLE_LINE_CORRIDOR_WEST, PURPLE_LINE_CORRIDOR_EAST,
+)
 
 GRAPH_PATH  = Path(__file__).parent / "street_graph.graphml"
 IGRAPH_PATH = Path(__file__).parent / "street_graph_igraph.pkl"
@@ -93,10 +96,19 @@ def _step_end(detail: str = "") -> None:
     suffix = f" -- {detail}" if detail else ""
     print(f"  done in {_fmt_elapsed(step_elapsed)}{rss_str}{suffix}")
 
-# OSMnx 2.x format: (left/west, bottom/south, right/east, top/north)
-# Coverage: Linden (north) → 100th St (south) | Lakefront (east) → Austin/Blue Line (west)
-# Bounds are defined in utils.STREET_GRAPH_BBOX_OSMNX.
-BBOX = STREET_GRAPH_BBOX_OSMNX
+def _build_coverage_polygon():
+    """
+    Build the MultiPolygon that defines the street graph's geographic scope:
+    a main Chicago box (south of Howard) plus a narrow Evanston corridor that
+    covers the 9 Purple Line stations without pulling in all of Evanston.
+    """
+    from shapely.geometry import box, MultiPolygon
+    main = box(STREET_GRAPH_WEST, STREET_GRAPH_SOUTH, STREET_GRAPH_EAST, STREET_GRAPH_NORTH)
+    corridor = box(PURPLE_LINE_CORRIDOR_WEST, PURPLE_LINE_CORRIDOR_SOUTH,
+                   PURPLE_LINE_CORRIDOR_EAST, PURPLE_LINE_CORRIDOR_NORTH)
+    return MultiPolygon([main, corridor])
+
+COVERAGE_POLYGON = _build_coverage_polygon()
 
 
 def _is_lfs_pointer(path: Path) -> bool:
@@ -136,12 +148,19 @@ def download_and_save(verbose: bool = False) -> None:
 
     # 7 steps: download, filter, project-forward, consolidate, project-back, save graphml, build pickle
     _set_step_total(7)
-    print(f"Bounding box: west={BBOX[0]}, south={BBOX[1]}, east={BBOX[2]}, north={BBOX[3]}\n")
+    bounds = COVERAGE_POLYGON.bounds  # (minx, miny, maxx, maxy)
+    print(
+        f"Coverage: main box (S={STREET_GRAPH_SOUTH}, N={STREET_GRAPH_NORTH}, "
+        f"W={STREET_GRAPH_WEST}, E={STREET_GRAPH_EAST}) + "
+        f"Purple Line corridor (S={PURPLE_LINE_CORRIDOR_SOUTH}, N={PURPLE_LINE_CORRIDOR_NORTH}, "
+        f"W={PURPLE_LINE_CORRIDOR_WEST}, E={PURPLE_LINE_CORRIDOR_EAST})\n"
+        f"Combined envelope: west={bounds[0]}, south={bounds[1]}, east={bounds[2]}, north={bounds[3]}\n"
+    )
 
     ox.settings.max_query_area_size = 2_500_000_000  # ~2,500 km²; restores pre-2.x default so bbox is fetched in one pass
 
-    _step_begin("Querying OpenStreetMap for the full Chicago walk network")
-    G = ox.graph_from_bbox(bbox=BBOX, network_type="walk")
+    _step_begin("Querying OpenStreetMap for the Chicago walk network (MultiPolygon)")
+    G = ox.graph_from_polygon(COVERAGE_POLYGON, network_type="walk")
     raw_nodes = G.number_of_nodes()
     raw_edges = G.number_of_edges()
     _step_end(f"{raw_nodes:,} nodes, {raw_edges:,} edges")
@@ -248,6 +267,18 @@ def _save_igraph_artifact(G_nx) -> None:
                 "geometry": attr_geometry,
             },
         )
+
+        # Collapse opposing directed edges into a single undirected edge at build
+        # time so _load_graph() can skip this step at runtime — halves edge count
+        # and associated attribute memory.  Two opposing edges for the same street
+        # share name/highway/footway/geometry so "first" is lossless; length takes
+        # the minimum of the pair (they differ only by floating-point rounding).
+        pre_e = ig_graph.ecount()
+        combine: dict[str, str] = {"length": "min"}
+        for attr in ("name", "highway", "footway", "geometry"):
+            combine[attr] = "first"
+        ig_graph.to_undirected(mode="collapse", combine_edges=combine)
+        print(f"  [igraph] directed→undirected: {pre_e:,} → {ig_graph.ecount():,} edges")
 
         with open(IGRAPH_PATH, "wb") as f:
             pickle.dump({"graph": ig_graph}, f, protocol=pickle.HIGHEST_PROTOCOL)

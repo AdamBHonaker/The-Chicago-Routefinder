@@ -15,7 +15,7 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { MobileLayout } from "../mobile-sheet-kit/MobileLayout.jsx";
+import { MobileLayout } from "../components/MobileLayout.jsx";
 
 describe("MobileLayout (kit)", () => {
   it("throws when storageKey is missing", () => {

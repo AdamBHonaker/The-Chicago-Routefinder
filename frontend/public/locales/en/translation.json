@@ -205,7 +205,5 @@
   "continent_asia": "Asia",
   "continent_europe": "Europe",
   "continent_middle_east": "Middle East",
-  "continent_oceania": "Oceania",
-  "continent_picker_back": "Back to continents",
-  "continent_oceania_placeholder": "Languages of Oceania coming soon — Tok Pisin, Māori, Sāmoan, ʻŌlelo Hawaiʻi planned."
+  "continent_picker_back": "Back to continents"
 }

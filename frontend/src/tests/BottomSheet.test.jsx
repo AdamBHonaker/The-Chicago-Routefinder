@@ -27,7 +27,7 @@ import {
   resolveSnapPx,
   SHEET_VELOCITY_THRESHOLD,
   BODY_DRAG_DEADZONE_PX,
-} from "../mobile-sheet-kit/BottomSheet.jsx";
+} from "../components/BottomSheet.jsx";
 
 describe("resolveSnapPx", () => {
   it("returns numbers unchanged", () => {

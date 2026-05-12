@@ -8,10 +8,12 @@ to parsing street_graph.graphml via igraph directly.
 Walking speed assumption: 3 mph (1.34 m/s) — a comfortable pedestrian pace.
 """
 
+import gc
 import hashlib
 import math
 import pickle
 import threading
+import time
 from functools import lru_cache
 from pathlib import Path
 
@@ -69,12 +71,56 @@ _edge_lengths: "np.ndarray | None" = None
 _graph_load_failed: bool = False
 _lcc_vertex_ids: "np.ndarray | None" = None
 
+# Idle-eviction TTL sourced from config.py; set WALK_GRAPH_EVICT_TTL_S=0 to disable.
+WALK_GRAPH_EVICT_TTL_S: int = _cfg.WALK_GRAPH_EVICT_TTL_S
+_EVICT_CHECK_INTERVAL_S: int = 60  # how often the background thread wakes to check
+_last_walk_time: float = 0.0       # monotonic timestamp of the most recent walk call
+
+
+def _touch_walk_time() -> None:
+    """Record that a walk function was just called; resets the idle-eviction clock."""
+    global _last_walk_time
+    _last_walk_time = time.monotonic()
+
+
+def _graph_eviction_worker() -> None:
+    """Daemon thread: evict the street graph after WALK_GRAPH_EVICT_TTL_S idle seconds."""
+    global _graph_cache, _coord_kdtree, _vertex_lats, _vertex_lons, _edge_lengths, _lcc_vertex_ids, _graph_load_failed
+    while True:
+        time.sleep(_EVICT_CHECK_INTERVAL_S)
+        if WALK_GRAPH_EVICT_TTL_S <= 0:
+            continue
+        with _graph_lock:
+            if _graph_cache is None:
+                continue
+            idle = time.monotonic() - _last_walk_time
+            if idle < WALK_GRAPH_EVICT_TTL_S:
+                continue
+            _graph_cache = None
+            _coord_kdtree = None
+            _vertex_lats = None
+            _vertex_lons = None
+            _edge_lengths = None
+            _lcc_vertex_ids = None
+            _graph_load_failed = False
+            print(f"[walking] Graph evicted after {idle:.0f}s idle — will reload on next request")
+        gc.collect()
+
+
+threading.Thread(
+    target=_graph_eviction_worker, daemon=True, name="walk-graph-evictor"
+).start()
+
 # Coordinate snap precision for cache keys. 5 decimals ≈ 1.1 m at Chicago's
 # latitude — well below the precision GTFS / geocoded coords need to land on
 # the same nearest-node. Snapping at the cache boundary collapses near-identical
 # inputs (e.g. 41.87901 vs 41.87902) onto a single cache entry, turning the
 # raw-float caches that previously almost never hit into effective ones.
 _COORD_SNAP_DECIMALS: int = 5
+# Coordinate precision for walk_path output. 5 decimals ≈ 1.1 m at Chicago's
+# latitude — well below the visual resolution of any zoom level used in the UI,
+# and consistent with transit_graph._SHAPE_COORD_DECIMALS.
+_WALK_COORD_DECIMALS: int = 5
 
 
 def _snap(v: float) -> float:
@@ -116,10 +162,6 @@ _HIGHWAY_PATH_TYPE: dict[str, str] = {
     "cycleway":   "path",
     "track":      "path",
 }
-
-# Edges with these highway values are excluded from pedestrian routing.
-_EXCLUDED_HIGHWAY_TYPES: frozenset[str] = frozenset({"service", "alley"})
-
 
 def _highway_path_type(highway, footway="") -> str:
     """Map OSM highway (+ footway subtag) to a display path-type string."""
@@ -247,34 +289,12 @@ def _load_graph() -> "ig.Graph | None":
         # Wrapped in try/except so a corrupt pickle (e.g., missing "x"/"y" vertex
         # attributes) sets _graph_load_failed and stops retrying instead of raising
         # KeyError on every routing request (BUG-009).
-        # Remove service roads and alleys before building routing structures.
-        try:
-            edge_attr_names = set(G.es.attributes()) if G.ecount() > 0 else set()
-            if "highway" in edge_attr_names:
-                def _hw_str(raw) -> str:
-                    if isinstance(raw, list): return raw[0] if raw else ""
-                    return (raw or "").strip()
-                # Bulk attribute access — single G.es["highway"] read avoids
-                # building a fresh attributes() dict per edge.
-                highways = G.es["highway"]
-                exclude_ids = [
-                    i for i, hw in enumerate(highways)
-                    if _hw_str(hw) in _EXCLUDED_HIGHWAY_TYPES
-                ]
-                if exclude_ids:
-                    G.delete_edges(exclude_ids)
-                    print(f"[walking] Removed {len(exclude_ids):,} service/alley edges from routing graph")
-        except Exception as filt_err:
-            print(f"[walking] Edge filtering skipped ({type(filt_err).__name__}: {filt_err})")
-
-        # Convert to undirected so routing always finds a path between any two
-        # vertices in the same connected component. The pickle stores the graph
-        # as directed (one igraph edge per OSMnx MultiDiGraph edge); after
-        # service/alley filtering, asymmetric directional tagging in OSM can
-        # leave directed dead-ends inside the weak LCC, causing Dijkstra to
-        # return no path even when vertices are weakly connected. Pedestrians
-        # walk both ways on every edge, so an undirected graph matches reality
-        # and guarantees weak == strong components.
+        #
+        # Service/alley edge filtering and directed→undirected conversion are now
+        # done at build time inside fetch_street_graph._save_igraph_artifact(), so
+        # the pkl arrives already undirected with those edges removed.  The
+        # is_directed() guard below is kept as a backward-compat safety net for old
+        # pkls or the graphml fallback path.
         if G.is_directed():
             try:
                 pre_e = G.ecount()
@@ -421,6 +441,7 @@ def walk_minutes(
     Dijkstra level, and the post-processing (one numpy sum) is cheaper than
     the cache bookkeeping for a 256-entry float-keyed dict.
     """
+    _touch_walk_time()
     try:
         path = _get_shortest_path(origin_lat, origin_lon, dest_lat, dest_lon)
         if path is None:
@@ -533,6 +554,7 @@ def walk_directions(
     Falls back to a single unnamed step if routing fails.
     Returns a fresh list on every call (safe to mutate).
     """
+    _touch_walk_time()
     steps = _walk_directions_impl(origin_lat, origin_lon, dest_lat, dest_lon)
     return list(steps[:_WALK_DIRECTIONS_MAX_STEPS])
 
@@ -622,7 +644,11 @@ def walk_path(
     if routing fails (e.g., a point falls outside the graph's bounding box).
     Returns a fresh list on every call (safe to mutate).
     """
-    return [list(pt) for pt in _walk_path_impl(origin_lat, origin_lon, dest_lat, dest_lon)]
+    _touch_walk_time()
+    return [
+        [round(lat, _WALK_COORD_DECIMALS), round(lon, _WALK_COORD_DECIMALS)]
+        for lat, lon in _walk_path_impl(origin_lat, origin_lon, dest_lat, dest_lon)
+    ]
 
 
 def walk_all(
