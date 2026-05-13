@@ -43,6 +43,8 @@ import transit_graph
 from transit_graph import (
     _path_to_route,
     find_routes,
+    find_routes_with_status,
+    RoutingResult,
     Route,
     WalkLeg,
     TransitLeg,
@@ -502,6 +504,123 @@ class TestFindRoutes:
         with p1, p2, p3:
             routes = find_routes(0, 0, 0, 0)
 
+        assert routes == []
+
+    # BUG-047 — RoutingResult discrimination tests.
+    #
+    # find_routes_with_status() must distinguish:
+    #   1. status="ok"               — Yen's produced routes.
+    #   2. status="no_path"          — both boundaries resolved but Yen's
+    #                                  produced nothing accepted.
+    #   3. status="out_of_coverage"  — origin and/or destination has no train
+    #                                  station within _MAX_RADIUS_MILES; `side`
+    #                                  identifies which boundary failed.
+    # find_routes() (legacy alias) must keep returning `list[Route]`.
+
+    def test_routing_result_ok_carries_routes(self):
+        G, stations = self._fixture_graph()
+        p1, p2, p3 = self._patch_routing(G, stations, "40100", "40300")
+        with p1, p2, p3:
+            result = find_routes_with_status(42.019, -87.672, 41.885, -87.628)
+
+        assert isinstance(result, RoutingResult)
+        assert result.status == "ok"
+        assert result.side is None
+        assert len(result.routes) >= 1
+
+    def test_routing_result_no_path_returns_no_path_status(self):
+        # Disconnected graph: both boundaries resolve to stations, but Yen's
+        # can't reach the destination component from the origin component.
+        G = nx.DiGraph()
+        G.add_edge("40100", "40200", weight=5.0, edge_type="transit",
+                   route_id="Red", line="Red Line")
+        G.add_edge("40300", "40400", weight=5.0, edge_type="transit",
+                   route_id="Blue", line="Blue Line")
+        stations = {
+            "40100": {"name": "A", "lat": 0, "lon": 0},
+            "40200": {"name": "B", "lat": 0, "lon": 0},
+            "40300": {"name": "C", "lat": 0, "lon": 0},
+            "40400": {"name": "D", "lat": 0, "lon": 0},
+        }
+        p1, p2, p3 = self._patch_routing(G, stations, "40100", "40400")
+        with p1, p2, p3:
+            result = find_routes_with_status(0, 0, 0, 0)
+
+        assert result.status == "no_path"
+        assert result.side is None
+        assert result.routes == []
+
+    def test_routing_result_out_of_coverage_origin(self):
+        # find_nearest_train_stations() returns [] for every expansion ring on
+        # the origin side; the destination side returns a hit on the first
+        # ring. find_routes_with_status() should report side="origin" without
+        # invoking _build_graph() or attempting Yen's.
+        G, stations = self._fixture_graph()
+        dest_hit = [{"mapid": "40300", "name": "Loop", "lat": 0, "lon": 0,
+                     "walk_minutes": 3.0}]
+        # 8 empty origin rings, then 1 dest hit (loop short-circuits).
+        side_effect = [[]] * len(transit_graph._RADIUS_RINGS) + [dest_hit]
+        with (
+            patch.object(transit_graph, "_build_graph", return_value=(G, stations)),
+            patch.object(transit_graph, "find_nearest_train_stations",
+                         side_effect=side_effect),
+            patch.object(transit_graph, "find_nearest_bus_stops", return_value=[]),
+        ):
+            result = find_routes_with_status(0, 0, 0, 0)
+
+        assert result.status == "out_of_coverage"
+        assert result.side == "origin"
+        assert result.max_radius_searched == transit_graph._MAX_RADIUS_MILES
+        assert result.routes == []
+
+    def test_routing_result_out_of_coverage_destination(self):
+        # Origin resolves on the first ring; destination side returns [] for
+        # every ring.
+        G, stations = self._fixture_graph()
+        origin_hit = [{"mapid": "40100", "name": "Howard", "lat": 0, "lon": 0,
+                       "walk_minutes": 5.0}]
+        side_effect = [origin_hit] + [[]] * len(transit_graph._RADIUS_RINGS)
+        with (
+            patch.object(transit_graph, "_build_graph", return_value=(G, stations)),
+            patch.object(transit_graph, "find_nearest_train_stations",
+                         side_effect=side_effect),
+            patch.object(transit_graph, "find_nearest_bus_stops", return_value=[]),
+        ):
+            result = find_routes_with_status(0, 0, 0, 0)
+
+        assert result.status == "out_of_coverage"
+        assert result.side == "destination"
+        assert result.routes == []
+
+    def test_routing_result_out_of_coverage_both(self):
+        G, stations = self._fixture_graph()
+        # Origin side and destination side both fail every ring.
+        side_effect = [[]] * (2 * len(transit_graph._RADIUS_RINGS))
+        with (
+            patch.object(transit_graph, "_build_graph", return_value=(G, stations)),
+            patch.object(transit_graph, "find_nearest_train_stations",
+                         side_effect=side_effect),
+            patch.object(transit_graph, "find_nearest_bus_stops", return_value=[]),
+        ):
+            result = find_routes_with_status(0, 0, 0, 0)
+
+        assert result.status == "out_of_coverage"
+        assert result.side == "both"
+        assert result.routes == []
+
+    def test_find_routes_back_compat_returns_list(self):
+        # The legacy find_routes() alias must continue to return list[Route];
+        # out-of-coverage still surfaces as the empty list (callers that need
+        # the typed signal should migrate to find_routes_with_status()).
+        G, stations = self._fixture_graph()
+        side_effect = [[]] * (2 * len(transit_graph._RADIUS_RINGS))
+        with (
+            patch.object(transit_graph, "_build_graph", return_value=(G, stations)),
+            patch.object(transit_graph, "find_nearest_train_stations",
+                         side_effect=side_effect),
+            patch.object(transit_graph, "find_nearest_bus_stops", return_value=[]),
+        ):
+            routes = find_routes(0, 0, 0, 0)
         assert routes == []
 
     def test_faster_route_preferred(self):

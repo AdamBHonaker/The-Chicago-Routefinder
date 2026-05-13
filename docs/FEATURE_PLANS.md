@@ -1,8 +1,8 @@
-# Feature Plans
+﻿# Feature Plans
 
-Chunked plans for upcoming major features, followed by ideas deferred until post-launch. For chunked features, work through each chunk in order, one chunk per session or per commit. Do not start a chunk until all previous chunks are complete.
+This file holds three kinds of forward-looking planning entries: **Chunked Implementation Plans** for upcoming major features (work through each chunk in order, one chunk per session or per commit; do not start a chunk until all previous chunks are complete), **Standalone Features** scoped as single bolt-on or structural items (FEAT-NNN), and **Considerations** — design directions evaluated and deferred, with explicit triggers for when to revisit.
 
-> **Process:** When a feature here is fully implemented, **delete its entry from this file** and add a corresponding entry to [`docs/archive/FEATURE_HISTORY.md`](archive/FEATURE_HISTORY.md) summarizing what was built. This file should only ever contain features that have not yet been implemented.
+> **Process:** When a feature here is fully implemented, **delete its entry from this file** and add a corresponding entry to [`docs/archive/FEATURE_HISTORY.md`](archive/FEATURE_HISTORY.md) (or to [`docs/archive/RESOLVED_HISTORY.md`](archive/RESOLVED_HISTORY.md) when the work fits the bug/tech-debt/efficiency log better) summarizing what was built. This file should only ever contain features that have not yet been implemented.
 
 ---
 
@@ -13,21 +13,24 @@ Chunked plans for upcoming major features, followed by ideas deferred until post
 
 **Chunked Implementation Plans** (in document order):
 
-1. Feature Monetization — House Ads (overall Phase 7, sub-phase 1; third-party networks deferred) — **Bolt-On**
+1. Feature Monetization — House Ads (overall Phase 7, sub-phase 1; third-party networks deferred) — **Bolt-On**. Chunk 1 shipped 2026-05-05 behind `VITE_HOUSE_AD_ENABLED=false`; Chunk 1.1 polish pass + Phase 2/2b/3 work remain.
 2. Feature PaceMetraCoverage — Pace + Metra service-area expansion of the walking street graph — **Structural** (depends on Pace/Metra being added to the transit graph)
+3. Geocoding & Autocomplete — Local-First Cascade (Passage-mirror) — **Structural**. Decisions captured 2026-05-12 (9/9); 10 chunks scoped. Supersedes FEAT-011 / 011a / 011b, FEAT-014, and the Mapbox migration Consideration. Ready to invoke Chunk 1.
 
 **Analytics Suite — Privacy-Preserving Reach & Engagement Metrics** — ✅ **Complete 2026-05-04.** All nine features (FEAT-001 through FEAT-009) fully implemented across four build phases. Public dashboard live at `/stats`; admin endpoints at `/admin/*`. Three accompanying Considerations (third-party analytics, DAU reconciliation, GeoIP) all resolved. See [docs/archive/FEATURE_HISTORY.md](archive/FEATURE_HISTORY.md) for the full implementation record and [docs/ANALYTICS_MAINTENANCE.md](ANALYTICS_MAINTENANCE.md) for ongoing maintenance notes.
 
 **Standalone Features** (not part of a chunked plan or the analytics suite):
 
-- FEAT-011 — Expand location autocomplete to cover all locations (street addresses + POIs) — **Bolt-On**. Decisions captured (10/10) on 2026-05-06; split into FEAT-011a (scaffolding + addresses tier) and FEAT-011b (POI tier).
-  - FEAT-011a — Scaffolding + addresses tier. Ready to implement.
-  - FEAT-011b — POI tier (additive on 011a's scaffolding). Ready to implement after 011a ships.
-- ~~FEAT-012 — Mobile UI polish to match desktop's editorial refinement — **Bolt-On**.~~ ✅ **Resolved 2026-05-05.** See [docs/archive/RESOLVED_HISTORY.md](archive/RESOLVED_HISTORY.md).
-- FEAT-013 — Curated Chicago Public Library tier in autocomplete — **Bolt-On**. Scoped, ready to implement after FEAT-011a ships.
-- FEAT-014 — Fallback-learning cache (persistent + index-promotion) — **Bolt-On**. Scoping stub; ready to revisit after FEAT-011a accumulates production traffic data.
-- FEAT-015 — Bus-stop platform-level disambiguation in autocomplete — **Bolt-On**. Scoping stub; ready to revisit after FEAT-011 ships.
-- FEAT-017 — Remove redundant `line_code` edge attribute from transit graph — **Bolt-On**. Scoping stub; `line_code` is always identical to `route_id` on every edge. Audit consumers and remove the duplicate attribute to trim ~1–2 MB from the in-memory transit graph.
+- FEAT-013 — Curated Chicago Public Library tier in autocomplete — **Bolt-On**. Scoped, ready to implement after the Geocoding & Autocomplete chunked plan's Chunk 4 (`local_search.py`) ships.
+- FEAT-015 — Bus-stop platform-level disambiguation in autocomplete — **Bolt-On**. Scoping stub; ready to revisit after the Geocoding & Autocomplete chunked plan ships.
+- FEAT-016 — Translate the new alerts-flow strings across all 27 locales — **Bolt-On**. Scoping stub; parent alerts-flow FEAT shipped English-only on 2026-05-07, so non-English locales currently fall back to English in the new banner + filter surfaces. Pure data work — 14 keys × 27 locales, no code changes.
+
+**Considerations** (design directions evaluated and deferred, with explicit revisit triggers):
+
+- Migrate MapView to react-map-gl/maplibre — last evaluated 2026-05-03 (defer). Drift watch: MapView.jsx at 660 lines as of 2026-05-12, approaching the ~900-line migration trigger.
+- MapView smoke test (regression net for future migration) — build only if react-map-gl migration is approved OR MapView grows past ~900 lines. Superseded by the Playwright E2E entry below once that is built.
+- Playwright E2E suite for maplibre + geolocation paths — build if a maplibre/geolocation regression ships undetected, react-map-gl migration is approved, or a second contributor joins.
+- Geographic Expansion Revenue Model — reference numbers for Pace+Metra and out-of-market expansion. Pace+Metra is the highest-leverage expansion; out-of-market expansion is gated on hitting the maintainer's revenue target inside Chicagoland first.
 
 ---
 
@@ -94,6 +97,38 @@ Adds a house ad component to partially offset Railway hosting costs without comp
 - Env vars added to [frontend/.env.example](../frontend/.env.example), [frontend/.env.local](../frontend/.env.local), [frontend/.env.production](../frontend/.env.production): `VITE_HOUSE_AD_ENABLED` (default `false`), `VITE_HOUSE_AD_URL`, `VITE_HOUSE_AD_TEXT`. Vercel env-var table in `PROJECT_CONTEXT.md` updated to match.
 
 **Outstanding:** end-to-end QA in a Vercel preview — confirm the slot inherits `--paper`, sits clear of the fixed tab bar on mobile, and Lighthouse a11y is unchanged before flipping `VITE_HOUSE_AD_ENABLED=true` in production.
+
+---
+
+### Post-Chunk-1 audit findings (2026-05-12)
+
+Audit of the shipped Chunk 1 against current code surfaced items below. Items are tech-debt-style follow-ups to fold into a Chunk 1.1 polish pass before flipping `VITE_HOUSE_AD_ENABLED=true` in production, or into Phase 2 work.
+
+**Must-fix before production enable:**
+
+1. **`referrerpolicy="no-referrer"` on the `<a>`.** Route page URL contains origin/destination — a user's real-world locations. Without this attribute, that URL is sent to Amazon as the `Referer` header on click. Privacy regression on a privacy-marketed app. One attribute fixes it.
+2. **`javascript:` URL guard.** React does not sanitize `href` against `javascript:` URIs. If `VITE_HOUSE_AD_URL` is mistyped or the Vercel dashboard is compromised, `javascript:fetch(...)` executes on click. Add `if (!url.startsWith("https://")) return null;` at the top of `AdSlot`.
+3. **A11y sponsored disclosure for screen readers.** The visual "SPONSORED" kicker is fine for sighted users, but screen readers reading the link text alone give blind users no signal. Two acceptable patterns (pick one, don't combine): (a) `aria-label={``Sponsored: ${text}``}` on the `<a>` plus `aria-hidden="true"` on the kicker `<span>`, or (b) leave the `<a>` without `aria-label` and let the kicker `<span>` containing the localized "SPONSORED" text be read normally. Recommendation: (b) — keeps the disclosure inside i18n via `t("ad_sponsored_kicker")`.
+4. **Amazon Operating Agreement §5 phrase.** `rel="sponsored"` + "SPONSORED" satisfies FTC 16 CFR 255 in spirit, but Amazon Associates Operating Agreement §5 requires the literal phrase **"As an Amazon Associate I earn from qualifying purchases"** to appear on the page. Missing it is grounds for account closure independent of FTC rules. Recommendation: add to [docs/PRIVACY.md](PRIVACY.md) and the `PRIVACY_TEXT` constant in [backend/public_stats.py](../backend/public_stats.py) (both must update together — they are intentionally not auto-synced).
+5. **Privacy double surface.** Sending users to `amazon.com/dp/...?tag=...` invokes Amazon's tracking, which contradicts the "no third-party tracking" promise. Add a one-sentence note to both [docs/PRIVACY.md](PRIVACY.md) and `PRIVACY_TEXT` at [backend/public_stats.py](../backend/public_stats.py): "Outbound sponsored links are fulfilled by their destination (currently Amazon) and may be tracked by them under their own privacy policy."
+
+**Free wins to ship in the polish pass:**
+
+6. **Click telemetry (one line).** `house_ad_clicked` is **already allowlisted** in [backend/events.py](../backend/events.py) with a comment confirming it's reserved for this surface. Wire `onClick={() => track("house_ad_clicked")}` on the `<a>` tag — entire change. No backend work needed.
+7. **Impression telemetry (~5 lines).** Add `"house_ad_impression"` to the `EVENT_ALLOWLIST` frozenset in [backend/events.py](../backend/events.py); in `AdSlot`, fire `track("house_ad_impression")` once per session via `useEffect`, gated on a `sessionStorage` flag so re-renders don't inflate the count. Without this, CTR has to be back-derived from `/recommend` volume and isn't real CTR. The Phase-2 sponsor pitches will need real CTR data, so the longer this is deferred the less data is available when needed.
+
+**Should resolve:**
+
+8. **`ENABLED` env var is a string.** `import.meta.env.VITE_HOUSE_AD_ENABLED` is the literal string `"false"`, which is truthy. Confirm `=== "true"` comparison in `AdSlot`.
+9. **Empty-string runtime guards.** If `ENABLED=true` ships with `URL=""` or `TEXT=""`, an empty link or blank clickable banner renders. Add guards alongside the `https://` check from item 2.
+10. **Lighthouse a11y baseline.** AC #4 says "unchanged from pre-feature baseline" but no baseline number is recorded. Run Lighthouse on production `main` first, write the number into the doc so AC #4 is verifiable.
+11. **Amazon Associates rejection/closure fallback.** The Phase 1 scope flags the 3-sales-in-180-days risk but provides no contingency. If the account is rejected or closed, all live affiliate URLs become non-monetizing. Pre-pick a fallback URL/text pair (tip jar, Block Club affiliate, or a "sponsor this slot" `mailto:` link) so the slot doesn't have to be killed via env-var-disable when that happens.
+12. **PWA service-worker caching caveat.** The scope advertises "swap copy without redeploy" via env vars. True only with caveats: `import.meta.env` values are baked into the JS bundle at Vite build, and the service worker serves stale bundles. A change to `VITE_HOUSE_AD_URL` requires a Vercel redeploy AND propagation through the SW cache. Worth one sentence in expectations.
+
+**Pre-implementation actions outside the codebase (carryover from audit):**
+
+- **Apply for Amazon Associates.** Approval can take several business days; the resulting tracking ID belongs in `.env.production` on the same deploy that enables the slot. See [docs/TODO.md](TODO.md).
+- **Decide where the Amazon Op Agreement phrase lives** (item 4). Recommendation: privacy page only. Re-evaluate if Associates flags placement.
 
 ---
 
@@ -243,7 +278,9 @@ Re-evaluated against the trigger list above. **Outcome: defer, no triggers have 
 2. ~~Extract marker mounting into a `useMapMarker(map, Component, props, coords)` hook.~~ **Done 2026-05-03** — see [frontend/src/hooks/useMapMarker.jsx](../frontend/src/hooks/useMapMarker.jsx). Origin and destination markers now declarative; live-position marker remains imperative (uses exported `mountMarker`/`removeMarker`) because its heading prop must update synchronously with the smoothed-heading ref.
 3. Add a MapView smoke test that mounts with a fixture route and asserts no console errors. Builds the regression net we'd want before any future migration. **See dedicated consideration entry below.**
 
-**Post-refactor state (2026-05-03):** MapView.jsx is now 427 lines (was 679, -37%). Imperative bookkeeping for layers and origin/dest markers is gone. The only remaining triggers that would justify a full react-map-gl migration are dynamic/data-driven layer composition or a leak surfacing.
+**Post-refactor state (2026-05-03):** MapView.jsx dropped to 427 lines (was 679, -37%). Imperative bookkeeping for layers and origin/dest markers is gone.
+
+**Drift update (2026-05-12):** MapView.jsx has grown back to **660 lines** (+233 / +55% from the post-refactor baseline), bringing it within striking distance of the 900-line migration trigger. Growth was buried in commit `4132ae0 Major overhaul`. The 900-line trigger is no longer a comfortable distance away — re-evaluate at the next major map-feature add.
 
 **Re-add to active consideration if:** any planned feature needs dynamic/data-driven layer composition (toggleable layers, multi-trip overlays, custom raster tiles), MapView grows past ~900 lines, a real leak surfaces, or a second engineer joins and onboarding friction becomes a cost.
 
@@ -262,7 +299,7 @@ A small smoke test would not exercise WebGL (jsdom has none), but it can catch t
 Build the smoke test if **either** of the following becomes true:
 
 1. **Migration to react-map-gl is approved.** The smoke test must land *before* the migration starts — not as part of it — so it can detect regressions introduced by the swap rather than codifying the migrated behavior.
-2. **MapView grows past ~900 lines** (current: 427). At that size the manual-verification cost per change is high enough that a one-time test investment pays back. A second engineer joining the project hits this trigger early; solo development can tolerate a higher line count.
+2. **MapView grows past ~900 lines** (as of 2026-05-12: **660 lines**, up from 427 at this consideration's writing). At that size the manual-verification cost per change is high enough that a one-time test investment pays back. A second engineer joining the project hits this trigger early; solo development can tolerate a higher line count. The trigger is closer than this consideration's original framing implied.
 
 Until one of these fires, the test is not worth the maintenance cost — `maplibre-gl` would need to be mocked (jsdom has no WebGL), and the mock surface drifts as the library evolves.
 
@@ -295,11 +332,11 @@ The 2026-05-04 testing expansion (see [archive/FEATURE_HISTORY.md](archive/FEATU
 
 What remains uncovered is the slice that genuinely needs a real browser — maplibre WebGL rendering, geolocation, service worker, and the App.jsx orchestration that wires them together:
 
-- **`MapView.jsx`** (427 lines) — maplibre lifecycle, layer add/remove, fitBounds/flyTo, leg muting.
+- **`MapView.jsx`** (660 lines as of 2026-05-12; was 427 when this consideration was written) — maplibre lifecycle, layer add/remove, fitBounds/flyTo, leg muting.
 - **`components/markers/*.jsx`** (3 files) — DestinationMarker, LivePositionMarker, OriginMarker — render via maplibre's marker portal.
 - **`hooks/useMapMarker.jsx`, `useRouteLayers.js`** — direct maplibre Map manipulation.
 - **`hooks/useTripTracker.js`** — wraps `navigator.geolocation.watchPosition`, off-route detection, and live map layer updates.
-- **`App.jsx`** — top-level state machine, i18n bootstrapping, route between home/map/alerts/saved tabs.
+- **`App.jsx`** — top-level state machine, i18n bootstrapping, route between home/map/alerts/tools tabs.
 
 Unit-testing these would require ~80–120 lines of maplibre mock per file. The mocks would test the mocks, not the code. Playwright with a real Chromium and stubbed geolocation is the right tool — it also subsumes the "MapView smoke test" consideration above (Playwright would catch every regression that mocked smoke test was scoped for, plus actual WebGL output, plus interaction lock, plus geolocation-driven flows that no unit test can reach).
 
@@ -358,14 +395,14 @@ Today the street-graph bbox covers Chicago city limits + Evanston (Purple Line).
 1. Determine the actual coverage area needed:
    - **Metra:** ~240 stations across 11 lines extending to Kenosha, Aurora, Joliet, etc. — covers ~6,000 sq mi if a full bbox is used.
    - **Pace:** ~600 routes across Cook + 5 collar counties — covers nearly the entire 8-county Chicagoland region.
-2. Almost certainly **switch from a single rectangle to a polygon** (`ox.graph_from_polygon`). A rectangle big enough to contain Aurora to Kenosha would be ~80mi × 60mi and impractical.
-3. Likely approach: union 0.25-mile buffers around each Metra station + 0.1-mile buffers around each Pace stop, converted to a multipolygon. See the train-only polygon approach considered (and rejected) in walking-paths work for prior art.
+2. **Extend the existing union-of-boxes polygon** in [backend/fetch_street_graph.py:99-113](../backend/fetch_street_graph.py#L99-L113). The polygon infrastructure (`unary_union` of a main Chicago box + a Purple Line corridor strip, fed to `ox.graph_from_polygon`) already exists as of the 2026-05-12 Polygon Union commit — no rectangle-to-polygon switch is needed. A rectangle big enough to contain Aurora to Kenosha would be ~80mi × 60mi and impractical, so the union approach already in place is the right primitive to extend.
+3. Likely approach: union 0.25-mile buffers around each Metra station + 0.1-mile buffers around each Pace stop with the existing main + corridor boxes. Note that `unary_union` will collapse touching geometries into a single `Polygon`; if buffers remain disjoint from the Chicago box the result becomes a `MultiPolygon`, which `graph_from_polygon` accepts but may need verification at osmnx's query-area limits.
 4. Memory and graph-load time will increase substantially. May need to shard the graph by region (north/south/west) and lazy-load per request, or move from in-process pickle to a tile server.
 
 ### Files this would touch
 
-- `backend/utils.py` — bbox/polygon definition.
-- `backend/fetch_street_graph.py` — switch from `graph_from_bbox` to `graph_from_polygon`; source Pace/Metra stop coords from their respective GTFS feeds.
+- `backend/utils.py` — owns the corner constants (`STREET_GRAPH_*`, `PURPLE_LINE_CORRIDOR_*`); add new constants for Pace/Metra buffer radii if used.
+- `backend/fetch_street_graph.py` — extend `_build_coverage_polygon()` ([line 99-113](../backend/fetch_street_graph.py#L99-L113)) to union Pace/Metra station/stop buffers with the existing main + corridor boxes; source Pace/Metra stop coords from their respective GTFS feeds.
 - `backend/walking.py` — likely no change; still loads a single artifact.
 - Deployment — pickle size will grow; verify Railway memory headroom and LFS quota.
 
@@ -376,318 +413,347 @@ Today the street-graph bbox covers Chicago city limits + Evanston (Purple Line).
 
 ---
 
+## Geocoding & Autocomplete — Local-First Cascade (Passage-mirror)
+
+### Overview
+
+Migrates the project's geocoding + autocomplete stack from a hosted-first model (Google Maps Geocoding API for both forward and reverse; in-memory prefix index for `/autocomplete` with no address coverage) to a **local-first cascade backed by a single SQLite/FTS5 database**, with **LocationIQ** as an optional hosted fallback. Mirrors the design shipped in the Passage project at `c:\GitHub\Passage\`.
+
+**Goals:**
+
+1. Eliminate per-request hosted-geocoder cost as the dominant operating expense at growth.
+2. Make `/autocomplete` instant and address-aware — typing "1234 N Damen" or "Damen & Milwaukee" returns inline suggestions for the first time.
+3. Keep working when the network is unhappy — local tiers serve while the breaker is open.
+4. Replace the in-memory prefix index + JSON cache + monthly call counter with a single SQLite file holding the corpus *and* the persistent cache.
+
+**Type: Structural** — touches backend resolution, autocomplete endpoint, frontend combobox, i18n, privacy doc; introduces a new ingest pipeline and a quarterly rebuild cadence.
+
+**Status:** Decisions captured (9/9 as of 2026-05-12). Final consistency audit complete. Supersedes FEAT-011 / FEAT-011a / FEAT-011b (which scoped a TIGER + Google + static-index approach), FEAT-014 (subsumed by `cached_forward` + negative-cache), and the deferred "Geocoding Provider Migration (Google Maps → Mapbox)" Consideration (directly replaced). FEAT-013 (curated CPL libraries) and FEAT-015 (bus-stop platform disambiguation) survive — FEAT-013 retargets onto Chunk 4 of this plan; FEAT-015 is orthogonal.
+
+**Prerequisites:**
+
+- LocationIQ account + API key provisioned (free tier is 5,000 requests/day, sufficient at current and near-term DAU).
+- Disk space for `backend/static_data/chicago_geocode.db` — estimate ~150–250MB once both addresses (~600–900k rows) and intersections (~50k rows) are ingested with FTS5 mirror tables.
+
+---
+
+### Reference design (Passage)
+
+Before reading this plan, the canonical reference implementation lives in:
+
+- `c:\GitHub\Passage\backend\geocoding.py` — Tier-1/2/3 cascade, LocationIQ client, 429 circuit breaker, SQLite-backed forward+reverse cache, KDTree neighborhood reverse, fuzzy matcher
+- `c:\GitHub\Passage\backend\local_search.py` — autocomplete + forward + nearest_address against the SQLite store; ranking, dedupe, cross-street parser
+- `c:\GitHub\Passage\backend\geocode_text.py` — shared `normalize_street_name` / `normalize_address` used at both ingest and query time
+- `c:\GitHub\Passage\backend\scripts\_geocode_db.py` — single-file SQLite schema (addresses, intersections, addresses_fts, intersections_fts, cached_forward, cached_reverse)
+- `c:\GitHub\Passage\backend\scripts\build_address_points.py`, `build_intersections.py` — quarterly ingest scripts (Overpass for addresses; pedestrian graph for intersections)
+- `c:\GitHub\Passage\backend\scripts\migrate_geocode_cache.py` — one-shot migrator from legacy JSON cache
+- `c:\GitHub\Passage\backend\main.py` lines ~320–383 — GET /autocomplete endpoint shape
+- `c:\GitHub\Passage\frontend\src\components\AddressAutocomplete.jsx` + `frontend\src\lib\autocompleteApi.js` — generic, pluggable-data-source typeahead combobox; WAI-ARIA combobox 1.1 inline pattern
+- `c:\GitHub\Passage\CLAUDE.md` — "Geocoding (local-first cascade)" and "Address autocomplete" sections
+
+---
+
+### Architecture to port
+
+**Forward resolution cascade** (`resolve_location`):
+
+1. Coord-pair regex (instant)
+2. Exact `NEIGHBORHOOD_COORDS` dict (curated landmarks + neighborhoods — kept as the Python dict; small, version-controlled, human-edited)
+3. Fuzzy match against `NEIGHBORHOOD_COORDS` (SequenceMatcher, threshold 0.95, inverted-word-index prefilter)
+4. `local_search.forward()` → SQLite/FTS5 over Chicago OSM addresses (~600–900k rows) + intersections (~50k rows)
+5. LocationIQ `/v1/search` — optional; missing API key or `LOCATIONIQ_ENABLED=false` makes Tier 5 return `None`
+
+**Reverse resolution cascade** (`reverse_geocode_point`):
+
+1. `cached_reverse` SQLite hit (lat/lon quantized to 1e5)
+2. KDTree-nearest neighborhood within ~200m → label
+3. `local_search.nearest_address` within ~50m (bbox prefilter + Haversine sort)
+4. LocationIQ `/v1/reverse` (cached on success)
+5. Coordinate-string fallback (never cached)
+
+**Key invariants copied verbatim from Passage:**
+
+- **One SQLite file** at `backend/static_data/chicago_geocode.db` holds all four tables: `addresses`, `intersections`, `cached_forward`, `cached_reverse`. Plain (non-content-linked) FTS5 mirror tables `addresses_fts` and `intersections_fts` — easier ingest, costs a few MB.
+- **DB location matters.** Must live under `backend/static_data/`, NOT `backend/data/`. Railway's persistent analytics volume overlays `backend/data/` at runtime, which would destroy the corpus on every deploy.
+- **Two connections to the same DB.** `local_search.py` opens read-only with `mode=ro` + mmap (128 MB); `geocoding.py` opens a writeable connection in WAL mode for cache writes. Concurrent reads never block cache inserts.
+- **Negative cache.** Misses are stored as rows with `lat`/`lon` = `NULL` — `_cache_get_forward` returns a `NEG_HIT` sentinel so the network is never re-queried for known-bad strings.
+- **Shared 429 circuit breaker.** Forward + reverse both gate on the same `_circuit_open_until`. Exponential backoff 60→120→240s, capped at 300s. First post-cool-off call probes; success closes the breaker. Tier-4 (local) results still serve while the breaker is open. Raise a dedicated `GeocoderDegradedError` only when the request would have needed Tier 5.
+- **Shared text normalization.** `normalize_street_name` and `normalize_address` are imported by both the ingest scripts and the runtime. Anything that builds a row also defines the query canonicalization — never let those drift.
+- **`/autocomplete` endpoint: local-only.** No hosted supplement of any kind. Submit-time forward still cascades through LocationIQ for queries the local layer misses.
+- **Source priority ranking:** neighborhood > intersection > address > place. Within a source, exact > prefix; in-bbox > out-of-bbox; ties break toward Chicago center via Haversine.
+- **Per-tier soft cap = 3, total cap = 8.** Each tier capped at `AUTOCOMPLETE_PER_TIER_CAP` (default `3`) before lower tiers are pulled in, preventing any tier from starving others.
+- **Cross-tier dedupe.** Same canonical entity in two tiers (matched by normalized name OR coords within 50m) → higher-priority tier wins. Within a source, dedupe by quantized coord and (source, label).
+- **Privacy.** User-typed queries are SHA-256 redacted (`q#abcd1234ef`) in logs.
+- **Coverage gating.** Anything that resolves outside the Chicago bbox raises `LocationOutsideChicagoError` — distinct from `None` (= "not found").
+- **Cost ceiling.** `LOCATIONIQ_DAILY_CAP=4900` UTC-day counter (in-process, cheap) silently degrades Tier 5 to local-only when cap is hit. Leaves ~100-call headroom under the 5,000/day free-tier ceiling for clock skew / race conditions. Defense against a runaway-bug cost incident the 429 breaker can't catch.
+- **Env-var opt-out.** `LOCATIONIQ_ENABLED=true` by default. Setting `false` disables Tier 5 entirely (self-hoster privacy control + emergency kill switch).
+
+**Frontend pattern.** `AddressAutocomplete.jsx` is generic. Takes a `getSuggestions(query, { signal })` async function. Handles debounce (150ms), abort-on-keystroke, keyboard + pointer + touch selection. Renders via portal to escape `overflow: hidden` / transform clipping ancestors (relevant for the mobile bottom sheet). WAI-ARIA combobox 1.1 inline pattern (`role="combobox"`, `aria-controls`, `aria-expanded`, `aria-activedescendant`). `LocationInput.jsx` becomes a thin wrapper that adds the geo button, saved-location items, and form integration.
+
+---
+
+### Scoping decisions
+
+1. **Hosted geocoder provider (Q1) → LocationIQ.** *Captured 2026-05-12.*
+   - LocationIQ replaces Google for the Tier-5 fallback. Existing `geocode_google` / `reverse_geocode_google` removed (no pluggable interface, no Google retention as fallback — explicitly rejected as overengineering).
+   - **Env var:** `LOCATIONIQ_API_KEY`. Missing key makes Tier 5 silently return `None`.
+   - **Rationale:** mirrors Passage exactly; friendlier caching terms (LocationIQ has no equivalent of Google's 30-day cache-retention clause that the existing 90-day TTL already violates); free-tier ceiling of 5,000 req/day is more than sufficient given negative-cache + local-corpus coverage.
+
+2. **Monthly call counter (Q2) → Drop the monthly counter; keep a daily cap.** *Captured 2026-05-12 (revised after FEAT-011a Decision 2 review).*
+   - Drop `GEOCODE_MONTHLY_LIMIT` + `geocode_counter.json` + monthly-rollover logic — legacy Google bookkeeping.
+   - Add `LOCATIONIQ_DAILY_CAP` (default `4900`, UTC day, in-process counter). On cap hit, Tier 5 silently degrades to local-only for the remainder of the day; event is logged.
+   - **Why a daily cap, not just the breaker:** the Passage 429 breaker only protects against provider-side throttling. A runaway-bug or attack hammering LocationIQ inside our own cache-miss paths could rack costs before the breaker fires. The daily cap is a non-negotiable circuit against bug/abuse cost incidents — captured reasoning from the prior FEAT-011a Decision 2.
+   - **Why 4900 and not 5000:** leaves ~100-call headroom under the LocationIQ free-tier daily ceiling for clock skew (server vs. LocationIQ's clock for the day boundary) and concurrency races between simultaneous cap-checks.
+
+3. **Address + intersection corpus scope (Q3) → Chicago city limits, addresses + intersections.** *Captured 2026-05-12.*
+   - Overpass for addresses (`addr:housenumber` + `addr:street` nodes/ways) within the Chicago city polygon. Estimate ~600–900k rows.
+   - Intersections derived from the existing pedestrian/street graph (`backend/fetch_street_graph.py` output). Estimate ~50k rows.
+   - **Quarterly rebuild** via two ingest scripts; DB output gitignored.
+   - **Rationale:** matches Passage's proven scope; intersections are too useful in Chicago ("Damen & Milwaukee") to skip; suburb buffer deferred to a follow-up if real users hit the edge.
+
+4. **Existing JSON cache migration (Q4) → One-shot migrator into SQLite.** *Captured 2026-05-12.*
+   - `scripts/migrate_geocode_cache.py` reads `backend/geocode_cache.json`, re-normalizes each key through the new `geocode_text` module (canonicalization differs from Google's raw key), inserts into `cached_forward` with bounded synthetic timestamps so the TTL eviction sweep doesn't immediately wipe them.
+   - Pre-warms LocationIQ cache; preserves months of real-user query→coord pairs (provider-agnostic — coords are just lat/lon).
+   - One-time run with a `.migrated` marker file; refuses to re-run unless `--force` is passed.
+   - **Rationale:** small (~2 hours of work), meaningfully softens the launch by keeping Tier 5 cold longer.
+
+5. **`/autocomplete` Tier-5 supplement (Q5) → Local-only, no supplement.** *Captured 2026-05-12.*
+   - Passage's digit-prefix supplement (fire a LocationIQ call when local <3 results AND first token is digit-prefixed) is **not ported**.
+   - **Rationale:** with a full Chicago address+intersection corpus, the supplement's marginal recall improvement is tiny; autocomplete fires on every keystroke (debounced 150ms), making it the highest-volume endpoint by orders of magnitude — even a 1% leak rate dwarfs all other LocationIQ traffic. Submit-time forward still cascades through Tier 5, so anything autocomplete misses still gets resolved when the user presses Go. Revisit if production metrics show real recall gaps.
+
+6. **Frontend combobox approach (Q6) → Port `AddressAutocomplete` generic + refactor `LocationInput` to compose it.** *Captured 2026-05-12.*
+   - New `frontend/src/components/AddressAutocomplete.jsx` + `frontend/src/lib/autocompleteApi.js` ported from Passage. Generic combobox owns ARIA combobox 1.1, portal rendering, abort-on-keystroke, debounce.
+   - `LocationInput.jsx` refactored to compose `AddressAutocomplete`, retaining its geo button, save-location flow, and saved-locations dropdown items.
+   - **Rationale:** ARIA combobox + portal + abort is a self-contained correctness concern; separating it from form-binding logic is the only exception to the "don't extract abstractions prematurely" instinct that's warranted here. Brings across Passage's existing test suite for the component.
+
+7. **Reverse-geocoding local tiers (Q7) → Full cascade: cache + neighborhood + nearest_address + LocationIQ.** *Captured 2026-05-12.*
+   - All four tiers as listed in the architecture section. Data is already local once Chunks 3+4 ship.
+   - **Rationale:** geo-button latency drops from ~100–300ms (hosted round-trip) to <10ms for the vast majority of locations. Cascade implementation is ~80 lines on data we already have. Geo button is one of the most-used interactions in the app.
+
+8. **Per-tier soft cap + cross-tier dedupe rules (Q8, implied by FEAT-011a Decisions 7+9) → Adopt.** *Captured 2026-05-12.*
+   - **Per-tier soft cap:** `AUTOCOMPLETE_PER_TIER_CAP` (default `3`); endpoint total cap `8`. Tier-greedy fill from highest-priority tier with the cap enforced before descending.
+   - **Cross-tier dedupe:** higher-priority tier wins when the same canonical entity appears in two tiers. Dedupe key = (a) exact normalized name match OR (b) coords within 50m.
+   - **Rationale:** explicit caps are cleaner than relying on ranking alone; FEAT-011a captured the same reasoning and the rule is portable across the new architecture.
+
+9. **Privacy + opt-out (Q9) → PRIVACY.md correction + new LocationIQ section + `LOCATIONIQ_ENABLED` env opt-out.** *Captured 2026-05-12.*
+   - Fix the existing inaccurate "no third-party processor" claim in `docs/PRIVACY.md` ([docs/PRIVACY.md:144-145](../PRIVACY.md)).
+   - Add a new section ("Geocoding & autocomplete (LocationIQ)") documenting: (a) forward calls on submit when the local cascade falls through to Tier 5; (b) reverse calls when the geo-button reverse cascade falls through to Tier 5; (c) the daily cap behavior; (d) what is and is not sent (typed text; deployment outbound IP; no rider identifier; no session cookie).
+   - `LOCATIONIQ_ENABLED` env var (default `true`). When `false`, the backend skips Tier 5 entirely and behaves as local-only. Useful for self-hosters with stricter privacy postures, emergency disabling, and local-only dev testing.
+   - **Rationale:** privacy correction is mandatory regardless of provider choice; the env-var opt-out is FEAT-011a's already-decided posture, retargeted at LocationIQ.
+
+---
+
+### Final-pass consistency audit (2026-05-12)
+
+- **Decisions 1+2+5 (LocationIQ, daily cap, no AC supplement) consistently minimize hosted exposure** — coherent.
+- **Decisions 3+7 (full corpus, full reverse cascade) both lean on the SQLite layer being complete** — chunk sequencing must place corpus ingest (Chunk 3) before reverse-cascade wiring (Chunk 5). Plan reflects this.
+- **Decision 4 + Decision 1 (migrator + LocationIQ swap)** — migrator absorbs Google-resolved query→coord pairs; coords are provider-agnostic, so safe.
+- **Decision 6 + Decision 5 (generic combobox + local-only AC)** — generic component takes a `getSuggestions` function; in this app it always points at local `/autocomplete`. Coherent.
+- **Decision 8 (per-tier cap + cross-tier dedupe)** — applies inside `local_search.autocomplete`; doesn't conflict with any other decision.
+- **Decision 9 + Decision 2 (privacy + daily cap)** — daily cap behavior is part of what PRIVACY.md must disclose. Wording in Chunk 9 will cover both.
+
+No contradictions found.
+
+---
+
+### Chunked implementation plan
+
+Each chunk is independently checkpointable: after each, the app builds, tests pass, and we pause for review before the next chunk starts. Chunks are ordered so each one delivers something useful or strictly enables the next.
+
+#### Chunk 1 --- Shared text normalization module
+
+**Files created:** `backend/geocode_text.py`
+
+**Files modified:** `backend/gtfs_loader.py` (re-export from new module for back-compat *within this chunk only*; removed in Chunk 10)
+
+**What ships:**
+
+- Port `normalize_street_name(name)` and `normalize_address(addr)` from Passage verbatim (compound directionals, USPS suffix expansion, punctuation/whitespace collapse).
+- Move `_normalize_street_abbr` + `fuzzy_match_neighborhood` here too. Existing call sites in `gtfs_loader.py` and `main.py` updated to import from `backend.geocode_text`.
+- Unit tests ported from Passage's normalize tests, retargeted at this project's import paths.
+
+**Checkpoint signal:** All existing tests pass. No behavior change yet. `pytest backend/tests` green.
+
+**Why first:** Every downstream chunk (ingest, local_search, cascade) consumes these helpers. Establishing the single source of truth here means ingest and runtime can't drift.
+
+#### Chunk 2 --- SQLite schema + DB scaffolding
+
+**Files created:** `backend/scripts/_geocode_db.py` (schema definition + connection helpers); `backend/static_data/` directory (must be `static_data/` not `data/` per Railway constraint); `.gitignore` additions.
+
+**Files modified:** `.gitignore` (add `backend/static_data/*.db*`).
+
+**What ships:**
+
+- Schema for `addresses`, `intersections`, `addresses_fts` + `intersections_fts` (plain non-content-linked FTS5), `cached_forward`, `cached_reverse`.
+- Connection helpers: `open_readonly()` (mode=ro + 128MB mmap), `open_writeable()` (WAL).
+- Empty DB initialization script.
+- Schema tests: open empty DB, confirm tables exist, confirm FTS5 is available in the SQLite build.
+
+**Checkpoint signal:** `python -m backend.scripts._geocode_db --init` creates an empty DB at `backend/static_data/chicago_geocode.db`; schema test passes; nothing else changes.
+
+**Why second:** Pure infrastructure. Lets later chunks land ingest + queries against a stable, tested schema.
+
+#### Chunk 3 --- Address + intersection ingest scripts
+
+**Files created:** `backend/scripts/build_address_points.py`, `backend/scripts/build_intersections.py`.
+
+**Files modified:** none in runtime path.
+
+**What ships:**
+
+- `build_address_points.py`: Overpass query over the existing routing bbox (`STREET_GRAPH_*` constants in `utils.py` — main Chicago box + Evanston Purple Line corridor) for `nwr["addr:housenumber"]["addr:street"]` features. Chunked into a 4×4 grid (16 sub-bboxes) with 180s per-chunk Overpass timeout, 10s sleep between chunks, 3 retries with 15s exponential backoff. Normalize each row via Chunk-1 helpers. Bulk-insert into `addresses` + `addresses_fts`. Resumable / idempotent.
+- `build_intersections.py`: Overpass query over the same bbox for every named `highway=*` way (one query, `timeout:300`). Pedestrian-graph artifact (`street_graph_igraph.pkl`) is **not** used — OSMnx's `consolidate_intersections` strips names from collapsed-node edges, so the artifact is unsuitable as a source (per Passage's design note). Compute true geometric crossings with Shapely STRtree over the LineStrings; emit one row per (canonical name A, canonical name B, lat, lon) intersection point. Normalize, insert into `intersections` + `intersections_fts`.
+- Quarterly run instructions added to `docs/PROJECT_CONTEXT.md` (one-line ops note).
+
+**Checkpoint signal:** Run both scripts on dev machine. Resulting DB has ~400–900k addresses and ~25–50k intersections (Chicago's actual OSM `addr:housenumber` density came in toward the low end on the first build — 409k addresses + 24.5k intersections, 55 MB total). FTS5 queries against it return sensible results from a manual probe.
+
+**Status:** ✅ Built 2026-05-12. DB lives at `backend/static_data/chicago_geocode.db`.
+
+**Why third:** Builds the corpus needed by Chunks 4 and 6. No runtime code touches the DB yet — production keeps using Google.
+
+#### Chunk 4 --- `local_search.py` module
+
+**Files created:** `backend/local_search.py`.
+
+**Files modified:** none.
+
+**What ships:**
+
+- `autocomplete(query, limit=8, per_tier_cap=3, in_bbox_only=True)` — FTS5 over addresses + intersections, union with neighborhood/station results, apply Passage's ranking + Decision-8 per-tier soft cap + Decision-8 cross-tier dedupe.
+- `forward(query)` — same FTS5 layer, returns top-ranked coord.
+- `nearest_address(lat, lon, radius_m=50)` — bbox-prefilter on `addresses` (simple lat/lon range) + Haversine sort.
+- Cross-street parser (`"Damen & Milwaukee"` → intersections table lookup).
+- Tests ported from Passage's `test_local_search.py`, retargeted.
+
+**Checkpoint signal:** Module is import-tested and unit-tested. Not yet called from any endpoint. No production behavior change.
+
+**Why fourth:** Self-contained query layer. Validating it in isolation before wiring into endpoints keeps the integration chunk small.
+
+#### Chunk 5 --- Forward + reverse cascade + LocationIQ client
+
+**Files created:** `backend/geocoding.py` (replaces `gtfs_loader.geocode_google` / `reverse_geocode_google`).
+
+**Files modified:** `backend/main.py` (`_resolve_locations` and share-link path swap `resolve_location`/`coords_for_location` to the new module's `resolve_location`); `backend/gtfs_loader.py` (delete `geocode_google`, `reverse_geocode_google`, `_geocode_call_counter` plumbing, JSON cache load/save — pure deletion, no shims); `backend/config.py` (remove `GEOCODE_MONTHLY_LIMIT` and friends; add `LOCATIONIQ_API_KEY`, `LOCATIONIQ_DAILY_CAP`, `LOCATIONIQ_ENABLED` env-var docs).
+
+**What ships:**
+
+- `LocationIQClient` with shared 60→120→240→300s circuit breaker + probe-on-first-call-after-cooloff.
+- `LOCATIONIQ_DAILY_CAP=4900` UTC-day counter; silent degrade-to-local-only on cap hit; log on cap-cross.
+- `LOCATIONIQ_ENABLED` env opt-out wiring.
+- `cached_forward` / `cached_reverse` read+write helpers; negative-cache sentinel (`NEG_HIT`).
+- `resolve_location(query)` cascade: coord-regex → NEIGHBORHOOD_COORDS exact → fuzzy → `local_search.forward()` → LocationIQ.
+- `reverse_geocode_point(lat, lon)` cascade: cached_reverse → KDTree-neighborhood (≤200m) → `local_search.nearest_address` (≤50m) → LocationIQ.
+- `LocationOutsideChicagoError` raised when resolution lands outside the Chicago bbox.
+- `GeocoderDegradedError` raised only when a Tier-5 call would have been needed and the breaker is open.
+- SHA-256 query redaction in logs (`q#abcd1234ef`).
+- `/reverse-geocode` endpoint updated to call new `reverse_geocode_point`.
+- Existing tests updated to mock the new client where they mocked Google.
+
+**Checkpoint signal:** All routing flows still work end-to-end against the new cascade. Tier-5 hit rate observably low in dev. Breaker behavior verified by injecting a 429 in a test. Daily-cap behavior verified by injecting a counter-at-cap state.
+
+**Why fifth:** This is the big switchover. By landing it after Chunks 1–4, the new module has all its dependencies (normalize, schema, corpus, query layer) and the swap is a relatively localized edit at the call sites.
+
+#### Chunk 6 --- `/autocomplete` endpoint rewrite
+
+**Files modified:** `backend/main.py` (`/autocomplete` handler swapped to call `local_search.autocomplete`; remove `_build_autocomplete_index`, `_ac_master`, `_ac_prefix_index` — entirely superseded by FTS5).
+
+**What ships:**
+
+- `/autocomplete` now returns addresses + intersections + neighborhoods + stations (a real upgrade over today's stations-only output).
+- No hosted supplement (Decision 5).
+- Existing rate-limit bucket preserved.
+- Endpoint shape unchanged for the frontend (`{ suggestions: [{ label, value, type }] }`) plus new `type` values: `address`, `intersection`.
+- Tests updated; new tests for the address + intersection suggestion paths.
+
+**Checkpoint signal:** Typing "1234 N Damen" in the existing `LocationInput` produces address suggestions for the first time. Backend tests green.
+
+**Why sixth:** Once the corpus + `local_search` are in place, this is a contained endpoint swap that delivers immediate user-visible value while the frontend is still the old component.
+
+#### Chunk 7 --- Frontend: port `AddressAutocomplete` + refactor `LocationInput`
+
+**Files created:** `frontend/src/components/AddressAutocomplete.jsx`, `frontend/src/lib/autocompleteApi.js`, `frontend/src/tests/AddressAutocomplete.test.jsx`.
+
+**Files modified:** `frontend/src/components/LocationInput.jsx` (refactored to compose `AddressAutocomplete`; keeps geo button, save-location flow, saved-locations dropdown items); `frontend/src/tests/LocationInput.test.jsx` (updated for the composed structure); `frontend/src/App.css` (badge styling for `address` and `intersection` types).
+
+**What ships:**
+
+- Generic `AddressAutocomplete` with portal rendering, abort-on-keystroke, 150ms debounce, full ARIA combobox 1.1.
+- `autocompleteApi.js` provides `getSuggestions(query, { signal })` against `GET /autocomplete`.
+- `LocationInput.jsx` becomes a thin shell around the generic combobox; existing tests updated.
+- Mobile bottom-sheet overflow/clipping issues that may exist today get fixed for free via portal rendering.
+
+**Checkpoint signal:** Manual test in browser. Typing in the route form shows addresses + intersections + stations + neighborhoods. Saved-locations + geo button still work. Keyboard nav + screen-reader announcements correct. Mobile bottom-sheet does not clip the dropdown.
+
+**Why seventh:** Backend already delivers the right shape after Chunk 6, so this is a pure frontend swap with no backend dependency.
+
+#### Chunk 8 --- i18n badge translations across 27 locales
+
+**Files modified:** `frontend/public/locales/*/translation.json` (all 27 locales).
+
+**What ships:**
+
+- New i18n keys: `autocomplete.badge.address`, `autocomplete.badge.intersection`.
+- Translations across all 27 locales using the same translation pipeline as prior locale work.
+- 3 `RESEARCH_LOCALES` (`aii`, `ksw`, `rhg`) surface the `mt-review-notice` MT badge on these keys.
+
+**Checkpoint signal:** All 27 locale files contain both keys. Spot-check on RTL (`ar`) and CJK (`zh`) confirms render without layout breakage.
+
+**Why eighth:** Pure data work. Can in principle ship alongside Chunk 7, but separating it keeps the frontend code review focused.
+
+#### Chunk 9 --- PRIVACY.md updates
+
+**Files modified:** `docs/PRIVACY.md`.
+
+**What ships:**
+
+- Correct the existing inaccurate "no third-party processor" claim ([docs/PRIVACY.md:144-145](../PRIVACY.md)) — at this point in the migration it is true that LocationIQ is reached only in narrow fallback conditions, but it is still a third-party processor.
+- New section ("Geocoding & autocomplete (LocationIQ)") documenting:
+  - When LocationIQ is called (forward Tier 5 on submit fallthrough; reverse Tier 5 on geo-button fallthrough).
+  - What is sent: typed prefix; deployment outbound IP. No rider identifier; no session cookie.
+  - What is cached locally and for how long (90-day TTL on `cached_forward` and `cached_reverse`; `NEG_HIT` rows for known-bad strings).
+  - The `LOCATIONIQ_DAILY_CAP=4900` UTC-day cap behavior — what happens after the cap is hit (silent degrade to local-only for the rest of the day).
+  - The `LOCATIONIQ_ENABLED=false` env opt-out (for self-hosters with stricter privacy postures).
+- Note that LocationIQ's own retention is governed by LocationIQ's privacy policy.
+
+**Checkpoint signal:** PRIVACY.md is accurate end-to-end with the new architecture. Existing inaccuracy is corrected.
+
+**Why ninth:** Mandatory but small. Lands after the code paths exist so the doc describes deployed reality, not planned reality.
+
+#### Chunk 10 --- One-shot cache migrator + final cleanup
+
+**Files created:** `backend/scripts/migrate_geocode_cache.py`.
+
+**Files deleted (after migrator runs):** `backend/geocode_cache.json`, `backend/geocode_cache.journal`, `backend/geocode_cache_ages.json`, `backend/geocode_counter.json`.
+
+**What ships:**
+
+- Migrator reads the JSON cache, re-normalizes each key via `geocode_text`, inserts into `cached_forward` with bounded synthetic timestamps (so TTL eviction doesn't immediately wipe them).
+- Run-once safety: writes a `.migrated` marker file; refuses to re-run without `--force`.
+- Final removal of Chunk-1 re-export shims from `gtfs_loader.py`.
+- Docs note in `docs/PROJECT_CONTEXT.md` (or ops-notes location) explaining the one-time run.
+
+**Checkpoint signal:** Run the migrator locally. `cached_forward` row count jumps by however many entries were in the JSON file. Spot-check that previously-cached queries now resolve from SQLite without hitting LocationIQ. JSON cache files are deleted from the repo.
+
+**Why last:** Pure data move with no code dependency. Deferring this until the new cascade is fully live means the migrator is writing into a well-tested, real schema.
+
+---
+
+### Out of scope (explicit non-goals)
+
+- **Suburb / regional expansion of the corpus.** Decision 3 chose Chicago city limits. Follow-up if real users hit the edge.
+- **LocationIQ supplement on `/autocomplete`.** Decision 5 deferred. Revisit only if production metrics show real recall gaps.
+- **POI tier (the FEAT-011b half).** Not in this plan. If wanted later, becomes an additive tier in `local_search.autocomplete` sourced from a Geofabrik OSM extract (`amenity`, `shop`, `tourism`, `leisure`, etc.). Decision deferred — own follow-up FEAT.
+- **Fuzzy matching beyond `NEIGHBORHOOD_COORDS`.** Today's prefix-exact behavior is preserved across new tiers. Cross-tier fuzzy matching is a desirable future improvement with a different perf profile.
+- **Tier-hit-rate telemetry.** None in Passage; can be added later if needed.
+- **Backwards-compatibility shims for `geocode_google` / the JSON cache after Chunk 10.** No shims per maintainer preference.
+
+### When to revisit
+
+Ready to invoke implementation in chunk-by-chunk sequence — Chunk 1 first. After Chunk 10 ships, this entire entry is deleted from FEATURE_PLANS.md and a summary added to `docs/archive/FEATURE_HISTORY.md`. FEAT-013 (CPL libraries) and FEAT-015 (bus-stop platform disambiguation) become eligible to resume — FEAT-013 retargets onto Chunk 4's `local_search.autocomplete` as one more curated source.
+
+---
+
 ## Standalone Features
-
----
-
-### FEAT-011 --- Expand location autocomplete to cover all locations (street addresses + POIs)
-
-**Type:** Bolt-On
-
-**Status:** Decisions captured (10/10 as of 2026-05-06). Final consistency audit complete; entry restructured below into FEAT-011a (scaffolding + addresses tier) and FEAT-011b (POI tier) per Decision 3. Two spawned FEATs (FEAT-014 fallback-learning cache, FEAT-015 bus-stop dedupe) drafted separately.
-
-**User story / motivation:** As a rider, I want the origin/destination autocomplete to suggest *any* location I might want to travel to or from — specific street addresses (e.g. "1234 N Milwaukee Ave"), businesses and points of interest (e.g. "Wrigley Field", "Whole Foods Lincoln Park"), and individual bus stops at named intersections — not just the curated list of train stations, neighborhoods, and deduplicated bus stop names. Today, anything outside that curated list only resolves *after* form submission via Google Geocoding, which means the user gets no inline confirmation that the place they're typing is recognized.
-
-**Current coverage (for context):**
-
-- `/autocomplete` ([backend/main.py:1999-2036](../backend/main.py#L1999-L2036)) returns up to 8 suggestions from a static prefix index built at startup ([backend/main.py:312-358](../backend/main.py#L312-L358)).
-- Three sources, in tier order: train station names → `NEIGHBORHOOD_COORDS` keys → bus stop names (deduped by name, so multiple stops sharing a name collapse to one).
-- Free-form addresses are resolvable via Google Geocoding ([backend/gtfs_loader.py:644](../backend/gtfs_loader.py#L644)) on submit, but never autocompleted.
-- The `GOOGLE_MAPS_API_KEY` env var is already wired up ([backend/.env.example](../backend/.env.example)).
-
-**Acceptance criteria (final, post-decision-walkthrough):**
-
-After all of FEAT-011a, FEAT-011b, and FEAT-013 ship (FEAT-013 is its own entry but depends on FEAT-011a's scaffolding):
-
-- Tier-priority order in the autocomplete dropdown is: train station → neighborhood → bus stop → library → address (TIGER) → POI (OSM) → Google fallback. (Library tier ships in FEAT-013; address tier in 011a; POI tier in 011b; Google fallback ships in 011a.)
-- Typing partial street addresses (e.g. "1234 N Milwaukee Ave") biased to the Chicago metro returns inline address suggestions sourced from US Census TIGER/Line, with interpolated coordinates. (FEAT-011a)
-- Typing well-known Chicago POIs (e.g. "Wrigley Field", "Art Institute", "Whole Foods Lincoln Park") returns matching inline suggestions sourced from a filtered Geofabrik OSM extract. (FEAT-011b)
-- Existing tiers (train stations, neighborhoods, bus stops) continue to rank above all new tiers — riders looking for a station should not have to scroll past a coffee shop with the same name.
-- Suggestion `type` badges in the dropdown extend to cover the new categories — `address`, `poi`, `library` — each with a dedicated translated string and consistent badge styling. See [frontend/src/components/LocationInput.jsx:222-225](../frontend/src/components/LocationInput.jsx#L222-L225).
-- Each tier is capped at `AUTOCOMPLETE_PER_TIER_CAP` entries (default `3`) before lower tiers are pulled in, ensuring lower tiers are not starved. Within-tier ranking is prefix-position → length-asc → alphabetical (Decision 7.A).
-- Cross-tier dedupe: when the same canonical entity appears in two tiers (matched by normalized name OR coords within 50m), the higher-priority tier wins. (Decision 7.C)
-- The Google fallback path is invoked **only when** prefix length ≥ `AUTOCOMPLETE_FALLBACK_MIN_PREFIX_LEN` (default `4`) AND the local index returned fewer than `AUTOCOMPLETE_FALLBACK_LOCAL_THRESHOLD` matches (default `3`). (Decision 2)
-- A hard daily cap (`AUTOCOMPLETE_FALLBACK_DAILY_CAP`, default `1000`) bounds Google fallback spend; on cap-hit the endpoint silently degrades to local-only for the rest of the UTC day. (Decision 2)
-- The existing geocode rate-limit bucket continues to gate `/autocomplete` traffic; the Google fallback path is additionally gated by `AUTOCOMPLETE_FALLBACK_PER_IP_RATE`. No new bypass paths. (Decision 2)
-- Frontend generates an opaque `session_id` UUID on `LocationInput` focus and submits it with each `/autocomplete` request and on submit. Backend translates this into a Google session token internally so the entire typing-plus-selection session bills as one billable unit. (Decision 4)
-- Suggestion shape is uniform: `{ display, secondary, type, value, coords }`. Local-tier suggestions include `coords` inline and resolve with zero round-trips on submit. Google fallback suggestions carry `place_id` in `value` and resolve via a `/resolve` endpoint that calls Place Details with the cached session token. (Decision 5)
-- Server-side caches: `/autocomplete` Google fallback responses cached LRU by `(normalized_prefix, location_bias)` with 1h TTL (`AUTOCOMPLETE_GOOGLE_CACHE_TTL_SEC`, default `3600`; size cap `AUTOCOMPLETE_GOOGLE_CACHE_MAX_ENTRIES`, default `10000`); Place Details responses cached LRU by `place_id` with indefinite-within-process-lifetime TTL (`RESOLVE_CACHE_MAX_ENTRIES`, default `5000`). (Decision 6)
-- Failure modes: Google `/autocomplete` errors fall back to stale-cache-then-local-only silently; Google `/resolve` errors degrade through `geocode_google()` and only surface a user-facing error if both paths fail; sustained Google failures trip a circuit breaker (`AUTOCOMPLETE_FALLBACK_BREAKER_THRESHOLD`=5 consecutive failures, `AUTOCOMPLETE_FALLBACK_BREAKER_COOLDOWN_SEC`=300). (Decision 8)
-- Privacy: `docs/PRIVACY.md` is updated to (a) correct the existing inaccurate "no third-party processor" claim and (b) document the new Google Places fallback flow specifically. (Decision 9)
-- A global env-var opt-out (`AUTOCOMPLETE_FALLBACK_ENABLED`, default `true`) disables all Google fallback paths when set to `false`. (Decision 9)
-- No API keys are exposed to the frontend — frontend hits only `/autocomplete` and `/resolve`.
-- The build script `scripts/build_geo_index.py` produces the static prefix-index artifact from TIGER + OSM; runs as a monthly cron, manually triggerable. (Decision 6.A)
-- Bus-stop tier behavior is **unchanged** by FEAT-011 — the existing dedupe-by-name pass is preserved. Platform-level disambiguation is tracked separately as FEAT-015. (Decision 10)
-
-**Scope split: FEAT-011a vs FEAT-011b**
-
-The single FEAT-011 work is split into two sequential PRs per Decision 3.
-
-*FEAT-011a — Scaffolding + Addresses tier (ships first):*
-- New `scripts/build_geo_index.py` with TIGER fetch + processing (and CPL refresh subcommand stub for FEAT-013)
-- New `backend/places.py` (or similar) holding the Google Places + Place Details client, session-token map, autocomplete cache, resolution cache, circuit breaker
-- Backend index loader extended with a generic N-tier registration pattern; the **TIGER address tier** is registered as the first new tier
-- New `/autocomplete` merge logic, fallback-trigger evaluation, per-tier cap, dedupe rules
-- New `/resolve` endpoint
-- All 11 env vars added to `backend/.env.example`
-- Frontend `LocationInput.jsx` polymorphic suggestion handling (inline coords vs `/resolve` round-trip), `session_id` generation
-- Frontend `App.css` badge styling for `address` (plus shared base styles for future badges)
-- `frontend/public/locales/*/translation.json` — `address` badge string across all 27 locales
-- `docs/PRIVACY.md` — Decision 9 updates
-- Tests: TIGER ingestion, merge ranking, fallback-trigger conditions, daily-cap behavior, breaker state transitions, `/resolve` polymorphic dispatch, cache LRU behavior, env-var disable
-
-*FEAT-011b — POI tier (ships after 011a, depends on its scaffolding):*
-- `scripts/build_geo_index.py` extended with OSM Geofabrik extract fetch + tag filtering + ranking
-- Backend index loader: register the **OSM POI tier** on the existing scaffolding (additive)
-- Frontend `App.css` badge styling for `poi`
-- `frontend/public/locales/*/translation.json` — `poi` badge string across all 27 locales
-- Tests: OSM ingestion, POI ranking heuristic, library-vs-POI dedupe (Decision 7.C)
-- No new env vars, no scaffolding changes, no fallback-policy changes
-
-**Files likely touched (consolidated, by FEAT half):**
-
-*FEAT-011a:*
-- `backend/main.py` — index loader generalization, `/autocomplete` merge + fallback policy, new `/resolve` endpoint, env-var reads, session-token map, breaker state
-- `backend/places.py` (new) — Google Places client, autocomplete cache, Place Details cache, circuit breaker
-- `scripts/build_geo_index.py` (new) — TIGER fetch + processing; CPL refresh subcommand stub (for FEAT-013)
-- `backend/.env.example` — 11 new env vars
-- `backend/static_data/geo_index.bin` (new artifact path; format TBD during implementation — static fixture, must NOT live under `backend/data/` because Railway overlays that path with the persistent analytics volume)
-- `backend/tests/` — extensive new tests
-- `frontend/src/components/LocationInput.jsx` — `session_id` generation, polymorphic resolution
-- `frontend/src/App.css` — `address` badge + shared base
-- `frontend/public/locales/*/translation.json` — `autocomplete.badge.address` across 27 locales
-- `docs/PRIVACY.md` — Decision 9 updates
-
-*FEAT-011b:*
-- `backend/main.py` — POI tier registration (additive)
-- `backend/places.py` or new `backend/poi.py` — OSM tag filter, ranking heuristic
-- `scripts/build_geo_index.py` — OSM Geofabrik download + processing
-- `backend/tests/` — POI-specific tests
-- `frontend/src/App.css` — `poi` badge
-- `frontend/public/locales/*/translation.json` — `autocomplete.badge.poi` across 27 locales
-
-**Decisions captured (in progress — sequence walked via `/resolve-item`, latest first):**
-
-1. **Provider choice (Q1) → Hybrid: self-built static index + Google fallback.** *Captured 2026-05-06.*
-   - **Primary path:** extend the existing static prefix index ([backend/main.py:312-358](../backend/main.py#L312-L358)) with two new tiers built from free, license-clean datasets:
-     - **Addresses tier** — US Census **TIGER/Line** address-range data for Cook County (and likely the surrounding collar counties to match the routing service area). Provides street segments with address ranges, supporting interpolated lat/lng for arbitrary numbered addresses.
-     - **POI tier** — filtered Chicago-metro **OpenStreetMap** extract from Geofabrik, restricted to relevant tags (`amenity`, `shop`, `tourism`, `leisure`, `office`, `landmark`, etc.), ranked by tag importance.
-   - Both new tiers are loaded into memory at backend startup, served from the same prefix-index pattern as existing tiers. A new `scripts/build_geo_index.py` downloads + processes the source data into a compact on-disk artifact; refresh cadence is monthly automated cron (settled in Decision 6.A).
-   - **Fallback path:** Google Places Autocomplete (New) is invoked **only** when the local index returns no/insufficient suggestions for a given prefix. Reuses the existing `GOOGLE_MAPS_API_KEY` already wired up in [backend/.env.example](../backend/.env.example).
-   - **Rationale:** zero variable cost for the dominant query shape (Chicago landmarks, chains, intersections, addresses), with Google preserving long-tail business coverage. Architecturally consistent with the existing static-index pattern — no new running service, no new operational surface area. Self-hosted geocoders (Nominatim, Photon) were considered and rejected because they introduce a sidecar process the rest of the codebase has deliberately avoided.
-   - **Cascading effects on later decisions:**
-     - Q2 (cost) reshapes into "fallback policy / cost ceiling" — what threshold triggers Google, what's the spend cap.
-     - Q3 (session tokens) still applies to the Google fallback path only.
-     - Q5 (resolution path) now varies by tier: local tiers can carry coords directly; Google fallback may carry `place_id`.
-     - Q8 (privacy) narrows substantially — most typing never leaves the backend.
-     - Q9 (failure mode) only matters on the fallback path; local index is always available.
-     - Q10 (split) becomes easier to bundle since both new tiers share one index.
-   - **Spawned follow-up:** **FEAT-014** ("Fallback-learning cache") — when Google returns a result, store it permanently and promote it into the static index so subsequent searches hit the local path. Per maintainer direction this is tracked as a feature, not an optimization. Drafted as a scoping stub on 2026-05-06.
-
-2. **Fallback policy & cost ceiling (Q2, reshaped) → Combined trigger (D+B) + combined ceiling (F+H), all values driven by env vars.** *Captured 2026-05-06.*
-   - **Trigger conditions** — Google Places Autocomplete is invoked **only when ALL of** the following hold:
-     - Prefix length ≥ `AUTOCOMPLETE_FALLBACK_MIN_PREFIX_LEN` characters (default `4`).
-     - Local index returned fewer than `AUTOCOMPLETE_FALLBACK_LOCAL_THRESHOLD` suggestions (default `3`).
-   - **Spend ceiling** — two layers, both required:
-     - **Hard daily cap:** `AUTOCOMPLETE_FALLBACK_DAILY_CAP` Google fallback calls per UTC day (default `1000`). When the cap is reached, the autocomplete endpoint silently degrades to local-only for the rest of the day. The cap event is logged so the maintainer can adjust.
-     - **Per-IP rate limit:** the existing geocode rate-limit bucket is extended to gate the Google fallback path of `/autocomplete`. New env var `AUTOCOMPLETE_FALLBACK_PER_IP_RATE` (default — match the existing geocode bucket policy) allows independent tuning if needed.
-   - **All four values are env-var-driven** so they can be tuned in production without a code deploy. Defaults above are the chosen starting points; document them in [backend/.env.example](../backend/.env.example) when implementing.
-   - **Rationale:** min-prefix-length cuts the dominant "cheap" wasted-call category (1–3 char prefixes). The "<3 local matches" threshold preserves UX when local already shows good options. The hard daily cap is the non-negotiable circuit breaker against bugs/abuse; per-IP rate limiting bounds single-actor cost. Tunable env vars mean the maintainer can ratchet defaults up or down based on observed traffic without redeploying.
-   - **No cascading effects on later decisions** — these tunables apply at the integration layer.
-
-3. **Split or not (Q10) → Split into FEAT-011a (scaffolding + addresses tier) → FEAT-011b (POI tier).** *Captured 2026-05-06.*
-   - **FEAT-011a scope:** the build pipeline (`scripts/build_geo_index.py` or similar), the index loader changes that accept N tiers via a generic registration pattern, the new `/autocomplete` merge logic + Google fallback policy + 4 env vars from Decision 2, the frontend type-handling for new suggestion types, the i18n badge keys for `address` (and `library` and `poi` slots reserved), and the **TIGER addresses tier** itself.
-   - **FEAT-011b scope:** the OSM POI extract processing, tag-filtering rules, ranking heuristic, and registration as a new tier on the existing scaffolding. Strictly additive — no scaffolding or fallback-policy changes expected.
-   - **Rationale:** TIGER processing is more deterministic than OSM POI tag judgment (cleaner schema, less ranking design); building the scaffolding under controlled conditions de-risks 011b. The intermediate state (after 011a, before 011b) is a strict superset of today's behavior — train + neighborhood + stop + addresses + Google fallback for unknowns — with no regressions. Splitting also matches the project's preferred tight PR cadence.
-   - **Operational benefit:** 011a will produce real autocomplete traffic data the maintainer can use to tune the Decision 2 env-var defaults (especially the daily cap) before 011b ships and changes traffic patterns.
-   - **No cascading effects on later decisions** — remaining decisions apply equally to both halves.
-
-4. **Session tokens for Google fallback (Q3) → Yes; opaque frontend session_id, backend manages Google session tokens internally.** *Captured 2026-05-06.*
-   - **Frontend behavior:** generates `session_id = crypto.randomUUID()` on `LocationInput` focus; resets on blur-then-refocus. Sends as a query param on each `/autocomplete` request and on form submit. Frontend has zero knowledge that this maps to a Google session token.
-   - **Backend behavior:** maintains an in-memory TTL'd map `session_id → (google_session_token, expires_at)` with a 3-minute TTL matching Google's documented session lifetime. On Google fallback: looks up an existing token for the `session_id` or mints a new UUID; reuses across all fallback calls within the session. On submit (resolution): if the picked suggestion is a Google fallback result, the cached `google_session_token` is included on the Place Details call to close the session as a single billable unit. Periodic sweep evicts expired entries.
-   - **Edge cases:**
-     - If a `session_id` reaches submit time but Google was never called (rider's pick came from a local tier), no token was ever minted and no Place Details call is made. Zero cost.
-     - If the cached token has expired (rider sat idle >3 min between typing and submit), the backend mints a fresh token for the resolution call and accepts that this single resolved selection is billed as its own session. Logs a metric.
-   - **Rationale:** session tokens are ~10× cheaper on resolved long-tail sessions than per-request billing (8–12 keystrokes worth of Autocomplete + 1 Place Details, all bundled into one billable unit at ~$0.003 vs ~$0.028 per session). Decision 2's daily cap of 1000 fallback calls is sized assuming session tokens — without them, the same dollar budget covers ~10× fewer rider sessions. Frontend opacity (option C over option A) preserves the hybrid abstraction so a future provider swap doesn't require frontend changes.
-   - **No cascading effects on later decisions** — Decision 5 (resolution path) is independently shaped by tier semantics.
-
-5. **Resolution path (Q5) → Polymorphic suggestions: local tiers carry inline `coords`; Google fallback carries `place_id` only and resolves via a `/resolve` round-trip on submit.** *Captured 2026-05-06.*
-   - **Suggestion shape (uniform across tiers):** `{ display, secondary, type, value, coords }`. `coords` is `{ lat, lng }` for local-tier suggestions and `null` for Google fallback. `value` is opaque to the frontend — a stable local ID for local tiers, a Google `place_id` for Google fallback. `type` drives both the badge UI and the resolution dispatch.
-   - **Frontend submit logic:** `const coords = picked.coords ?? await resolveSelection(picked, sessionId);` — single line, two branches, no provider awareness.
-   - **Backend `/resolve` endpoint:** dispatches on `type`. `google_fallback` → calls Place Details with the session token from Decision 4 to close the session as a single billable unit, returns coords. Other types are not expected to reach `/resolve` (they short-circuit on the frontend); reaching it is treated as a defensive error.
-   - **Free-text submits** (rider types and hits enter without picking a suggestion) are unchanged from today and continue to flow through the existing `geocode_google` path in [backend/gtfs_loader.py:644](../backend/gtfs_loader.py#L644). Different code path; not affected by this decision.
-   - **Rationale:** A is the only option consistent with the architecture wins from earlier decisions. Pre-resolving Google suggestions on the typing path (option B) would defeat session tokens (~$0.005 × N suggestions × N keystrokes); routing local resolutions through the backend (option C) would tax every submit with an unnecessary round-trip and waste the in-memory cost benefit of Decision 1. A keeps the common case (local picks) instant and zero-cost, and pushes resolution work to the only path where it's needed.
-   - **No cascading effects on later decisions** — Decision 6 (cache policy) builds on this shape but does not modify it.
-
-6. **Cache & refresh policy (Q4) → Three-surface policy: monthly build cron (A1), 1h server-side autocomplete LRU (B2), in-memory indefinite Place Details LRU (C2). All persistence-grade caching deferred to the spawned fallback-learning FEAT.** *Captured 2026-05-06.*
-   - **6.A Build artifact refresh cadence (A1):** monthly automated cron rebuild of TIGER + OSM into the static index artifact via `scripts/build_geo_index.py`; CPL refresh ad-hoc only (per FEAT-013, run when notified of a branch change). Source-data churn rates make monthly the right granularity — TIGER updates annually, OSM POI churn between months is dominated by long-tail businesses Google fallback already covers, CPL changes every few years.
-   - **6.B Google autocomplete response cache (B2):** in-memory LRU keyed by `(normalized_prefix, location_bias)`, TTL 1h. Env-tunable: `AUTOCOMPLETE_GOOGLE_CACHE_TTL_SEC` (default `3600`), `AUTOCOMPLETE_GOOGLE_CACHE_MAX_ENTRIES` (default `10000`). Within-rider re-typing gets free hits; popular prefixes accumulate cross-session benefit; 1h bounds the stale-data window. Memory ceiling is ~1MB at default cap.
-   - **6.C Place Details resolution cache (C2):** in-memory LRU keyed by Google `place_id`, storing `(lat, lng, display_name, formatted_address)`. Indefinite TTL within process lifetime; cleared on restart. Env-tunable: `RESOLVE_CACHE_MAX_ENTRIES` (default `5000`). Persistent storage (SQLite / on-disk JSON) is **explicitly deferred** to the spawned fallback-learning FEAT, which is the right home for the storage decisions and the index-promotion mechanics.
-   - **In-memory index lifetime (not a real decision, noted for completeness):** the loaded prefix index lives for the lifetime of the backend process. Rebuilding the artifact + restarting is the upgrade path; no hot reload.
-   - **Rationale:** matches each cache surface's freshness need to its actual change rate. Defers all the engineering work that pulls in a persistence layer (SQLite location, deploy implications, migration story) to the spawned fallback-learning FEAT, keeping FEAT-011a's scope tight.
-   - **No cascading effects on later decisions.**
-
-7. **Ranking rules (Q7) → Within-tier: prefix-position → length-asc → alphabetical (A4). Cross-tier slots: per-tier soft cap, default 3, env-tunable (B2). Cross-tier dedupe: higher-priority tier wins, dedup key = normalized name OR coords <50m (C3). Fuzzy matching: deferred to a future FEAT (D3).** *Captured 2026-05-06.*
-   - **Final priority order** (after FEAT-011a, FEAT-011b, FEAT-013 ship): train station → neighborhood → bus stop → library → address (TIGER) → POI (OSM) → Google fallback.
-   - **7.A Within-tier ranking (A4):** three-key comparator — (1) prefix-position score (matches at start of name beat mid-word matches), (2) length-asc (shorter canonical names first), (3) alphabetical tiebreak. Implementable as ~10 lines on top of the existing prefix-trie.
-   - **7.B Cross-tier slot allocation (B2):** tier-greedy fill from highest-priority tier, but each tier capped at `AUTOCOMPLETE_PER_TIER_CAP` entries (default `3`) before descending. Endpoint still returns up to 8 total. Guarantees lower tiers (libraries, addresses, POIs) aren't starved by an over-matching higher tier.
-   - **7.C Cross-tier dedupe (C3):** when the same canonical entity appears in two tiers, the higher-priority tier wins. Dedup key fires on (a) exact normalized name match (lowercase, strip punctuation, fold whitespace), OR (b) coords proximity within 50m. Catches realistic collisions (libraries-vs-OSM, train-stations-vs-OSM) without merging genuinely different entities at the same intersection.
-   - **7.D Fuzzy matching / typo tolerance (D3):** out of scope for FEAT-011. Today's prefix-exact behavior is preserved across all new tiers. Fuzzy matching is acknowledged as a desirable future improvement and would be its own FEAT (different index structure, different perf profile, different test surface).
-   - **No cascading effects on later decisions.**
-
-8. **Failure mode (Q9) → Three-scenario graceful degradation: stale-cache-then-silent-local-only on `/autocomplete` (A4→A1), two-tier graceful fallback on `/resolve` (B4), simple circuit breaker on sustained outage (C2).** *Captured 2026-05-06.*
-   - **8.A `/autocomplete` failure (Google errors during typing):** on Google error or timeout, the backend first looks up the prefix in the Decision 6.B autocomplete LRU **ignoring TTL** — if a stale entry exists, serve it and log the staleness. If no cache hit, silently degrade to local-only (return whatever the local index produced). The rider sees fewer-than-expected suggestions but the existing post-submit `geocode_google` path still resolves anything they ultimately type. No user-visible error.
-   - **8.B `/resolve` failure (Google errors after a Google pick was selected):** two-tier graceful degradation. (1) On Place Details error, fall back to the existing `geocode_google()` path in [backend/gtfs_loader.py:644](../backend/gtfs_loader.py#L644) using the suggestion's display string. (2) Only if `geocode_google` also fails do we surface a user-facing error. Place Details failures are usually transient and `geocode_google` is a cheap, well-tested existing path.
-   - **8.C Sustained outage (circuit breaker):** simple consecutive-failure counter. After `AUTOCOMPLETE_FALLBACK_BREAKER_THRESHOLD` consecutive failures (default `5`), the breaker opens and Google fallback calls return immediately as if Google were unreachable (which routes them through 8.A's silent-degradation path). After `AUTOCOMPLETE_FALLBACK_BREAKER_COOLDOWN_SEC` (default `300`), a single probe is sent; success closes the breaker, failure doubles the cooldown (capped at e.g. 1h). Breaker state transitions are logged so the maintainer can see outage windows.
-   - **Rationale:** autocomplete failures are low-stakes (post-submit catches anything); `/resolve` failures matter more because the rider has already chosen — graceful path through `geocode_google` reuses existing infrastructure. Circuit breaker prevents the daily cap from being burned on guaranteed-failed calls during sustained outages and reduces typing-path latency when Google is unavailable.
-   - **No cascading effects on later decisions.**
-
-9. **Privacy disclosure (Q8) → Document in `docs/PRIVACY.md` only (A1), specific detail level + correct existing inaccuracy (B3), global env-var opt-out (C3).** *Captured 2026-05-06.*
-   - **9.A Disclosure location (A1):** updates land in `docs/PRIVACY.md` only. No in-app notice or inline indicator near the location input. Per-rider opt-out toggle (sub-decision C2) is deferred to a future polish FEAT — adds 22+ locale strings, settings-panel UI, frontend persistence, and backend cookie-honoring work that is outside this scope.
-   - **9.B Detail level (B3):** the PRIVACY.md update both adds a new section disclosing the FEAT-011 Google Places fallback **and** corrects an existing inaccuracy. Concretely:
-     - **Existing language to revise** ([docs/PRIVACY.md:144-145](../PRIVACY.md)): "All data is stored on the same Railway-hosted backend… No data is sent to a third-party processor." This claim is currently misleading because `geocode_google()` already forwards typed addresses on submit. Replace with accurate language that names the Google APIs and the conditions under which typed text is forwarded.
-     - **New section to add** (working title: "Geocoding & autocomplete (Google Maps APIs)"): documents (a) the existing Google Geocoding flow on free-text submits, (b) the new Google Places Autocomplete (New) flow as fallback when local has <3 matches AND prefix ≥4 chars (per Decision 2), (c) the Place Details flow on Google-suggestion picks (per Decision 5). Lists what is sent (typed prefix; deployment outbound IP; opaque session UUID from Decision 4) and what is not sent (no `returnId`, no session cookie, no rider identifier). Notes that retention of this data is governed by Google's own policies; the local LRU caches (Decision 6.B, 6.C) are evicted on process restart.
-   - **9.C User-facing control (C3):** new env var `AUTOCOMPLETE_FALLBACK_ENABLED` (default `true`). When set to `false`, the backend skips all Google Places fallback paths and behaves as local-index-only (riders typing exotic queries get fewer/no inline suggestions; submit-path `geocode_google` is unaffected). Useful for self-hosters with stricter privacy postures, for emergency disabling, and for testing local-only behavior in development. Per-rider opt-out (C2) is acknowledged as a worthwhile future FEAT but not in scope here.
-   - **FEAT-013 (CPL libraries) note:** keeps all data local (in-repo `cpl_locations.json`, ad-hoc `--refresh-cpl` against `data.cityofchicago.org` only when manually triggered). No runtime third-party data flow. Not separately disclosed in PRIVACY.md unless FEAT-013 ever gains a runtime-fetch mode.
-   - **Rationale:** correcting the existing PRIVACY.md inaccuracy is consistent with the maintainer's strong privacy posture throughout the rest of that doc. The env-var opt-out costs almost nothing to implement and gives self-hosters a real control. Per-rider toggles and inline indicators are deliberately deferred so FEAT-011a's scope stays tight.
-   - **No cascading effects on later decisions.**
-
-10. **Bus-stop dedupe (Q6) → Spawn as its own FEAT-015; FEAT-011 keeps existing bus-stop dedupe behavior unchanged.** *Captured 2026-05-06.*
-    - **Decision:** the existing bus-stop tier's dedupe-by-name pass is **not modified** by FEAT-011a or FEAT-011b. New tiers (addresses, POIs, library) are added alongside the bus-stop tier without touching how it is built.
-    - **Spawned:** FEAT-015 (Bus-stop platform-level disambiguation). Drafted as a thin scoping stub — the open question is whether to un-dedupe entirely, expose individual platforms via an expandable group, or some hybrid. Resolution is partly evidence-driven (depends on observed dropdown usage patterns once FEAT-011 ships a richer mix of suggestion types).
-    - **Rationale:** orthogonal to the address/POI/library expansion. The original Q6 wording itself flagged this as splittable. Bundling it into FEAT-011 would re-scope a feature whose decisions are otherwise complete, and would introduce UX questions (direction badges, accessibility-tier handling, expandable-group affordance) that have no architectural overlap with FEAT-011's mission.
-    - **No cascading effects on later decisions.**
-
-**Open questions:** None. All ten original open questions have been resolved into the captured decisions above. A final consistency audit on 2026-05-06 found no contradictions across decisions and applied two cleanups: (a) renamed `GOOGLE_FALLBACK_BREAKER_*` env vars to `AUTOCOMPLETE_FALLBACK_BREAKER_*` for naming consistency with the rest of the autocomplete-fallback family, and (b) clarified that each FEAT owns its tier's i18n strings (FEAT-011a → `address`, FEAT-013 → `library`, FEAT-011b → `poi`).
-
-**Spawned FEATs (drafted separately):**
-
-- **FEAT-014 — Fallback-learning cache.** Persistent cross-restart cache of resolved Google place_ids, with eventual promotion of high-frequency entries into the static prefix index. Per maintainer direction, tracked as a feature, not an optimization. Depends on FEAT-011a.
-- **FEAT-015 — Bus-stop platform-level disambiguation.** Open question whether to un-dedupe the bus-stop tier so each platform/direction is its own suggestion, or expose them via an expandable group. Resolution is partly evidence-driven once FEAT-011 ships.
-
-**When to revisit:** Ready to invoke `/resolve-item FEAT-011a`. After 011a ships and a few weeks of production traffic data accumulate, invoke `/resolve-item FEAT-011b` (POI tier — strictly additive, no scaffolding changes expected). FEAT-013 (libraries) can ship in parallel with 011b. FEAT-014 and FEAT-015 are sequenced after FEAT-011a/b at the maintainer's discretion.
-
----
-
-### FEAT-012 --- Mobile UI polish to match desktop's editorial refinement
-
-**Type:** Bolt-On --- frontend-only (CSS + small component touch-ups); no backend changes.
-
-**Status:** ✅ **Resolved 2026-05-05** via `/resolve-item FEAT-012`. Implementation summary in [docs/archive/RESOLVED_HISTORY.md](archive/RESOLVED_HISTORY.md). Lighthouse mobile baseline (decision #12) deferred to a manual run from the PR's Vercel preview — the developer environment cannot execute Lighthouse against deployed previews.
-
-**User story / motivation:** The desktop UI is the project's signature: a Heritage Organic editorial aesthetic — serif drop-caps, hairline rules, paper-grain texture, italic/roman typographic interplay, and disciplined `var(--dur-*)` transitions. Mobile is functionally complete and uses the same design tokens, but feels noticeably less refined: most polish primitives (touch feedback, motion, safe-area awareness, intermediate-breakpoint typography) didn't propagate down. As a rider on a phone, I want the app to feel as deliberately crafted as the desktop version — not as a "responsive afterthought."
-
-**Current state (for context):**
-
-- Mobile breakpoint is a single `@media (max-width: 800px)` block in [frontend/src/styles/layout.css:174-261](../frontend/src/styles/layout.css#L174-L261), with smaller fragments in `form.css`, `route-cards.css`, `settings.css`, and `map.css`.
-- Mobile uses screen-swap navigation: a fixed 4-tab bottom tab bar (`Home / Map / Alerts / Saved`), `display:none` on inactive panels driven by `[data-active-tab]` attribute selectors.
-- Heritage Organic tokens are defined in [frontend/src/styles/tokens.css](../frontend/src/styles/tokens.css). Desktop uses these consistently; mobile partially.
-- 38 `:hover` rules exist project-wide; only **2** `:active` rules. (Audit: greppable across `frontend/src/styles/*.css`.)
-- Map overlay positions in [frontend/src/styles/map.css](../frontend/src/styles/map.css) use literal `14px` / `10px` values without `env(safe-area-inset-*)`.
-
-**Audit summary — where mobile falls short of desktop:**
-
-1. **Touch-state parity:** only 2 `:active` states vs. 38 `:hover` rules — most interactive elements give no tactile feedback on touch. `.pin-btn`, `.leg-steps-toggle`, route-card header button, share/save buttons all lack `:active`.
-2. **Hardcoded values instead of design tokens:** tab bar padding is `10px 6px 4px`; tab-bar height is `56px` literal coupled into a `padding-bottom: calc(56px + ...)` elsewhere ([layout.css:196, :233](../frontend/src/styles/layout.css#L196)). Form labels hardcoded `80px` width ([form.css:21](../frontend/src/styles/form.css#L21)).
-3. **Map overlays ignore mobile safe-areas:** legend, train card, compass button use literal `14px` offsets ([map.css:48, :76, :141](../frontend/src/styles/map.css#L48)) — on notched devices and 320px viewports they collide and obscure each other; no `env(safe-area-inset-*)` use.
-4. **Settings sheet UX:** bottom-sheet (`align-items: flex-end`) capped at `80dvh` with the close button non-sticky — content longer than the cap creates a scroll-trap where dismissing requires scrolling back to the top ([settings.css:43-71](../frontend/src/styles/settings.css#L43)).
-5. **Drop-cap sizing has a gap:** 72px at `<359px` and `<800px` but no intermediate breakpoint, so 375–767px devices (iPhone SE through iPad Mini) all use 72px and feel oversized. Desktop drops to 52px above 800px.
-6. **Tab bar lacks scroll-position memory:** panels hide via `display:none`, which discards scroll position on tab re-entry. (Verify via repro before claiming.)
-7. **Motion gaps on mobile:** most `:hover` micro-interactions never translate to `:active`; tab switch is a plain `display:none` swap with no fade/slide. Desktop has a panel fade+slide animation ([layout.css:131-150](../frontend/src/styles/layout.css#L131)) — mobile inherits none of it.
-8. **Map button sizing:** hardcoded `10px` padding evaluating to ~32px height ([map.css:23, :151](../frontend/src/styles/map.css#L23)) — below the 44px touch-target floor used elsewhere.
-
-All gaps are within the existing design system's vocabulary — the fix is **applying tokens consistently and propagating polish primitives mobile didn't inherit yet**, not redesigning anything.
-
-**Scoping decisions (decisions #1–#7 are guardrails set during initial scoping; decisions #8–#14 are the seven open-question resolutions made during the second-pass review):**
-
-1. **Single FEAT vs. chunked.** Treat as a single bolt-on. All work lives in `frontend/src/styles/*.css` plus a small handful of component touch-ups; sub-areas are independent and can land in any order. Split into chunks **only if** the diff exceeds ~600 LOC during implementation (proposed split: FEAT-012a touch-state + tokens, FEAT-012b map overlays + safe-area, FEAT-012c motion + settings sheet).
-2. **Aesthetic guardrails (do not violate).** No border-radius on cards/buttons, no box-shadows, no vibrant non-palette colors, no gradient fills. Touch states must use existing tokens (paper-folio for hover-equivalent backgrounds, ink-soft for pressed states). The mobile UI must not begin to look like a generic "mobile-first" app — the editorial flatness is the brand.
-3. **No new layout patterns.** Keep the screen-swap tab-bar architecture. No drawers, swipe gestures, or pull-to-refresh in this FEAT — those are separate proposals.
-4. **Intermediate drop-cap breakpoint.** Add a `@media (min-width: 401px) and (max-width: 800px)` step that reduces drop-cap to ~60px (between mobile 72px and desktop 52px), keeping italic Fraunces and tightened tracking. ([route-cards.css:106-112](../frontend/src/styles/route-cards.css#L106-L112))
-5. **Tab-bar height as a token.** Introduce `--tab-bar-height: 56px` in `tokens.css` and replace the existing literal usages so the calc() in `.panel-cards` no longer goes stale if the tab bar grows.
-6. **Motion budget.** Reuse `--dur-quick` (120ms) and `--dur-base` (220ms) only. No new keyframes. Tab-swap fade/slide reuses the existing desktop panel transition pattern from [layout.css:131-150](../frontend/src/styles/layout.css#L131).
-7. **i18n.** No new strings; this is a pure styling/state pass.
-8. **Tab-swap mechanism (decided).** Unify mobile and desktop on a single panel-swap pattern: replace the mobile `display:none` rules at [layout.css:208-211](../frontend/src/styles/layout.css#L208-L211) with the existing desktop `visibility:hidden + opacity:0 + transform` pattern from [layout.css:138-150](../frontend/src/styles/layout.css#L138-L150), adapted for the mobile flex layout (inactive panel becomes `position: absolute; inset: 0` so it does not claim flex space). This preserves scroll position natively (panels stay mounted), avoids JS scroll-memory plumbing, and reuses the existing `map.resize()` on tab change at [MapView.jsx:450](../frontend/src/MapView.jsx#L450). Add a defensive `webglcontextlost` / `webglcontextrestored` listener to [MapView.jsx](../frontend/src/MapView.jsx) (~10 lines) since keeping the canvas mounted on Home/Saved/Alerts tabs slightly increases context-loss exposure on low-memory devices.
-9. **Tab-swap motion direction (decided).** Non-directional fade + 8px slide using `--dur-base` (220ms) and `--ease-out`, mirroring the desktop panel transition at [layout.css:138-150](../frontend/src/styles/layout.css#L138-L150) verbatim. No directional state, no new keyframes, no asymmetry between desktop and mobile. Rationale: the editorial Heritage Organic aesthetic is a printed broadside, not a mobile-native app; directional swipes are the wrong visual grammar.
-10. **Settings sheet close affordance (decided).** Make `.settings-sheet-footer` ([settings.css:267-271](../frontend/src/styles/settings.css#L267-L271)) `position: sticky; bottom: 0` on mobile so the existing "Done" button ([settings.css:273-286](../frontend/src/styles/settings.css#L273-L286)) remains reachable at any scroll depth in a long sheet. Keep the existing top-right close X visually at 32×32px but expand its hit area to 44×44px (e.g., increased padding or `::before` pseudo-element) so it meets the 44×44 touch-target rule without visually dominating the sheet header. Backdrop tap-outside remains the secondary dismiss path. Rationale: a sticky form-footer is a printed-form pattern that fits the editorial aesthetic; drag-to-dismiss is too app-native and too much net-new motion vocabulary.
-11. **Map overlay collision rule for narrow viewports (decided).** Below 400px, prevent bottom-edge collision between `.map-legend` and `.map-heading-btn` by reserving a compass-width corridor on the legend's right edge (e.g., `.map-legend { right: calc(var(--map-compass-width, 100px) + var(--sp-4)); }`) so both overlays read as a coordinated bottom rail without DOM restructuring or flex-wrap. Keep the legend as separately absolutely-positioned (no shared container, no `flex-wrap` over a tall column-flex child) — this avoids unverifiable wrap-on-wrap behavior across CTA-line counts and i18n string lengths. Add defensive `overflow: hidden; text-overflow: ellipsis` on `.map-legend-name` (currently `white-space: nowrap` at [map.css:70](../frontend/src/styles/map.css#L70)) for pathologically long localized line names. No legend hidden, no text shrinking, no new affordances, no JSX changes — ~6 lines of CSS. Rationale: achieves Option A's visual outcome (unified bottom rail) without Option A's wrap-behavior risk; preserves all functionality and a11y at the smallest viewports.
-12. **Lighthouse baseline capture (decided).** Step 0 of `/resolve-item FEAT-012`: run Lighthouse Mobile (Chrome DevTools, default Moto G4 profile, slow-4G throttling) twice on the Vercel preview of `main` for the Home-tab empty-form state, take the median perf + a11y scores, and record both numbers in the PR description. After implementation, re-run from the PR's Vercel preview and assert that perf and a11y are each within **±2 points of baseline** (tolerance accommodates Vercel preview run-to-run variance; not a softening of the regression net). Do not add a `PERFORMANCE_BASELINES.md` ledger or wire up Lighthouse CI in this FEAT — those are properly their own follow-ups if the maintainer wants ongoing perf protection.
-13. **Intermediate drop-cap value (decided).** Use **60px** at the new `@media (min-width: 401px) and (max-width: 800px)` breakpoint, with `letter-spacing: -3px` and `line-height: 0.83` (preserves phone-italics character; do *not* tighten to desktop's -2px). Add a `--drop-cap-tablet: 60px` token in [tokens.css:50-53](../frontend/src/styles/tokens.css#L50-L53) alongside the existing `--drop-cap-desktop`/`--drop-cap-mobile`/`--drop-cap-hero` trio. Resulting ladder: ≤359px → 56, 360–400px → 72, 401–800px → 60, ≥801px → 52. Rationale: 60 is the clean midpoint between mobile 72 and desktop 52; reads as "a touch trimmed" at 414px without losing phone-hero character, and clearly distinct from desktop at 768px.
-14. **`:active` color rule (decided).** Family-specific pressed states mirror the existing family-specific hover system. **Three rules:** (a) **Ghost buttons** (transparent → `--paper-folio` on hover; classes include `.side-rail__tab`, `.tab-bar__tab`, `.btn-ghost-icon`, `.map-unlock-btn`, `.map-relock-btn`, `.map-heading-btn`, `.saved-dropdown-item`): pressed inverts to `background: var(--ink); color: var(--paper)` — editorial "ink presses paper," zero new tokens. (b) **Primary ink-fill buttons** (`opacity: var(--opacity-hover)` on hover; classes include `.settings-done-btn`, `.settings-byok-save`, `.label-save-btn`): pressed deepens to `opacity: var(--opacity-pressed)`. Add a single new token `--opacity-pressed: 0.7` in [tokens.css](../frontend/src/styles/tokens.css). (c) **Icon/link buttons** (`color: mute → rust`/`ink` on hover; classes include `.star-btn`, `.saved-dropdown-delete`, `.settings-sheet-close`, `.settings-byok-clear`, `.geo-denied-dismiss`): **no additional `:active` rule** — these are too small for color-flash to register meaningfully on tap; the existing `:focus-visible` ring plus the hover transition is sufficient. **Inline documentation required:** at the top of each style file that defines `:active` rules, add a brief comment block explaining the three-family system (ghost / ink-fill / icon-link) and which family this file's classes belong to, so future maintainers don't have to re-derive the rule when adding new buttons. Rationale: existing hover system is already family-specific; press states should mirror that structure rather than impose a one-size rule that fights the existing language.
-
-**Acceptance criteria:**
-
-*Touch-state parity (per family rules from decision #14)*
-
-- **Ghost buttons** (every `:hover` rule that swaps to `--paper-folio` or `--paper-bright`): each has a corresponding `:active` rule that inverts to `background: var(--ink); color: var(--paper)`. Pressed feedback is visible within 50ms on tap on a real iOS Safari and Android Chrome device.
-- **Primary ink-fill buttons** (every `:hover` rule using `opacity: var(--opacity-hover)`): each has a corresponding `:active` rule using new token `--opacity-pressed` (0.7).
-- **Icon/link buttons** (color-shift on hover): no `:active` rule added; rely on existing `:focus-visible` ring + hover transition. This is intentional per decision #14 and must be documented inline.
-- New token `--opacity-pressed: 0.7` added to [tokens.css](../frontend/src/styles/tokens.css).
-- **Inline documentation:** every style file that adds new `:active` rules opens with a brief comment block explaining the three-family system (ghost / ink-fill / icon-link) and which family this file's classes belong to.
-
-*Spacing token discipline*
-
-- Zero raw pixel values in mobile CSS for spacing/sizing where a `--sp-*` or new `--tab-bar-height` token applies. Hardcoded `14px`, `10px`, `80px`, `56px` audit cleared.
-- Form label width ([form.css:21](../frontend/src/styles/form.css#L21)) becomes a CSS variable or shrinks responsively below 400px width; very-narrow viewports (320–360px) gain back at least 24px of horizontal label-to-input space.
-
-*Map overlay safe-area + sizing*
-
-- Legend, train card, and compass button respect `env(safe-area-inset-top/right/bottom/left)`; nothing clips behind a notch or status-bar area on iPhone 14/15-class devices.
-- Map overlay buttons meet a 44×44px minimum touch target (current ~32px). Visual sizing can stay tight via inner padding while the hit-area expands.
-- Below 400px, `.map-legend` reserves a compass-width corridor on its right edge (per decision #11) so legend and compass form a coordinated bottom rail without colliding. `.map-legend-name` gains defensive `overflow: hidden; text-overflow: ellipsis` for pathologically long localized line names.
-- New token `--map-compass-width` added to [tokens.css](../frontend/src/styles/tokens.css) (or hardcoded fallback in the calc()) so the legend's reserved corridor stays in sync with the compass button's actual width.
-- On 320px-wide viewports, no two map overlays visually collide with default content.
-
-*Typography*
-
-- A new intermediate drop-cap breakpoint exists at `@media (min-width: 401px) and (max-width: 800px)` using **60px** with `letter-spacing: -3px` and `line-height: 0.83` (per decision #13). New token `--drop-cap-tablet: 60px` added to [tokens.css](../frontend/src/styles/tokens.css#L50-L53) alongside the existing `--drop-cap-desktop`/`--drop-cap-mobile`/`--drop-cap-hero` trio.
-- Visual diff at 414px (iPhone Pro Max) and 768px (iPad Mini portrait) shows the drop-cap proportional to surrounding meta text rather than dominating it.
-- Tabular numerals confirmed active on all numeric mobile output (departures, walk minutes, fares).
-
-*Settings sheet UX*
-
-- `.settings-sheet-footer` is `position: sticky; bottom: 0` on mobile (per decision #10), so the existing "Done" button remains reachable at any scroll depth when sheet content overflows `80dvh`.
-- The top-right close X stays visually 32×32px but expands its hit area to 44×44px (via padding or `::before` pseudo-element) so it meets the 44×44 touch-target rule.
-- Backdrop tap-outside continues to dismiss the sheet (existing behavior — verify still wired).
-- Sheet entrance respects `prefers-reduced-motion`.
-
-*Motion parity*
-
-- Tab-swap on mobile applies a non-directional 220ms fade + 8px slide using the existing `--dur-base` and `--ease-out`, mirroring the desktop panel transition at [layout.css:138-150](../frontend/src/styles/layout.css#L138-L150) verbatim (per decisions #8 and #9). `prefers-reduced-motion` collapses to instant swap.
-- Mobile `display: none` rules at [layout.css:208-211](../frontend/src/styles/layout.css#L208-L211) are replaced with the desktop `visibility:hidden + opacity:0 + transform` pattern, adapted for the mobile flex layout (inactive panel becomes `position: absolute; inset: 0`).
-- No new `@keyframes` are introduced.
-
-*Map canvas resilience (per decision #8)*
-
-- A defensive `webglcontextlost` / `webglcontextrestored` listener pair is added to [MapView.jsx](../frontend/src/MapView.jsx). On context loss: prevent default and stop the existing render loop. On restoration: re-create the MapLibre style and re-call `map.resize()`. Verified by manually triggering context loss via Chrome DevTools "Lose context" button on the WebGL inspector and confirming the canvas recovers without a page reload.
-
-*Tab-bar polish*
-
-- `--tab-bar-height` token in `tokens.css`; both the tab-bar `min-height` and the `.panel-cards` `padding-bottom: calc(...)` reference it.
-- Scroll position on the Home/Saved/Alerts tabs is preserved when the user switches tabs and returns. This is achieved via the unified panel-swap pattern from decision #8 — inactive panels stay mounted (`visibility: hidden; opacity: 0; transform`) so the browser preserves `scrollTop` natively; no JS scroll-memory plumbing required. Verify via manual repro on iOS Safari and Android Chrome.
-
-*Regression net*
-
-- **Step 0 of `/resolve-item`:** capture pre-FEAT mobile Lighthouse baseline (Chrome DevTools, Moto G4 profile, slow-4G throttling) twice on the Vercel preview of `main` for the Home-tab empty-form state; record median perf + a11y scores in the PR description (per decision #12).
-- Post-implementation Lighthouse mobile run from the PR's Vercel preview shows perf and a11y each **within ±2 points of baseline** (tolerance for run-to-run variance, not a softening).
-- Existing Vitest + Playwright suites (`frontend/src/tests/`) all pass; manual smoke on the four tabs at 360, 414, 768, and desktop widths shows no broken layouts.
-
-**Files likely touched:**
-
-- `frontend/src/styles/layout.css` (mobile block; tab-bar; replace `display:none` with `visibility:hidden + transform` per decision #8; tab-swap motion per decision #9; safe-area)
-- `frontend/src/styles/tokens.css` (introduce `--tab-bar-height: 56px`, `--touch-min: 44px`, `--opacity-pressed: 0.7`, `--drop-cap-tablet: 60px`, `--map-compass-width`)
-- `frontend/src/styles/map.css` (overlay positioning, safe-area, button hit-areas, legend right-edge corridor per decision #11, `text-overflow: ellipsis` on `.map-legend-name`)
-- `frontend/src/styles/route-cards.css` (intermediate drop-cap breakpoint at 401–800px using `--drop-cap-tablet` per decision #13; `:active` states for header button and inline buttons per decision #14)
-- `frontend/src/styles/form.css` (responsive label width; `:active` parity per decision #14)
-- `frontend/src/styles/settings.css` (sticky `.settings-sheet-footer` on mobile per decision #10; expanded 44×44 hit area on close X; `:active` parity per decision #14)
-- `frontend/src/styles/pinned-stops-and-alerts.css`, `frontend/src/styles/favorites.css`, `frontend/src/styles/share.css`, `frontend/src/styles/masthead.css` (`:active` parity for pins/saves/shares/ghost icons per decision #14)
-- `frontend/src/MapView.jsx` (defensive `webglcontextlost` / `webglcontextrestored` listener pair per decision #8 — ~10 lines)
-- `frontend/src/App.jsx` (no JS scroll-memory needed — decision #8 makes the unified panel-swap pattern CSS-only; touch this file *only* if the `data-active-tab` selector wiring needs adjustment for the mobile flex-vs-grid divergence)
-- `frontend/src/tests/` (small behavioral tests for `:active` rules per family if practical; manual smoke for scroll-memory and webgl-recovery — those are hard to assert in Vitest/Playwright without flakiness)
-
-**Open questions:** None — all seven original open questions have been resolved into scoping decisions #8–#14 above.
-
-**When to revisit:** Ready to invoke `/resolve-item FEAT-012`. If the diff exceeds ~600 LOC during implementation, pause and split into FEAT-012a (touch-state + tokens), FEAT-012b (map overlays + safe-area), FEAT-012c (motion + settings sheet) before continuing.
 
 ---
 
@@ -695,33 +761,33 @@ All gaps are within the existing design system's vocabulary — the fix is **app
 
 **Type:** Bolt-On
 
-**Status:** Scoped, ready to implement after FEAT-011a ships. Decisions captured 2026-05-06 via the `/resolve-item FEAT-011` walk-through (this feature was spawned mid-walk-through). No further scoping needed before implementation.
+**Status:** Scoped, ready to implement after the Geocoding & Autocomplete chunked plan's Chunk 4 (`local_search.py`) ships. Decisions originally captured 2026-05-06 via the `/resolve-item FEAT-011` walk-through; retargeted 2026-05-12 onto the Passage-mirror SQLite/FTS5 scaffolding (FEAT-011 was superseded by that chunked plan).
 
-**Dependency:** FEAT-011a. This feature requires the generic N-tier registration pattern that FEAT-011a introduces in the static prefix index loader. Cannot ship before FEAT-011a; can ship in parallel with or before FEAT-011b.
+**Dependency:** Geocoding & Autocomplete chunked plan, Chunk 4 (`local_search.autocomplete`). CPL becomes one more curated source merged into the ranking — slots in alongside `NEIGHBORHOOD_COORDS` as a curated tier above OSM-derived addresses/intersections.
 
-**User story / motivation:** Chicago Public Library branches are high-confidence civic destinations that riders frequently route to. Today they're only resolvable post-submit via Google Geocoding (e.g., "Harold Washington Library Center" works on submit but never autocompletes inline). After FEAT-011b they would be partially covered by the OSM POI tier, but OSM coverage of CPL branches is incomplete and lacks the official, branded names CPL itself uses. As a rider typing "Sulzer," I want the Conrad Sulzer Regional Library branch to appear inline as a recognized destination — with the same curated, deliberate feel as the existing train station and neighborhood tiers, not buried in a generic POI list.
+**User story / motivation:** Chicago Public Library branches are high-confidence civic destinations that riders frequently route to. Today they're only resolvable post-submit via Google Geocoding (e.g., "Harold Washington Library Center" works on submit but never autocompletes inline). As a rider typing "Sulzer," I want the Conrad Sulzer Regional Library branch to appear inline as a recognized destination — with the same curated, deliberate feel as the existing train station and neighborhood tiers, not buried in a generic OSM-address result.
 
 **Current coverage (for context):**
 
 - CPL branches today: only resolvable via post-submit Google Geocoding, no inline autocomplete.
-- After FEAT-011b ships: partially covered by the OSM POI tier (OSM has `amenity=library` tagging for most but not all CPL branches; names are inconsistent — some say "Chicago Public Library — Sulzer", others just "Sulzer Regional").
-- This FEAT supersedes that partial coverage with a curated, authoritative tier.
+- After the Geocoding & Autocomplete chunked plan ships: CPL branches may show up incidentally if an OSM `amenity=library` node carries the right name, but coverage is incomplete and naming is inconsistent.
+- This FEAT supersedes that incidental coverage with a curated, authoritative tier.
 
 **Acceptance criteria:**
 
 - All ~80 CPL branches appear as inline autocomplete suggestions when the rider types any prefix of the official branch name (e.g., "wash", "harold", "sulz", "cha" → Chicago Lawn).
-- Suggestions render with a dedicated `library` badge, styled consistently with existing badges (`station`, `neighborhood`, `stop`).
-- The tier ranks **above** TIGER addresses (FEAT-011a) and OSM POIs (FEAT-011b) but **below** the existing transit-focused tiers (train station, neighborhood, bus stop). Concretely: train → neighborhood → stop → **library** → address → POI → Google fallback.
-- When the same branch appears in both the curated CPL tier and the OSM POI tier (post-FEAT-011b), the curated entry wins and the OSM duplicate is suppressed.
+- Suggestions render with a dedicated `library` badge, styled consistently with existing badges (`station`, `neighborhood`, `stop`, `address`, `intersection`).
+- The tier ranks **above** OSM-derived addresses and intersections but **below** the existing transit-focused tiers (train station, neighborhood, bus stop). Concretely: train → neighborhood → stop → **library** → intersection → address → LocationIQ fallback.
+- When the same branch appears in both the curated CPL tier and an incidental OSM address row, the curated entry wins via the cross-tier dedupe rule (normalized-name match OR coords within 50m).
 - Selecting a library suggestion resolves to coordinates without any external API call (lat/lng is in the static artifact).
 - Branch data lives in a static, in-repo JSON file; no runtime/build dependency on `data.cityofchicago.org`.
 
 **Files likely touched:**
 
 - `backend/static_data/cpl_locations.json` (new — static artifact, ~80 entries, committed to repo as source of truth — must live under `static_data/` not `data/` because Railway's persistent volume overlays `/app/data` at runtime)
-- `scripts/build_geo_index.py` (extends the FEAT-011a build script with a `--refresh-cpl` subcommand that fetches the latest data from the Chicago Open Data Portal "Libraries — Locations, Hours and Contact Information" dataset and overwrites the JSON file)
-- `backend/main.py` (registers the CPL tier with the index loader; small dedupe rule for the OSM-overlap case)
-- `frontend/src/components/LocationInput.jsx` (handles `library` suggestion type)
+- `backend/scripts/refresh_cpl.py` (new — fetches the latest data from the Chicago Open Data Portal "Libraries — Locations, Hours and Contact Information" dataset and overwrites the JSON file; ad-hoc, not on a CI schedule)
+- `backend/local_search.py` (loads CPL entries at startup; merges into `autocomplete` ranking as a curated tier above OSM addresses/intersections; small dedupe rule for the OSM-overlap case)
+- `frontend/src/components/AddressAutocomplete.jsx` or its consumer (handles `library` suggestion type — likely no code change if the generic combobox already dispatches on `type`)
 - `frontend/src/App.css` (badge styling for the `library` type, consistent with existing badges)
 - `frontend/public/locales/*/translation.json` (new key `autocomplete.badge.library` rolled out across all 27 locales)
 - `backend/tests/` (CPL fixture, ranking tests, OSM-dedupe test)
@@ -729,7 +795,7 @@ All gaps are within the existing design system's vocabulary — the fix is **app
 **Data source:**
 
 - **Authoritative:** static `backend/static_data/cpl_locations.json` committed to the repo. ~80 entries, <50KB. Source-of-truth artifact.
-- **Refresh path:** `scripts/build_geo_index.py --refresh-cpl` fetches the current dataset from `data.cityofchicago.org` ("Libraries — Locations, Hours and Contact Information") and overwrites the JSON file. The maintainer runs this ad-hoc — annually, or when notified of a CPL branch change. No CI dependency on the city portal.
+- **Refresh path:** `backend/scripts/refresh_cpl.py` fetches the current dataset from `data.cityofchicago.org` ("Libraries — Locations, Hours and Contact Information") and overwrites the JSON file. The maintainer runs this ad-hoc — annually, or when notified of a CPL branch change. No CI dependency on the city portal.
 - **Rationale for static-with-refresh-script over live fetching:** ~80 entries that change every few years. Static asset is fully reproducible, license-clean, and immune to portal outages. The refresh script provides automation when needed without coupling production builds to an external service.
 
 **Fields stored per branch:**
@@ -743,66 +809,16 @@ Hours, phone, branch type, and other CPL metadata are explicitly **out of scope*
 
 **Tier placement:**
 
-- New tier inserted between the existing bus-stop tier and the FEAT-011a addresses tier.
-- Final ranking after all of FEAT-011a, FEAT-011b, and FEAT-013 ship: train station → neighborhood → bus stop → **library (this FEAT)** → address (FEAT-011a) → POI (FEAT-011b) → Google fallback.
+- New curated tier inserted between the existing bus-stop tier and the OSM-derived intersection/address tiers.
+- Final ranking after this FEAT ships on top of the Geocoding & Autocomplete chunked plan: train station → neighborhood → bus stop → **library (this FEAT)** → intersection → address → LocationIQ fallback.
 
 **Out of scope:**
 
-- Other civic destination types (parks, schools, post offices, museums, fire stations). Each would warrant its own curated tier or be left to the OSM POI tier. If the maintainer decides to extend the curated-civic-tier pattern later, that's its own FEAT.
+- Other civic destination types (parks, schools, post offices, museums, fire stations). Each would warrant its own curated tier or be left to incidental OSM coverage. If the maintainer decides to extend the curated-civic-tier pattern later, that's its own FEAT.
 - Hours, phone, and branch metadata.
 - Live status (open/closed, holiday closures) — not a routing concern.
 
-**When to revisit:** After FEAT-011a ships. At that point this entry should be straightforward to invoke via `/resolve-item FEAT-013` with no further scoping.
-
----
-
-### FEAT-014 --- Fallback-learning cache (persistent + index-promotion)
-
-**Type:** Bolt-On
-
-**Status:** Scoped, ready to revisit after FEAT-011a ships and accumulates a few weeks of production traffic data. Spawned 2026-05-06 from the FEAT-011 decision walk-through (Decision 1 cascading effect). Per maintainer direction this is tracked as a feature, not an optimization.
-
-**Dependency:** FEAT-011a. This feature builds on top of the in-memory `RESOLVE_CACHE_MAX_ENTRIES` LRU and the autocomplete cache from Decision 6 — turning them from process-lifetime caches into persistent, learning structures.
-
-**User story / motivation:** When a rider searches for a long-tail location (e.g., a small business not in OSM, a specific address not in TIGER), FEAT-011a's hybrid invokes Google Places as fallback and pays per session. Today's caches (Decision 6.B autocomplete LRU; Decision 6.C Place Details LRU) save cost within a single backend process lifetime but evict on restart. This FEAT extends those caches to (a) survive restarts via persistent storage, and (b) **promote frequently-resolved entries into the static prefix index** so subsequent searches hit the local path entirely — the long-term effect being a system that gets cheaper over time as it learns the popular Chicago long-tail.
-
-**Current coverage (for context):**
-
-- Decision 6.B: 1h-TTL LRU of autocomplete responses, in-memory only, evicted on process restart.
-- Decision 6.C: indefinite-within-process-lifetime LRU of Place Details responses, in-memory only, evicted on process restart.
-- After FEAT-014: both become persistent, and a promotion mechanism elevates high-frequency entries into the static index.
-
-**Acceptance criteria:**
-
-- Resolved Google place_ids and their `(lat, lng, display_name, formatted_address)` data are persisted to disk (SQLite or on-disk JSON — TBD during scoping refresh) and survive backend process restarts.
-- A promotion mechanism: any cached entry that has been resolved more than `LEARNING_PROMOTION_THRESHOLD` times (env-tunable, default e.g. `5`) is added to the static prefix index on the next monthly rebuild via `scripts/build_geo_index.py`. Once promoted, it's served from the local path with zero Google calls.
-- Promotion is permitted under Google's Places API (New) Terms — only the cacheable fields (`place_id`, `location`, `formattedAddress`, `displayName`) are persisted. Hours/ratings/photos are explicitly never stored.
-- A refresh-on-hit policy revalidates promoted entries older than `LEARNING_REFRESH_DAYS` (default e.g. `180`) — when such an entry is hit, the cached result is served immediately and a background revalidation against Google updates the entry. Bounds stale-data risk for closed/relocated POIs.
-- The autocomplete LRU from Decision 6.B optionally upgrades from in-memory to persistent (decision deferred to scoping refresh — not strictly required for the index-promotion mechanism).
-- Backend startup loads persisted entries into the working caches.
-- Maintainer-facing diagnostic: a small admin endpoint or CLI command shows top N most-hit promoted entries, top N pending-promotion candidates, and total Google calls saved.
-
-**Files likely touched:**
-
-- `backend/places.py` (new persistence layer; or `backend/learning_cache.py` as a sibling module)
-- `backend/data/learning_cache.sqlite` or `backend/data/learning_cache.json` (new persisted artifact — storage format TBD)
-- `scripts/build_geo_index.py` (extend to merge promoted entries into the static artifact at rebuild time)
-- `backend/main.py` (cache wiring; admin endpoint for diagnostics)
-- `backend/.env.example` (`LEARNING_PROMOTION_THRESHOLD`, `LEARNING_REFRESH_DAYS`, possibly others)
-- `backend/tests/` (persistence round-trip, promotion threshold behavior, refresh-on-hit, ToS-compliant fields-only)
-- `docs/PRIVACY.md` (note that resolved place data is persisted across restarts)
-
-**Open questions (for future scoping refresh — do not assume any answer below is final):**
-
-1. **Storage format.** SQLite vs. on-disk JSON. SQLite is more queryable and atomic but pulls in another file format and migration path. JSON is simpler but slower to read at startup if the cache grows.
-2. **Promotion threshold value.** 5 hits? 10? Should it be based on hits-per-week to deweight ancient one-time queries?
-3. **Refresh cadence.** Refresh-on-hit (lazy) vs. periodic background sweep (eager). Lazy is simpler; eager catches stale POIs even for entries no one is currently searching.
-4. **Autocomplete LRU persistence.** Should Decision 6.B's autocomplete cache also persist, or only the resolution cache (Decision 6.C)? Resolution cache has higher cost-per-entry; autocomplete cache has higher hit-rate-per-entry.
-5. **Eviction policy for persistent store.** LRU on access? Size-bounded with FIFO? Time-bounded (purge entries older than X)?
-6. **Promotion competition.** What happens if a Google-promoted entry's name conflicts with an existing static-index entry (e.g., a POI promotion creates a duplicate of a library)? Decision 7.C's dedupe rules likely handle this but should be re-checked in scoping.
-7. **Privacy disclosure update.** PRIVACY.md mentions Google fallback (FEAT-011's Decision 9). Persistent cache likely needs a brief mention — what is persisted, for how long, can it be deleted?
-
-**When to revisit:** After FEAT-011a has been in production for a few weeks. Real cache-hit-rate data and resolved-place-id frequency distribution will inform the promotion threshold and storage decisions. This entry should be tightened (open questions resolved, ACs become firm) before invoking `/resolve-item`.
+**When to revisit:** After the Geocoding & Autocomplete chunked plan's Chunk 4 ships. At that point this entry should be straightforward to invoke via `/resolve-item FEAT-013` with no further scoping.
 
 ---
 
@@ -893,120 +909,6 @@ Hours, phone, branch type, and other CPL metadata are explicitly **out of scope*
 - `frontend/public/locales/*/translation.json` (27 files)
 
 **When to revisit:** Schedule alongside the next routine locale-coverage pass, or sooner if rider analytics show non-English usage of the Notices & Delays surface.
-
----
-
-### FEAT-017 --- Remove redundant `line_code` edge attribute from transit graph
-
-**Type:** Bolt-On — backend-only refactor; no frontend changes.
-
-**Status:** Scoping stub. Identified during memory-reduction audit on 2026-05-11.
-
-**Background:** Every edge in `G_base` (the NetworkX DiGraph built in `backend/transit_graph.py`) carries a `line_code` attribute that is always set to the same value as `route_id` on the same edge (e.g., both are `"Red"`, `"22"`, etc.). This has been a duplicate attribute since graph construction was written. With ~25,000 edges in the transit graph, removing the attribute saves ~1–2 MB of in-memory overhead.
-
-**Work required:**
-
-1. Grep all read sites for `line_code` across `backend/transit_graph.py`, `backend/main.py`, and any other consumer files.
-2. For each consumer, verify that substituting `route_id` produces identical behavior.
-3. Remove `line_code=best_route` (and its equivalents) from every `G.add_edge(...)` call in `transit_graph.py`.
-4. Update all read sites to use `route_id` instead.
-
-**Acceptance criteria:**
-
-- `line_code` no longer appears as a key in any edge's attribute dict after graph construction.
-- All routing and display logic that previously read `line_code` reads `route_id` instead and produces identical output.
-- Existing routing integration tests pass unchanged.
-
-**Files likely touched:**
-
-- `backend/transit_graph.py` — `add_edge` calls
-- `backend/main.py` — any edge attribute reads referencing `line_code`
-
-**When to revisit:** Low priority — savings are modest. Worth bundling with a future transit graph refactor pass.
-
----
-
-## Consideration — Geocoding Provider Migration (Google Maps → alternatives)
-
-### Context
-
-The app currently uses Google Maps Geocoding API for both forward geocoding (address → lat/lon in `geocode_google()`) and reverse geocoding (lat/lon → address in `reverse_geocode_google()`), both in `backend/gtfs_loader.py`. Pricing is **$5 per 1,000 calls** after Google's free tier (~28,000 calls/month under the $200 monthly credit, though that credit's terms have changed; safe to assume billable above 9.5k calls). A `_GEOCODE_CALL_LIMIT` safety cap of ~9,500 calls/month exists in code as a temporary guard against runaway billing during the pre-public-launch period; removal of that cap is a known production-blocker before any real growth push (tracked in TODO.md).
-
-At current traffic (~200 DAU target), Google's free tier is comfortable. The decision point arrives between **5,000 and 10,000 DAU**, where geocoding alone becomes the dominant operating cost and starts to compete with revenue:
-
-| DAU | Approx geocode calls/month | Google Maps cost/month |
-| :-- | :-- | :-- |
-| 1,000 | ~60,000 | ~$160–$300 (depending on free-tier terms) |
-| 5,000 | ~300,000 | ~$1,400 |
-| 10,000 | ~600,000 | ~$3,000 |
-| 50,000 | ~3,000,000 | ~$15,000 |
-
-These numbers assume ~2 unique geocode requests per session × ~30 sessions/user/month × cache hit rate ~50% (the existing `_geocode_cache` halves the wire calls). Cache hit rate may improve at higher traffic as common addresses recur, but the order of magnitude holds.
-
-### Why this matters
-
-Operating costs at 10k DAU under Google Maps would consume **all plausible monthly revenue under the values constraints** (free + no UX-degrading ads). Direct local sponsorships at 10k DAU realistically produce $500–$2,000/month gross; a $3,000/month geocoding bill turns the app cash-negative at exactly the scale where it should be self-sustaining. **The geocoding provider is therefore the binding economic constraint on growth, not the monetization strategy.**
-
-### Provider comparison
-
-| Provider | Forward geocode price | Autocomplete | POI quality (Chicago) | Address quality (Chicago) | Self-host? | Verdict |
-| :-- | :-- | :-- | :-- | :-- | :-- | :-- |
-| **Google Maps** (current) | $5 / 1k after free tier | ✅ Excellent (Places Autocomplete is a separate $2.83 / 1k product) | ✅ Best in class ("the bean" → Cloud Gate) | ✅ Best in class | No | Premium quality, premium price |
-| **Mapbox Geocoding** | $0.75 / 1k after 100k free/month | ✅ Good (Mapbox Search JS) | 🟡 Good in dense urban; weaker on long-tail POIs | ✅ Excellent in Chicago | No | **Likely best fit for this app at 1k–50k DAU** |
-| **Geoapify** | ~$0.50 / 1k (3k free/day) | ✅ Built-in autocomplete API | 🟡 OSM-derived; POI coverage variable | ✅ Good | Optional | Cheap; smaller player; quality gaps possible |
-| **LocationIQ** | ~$0.25 / 1k (5k free/day) | ✅ Yes | 🟡 OSM-derived | ✅ Good | No | Cheapest hosted option; lower brand stability |
-| **MapTiler Geocoding** | ~$0.50 / 1k (free tier varies) | ✅ Yes | 🟡 OSM + curated | ✅ Good | No | Reasonable middle ground |
-| **Photon** (hosted Pelias-lite) | Free (public endpoint, no SLA) | ✅ Yes | 🟡 OSM-derived | ✅ Good | Optional | Acceptable for low-volume; **never** a production primary |
-| **Nominatim** (self-host) | Free + infra cost | 🟡 Slow autocomplete unless tuned | 🟡 OSM-derived | ✅ Excellent for street addresses | Yes (~16–32 GB RAM for continental US) | Free at scale, heavy ops burden |
-| **Pelias** (self-host) | Free + infra cost | ✅ Best-in-class autocomplete | ✅ Federates Nominatim + OpenAddresses + Who's on First + Geonames | ✅ Excellent | Yes (multi-service stack) | Best self-host quality, highest ops burden |
-
-### Recommended migration path
-
-**Phase A (≤ 5k DAU):** Stay on Google Maps. Quality is excellent; costs are tolerable; the 9,500-call cap should be removed or raised before any public-launch push (this is a separate todo, not part of the migration).
-
-**Phase B (5k–25k DAU): Migrate to Mapbox.** This is the sweet spot for the app:
-
-- ~7× cheaper than Google
-- Quality on Chicago addresses and major POIs is competitive
-- No self-hosting burden
-- Mapbox Search JS provides drop-in autocomplete that integrates cleanly with the existing `LocationInput.jsx` autocomplete fetch pattern
-- One round of POI testing before committing — search for: "the bean", "Wrigley Field", "Garfield Park Conservatory", "Chinatown", "Promontory Point", "Pequod's Pizza", "Cloud Gate". If results match Google's intent on ≥ 80% of the test set, proceed
-- Keep Google Maps as a fallback for the remaining ≤ 20% of long-tail POI queries that Mapbox handles poorly. Implement provider failover, not full replacement
-
-**Phase C (25k+ DAU or multi-city): Self-host Pelias.** Worth considering only if both:
-
-1. Mapbox costs exceed $500/month (≈ 700k requests/month)
-2. The app has ≥ 1 part-time technical contributor or the maintainer has time for ops work
-
-Pelias has the best autocomplete UX of the open-source options and federates multiple address sources, which becomes important when expanding beyond Chicago (OSM coverage varies by metro). Until both conditions are met, Mapbox + Google fallback wins on operational simplicity.
-
-### Will alternatives support the existing autocomplete feature?
-
-**Yes, with caveats.** The current `LocationInput.jsx` autocomplete pattern (debounced fetch on input change, AbortController for in-flight cancellation) is provider-agnostic — only the backend endpoint and response shape need to change.
-
-- **Mapbox Search JS** has native autocomplete and a similar debounce-friendly REST endpoint. Direct drop-in.
-- **Pelias** `/v1/autocomplete` is purpose-built for typeahead; arguably better than Google for partial-token matching.
-- **Nominatim** `/search?q=...` works but is slower and not optimized for keystroke-rate queries; rate limits on the free public instance are aggressive. Self-hosted Nominatim is fine but requires Photon or a custom autocomplete layer for good UX.
-- **Geoapify, LocationIQ, MapTiler** all expose autocomplete endpoints with documented response shapes.
-
-**Address-level coverage** is where OSM-derived providers occasionally fall short — they may resolve "1234 W Roscoe" but miss "1234½ W Roscoe" (rear units, garden apartments). Google handles these. In a city with substantial multi-unit housing, this matters; budget a quality test before committing. The existing `geocode_cache` insulates against repeated misses on the same address but does not solve first-encounter failures.
-
-### Migration scope estimate
-
-- **Mapbox migration:** ~1 day. Replace `geocode_google()` and `reverse_geocode_google()` internals; keep the same function signatures so callers don't change. Update env vars (`MAPBOX_TOKEN`). Update the per-IP rate-limit bucket name from `_GEOCODE_*` (still fine — it's just a name). Update `LocationInput.jsx` autocomplete fetch URL/parser. Run the Chicago POI quality test set against both providers and document which queries fail Mapbox, so the fallback layer is informed.
-- **Google fallback layer:** ~0.5 day. Wrap the Mapbox call with a "if no results, retry on Google" pattern. Track the fallback hit rate; if it stays below 5%, eventually drop the fallback.
-- **Self-hosted Pelias:** ~1–2 weeks initial. Docker compose stack, planet OSM extract import, monitoring, backup, refresh strategy. Not worth it until the cost trigger fires.
-
-### When to start
-
-Trigger this migration when **any** of the following becomes true:
-
-1. The app crosses ~3,000 DAU sustained, and the geocoding cap removal is imminent
-2. A serious press push is planned (Block Club, WBEZ, *Reader*) that could spike traffic past the cap
-3. Geographic expansion (Pace+Metra coverage area, or other metros) is approved — adds geocoding load by enlarging the input space
-4. Google Maps pricing changes (their free-tier terms have shifted before)
-
-Until one fires, the Mapbox migration is documented and ready, but not built.
 
 ---
 

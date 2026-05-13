@@ -2,7 +2,7 @@
  * SheetSegmentedControl tests.
  *
  * Covered:
- *  - Renders three buttons (Home / Alerts / Saved) with translated labels
+ *  - Renders three buttons (Home / Alerts / Tools) with translated labels
  *  - No Map button (map is always visible on mobile; Map segment would be redundant)
  *  - Active segment gets aria-selected="true" and aria-current="page"
  *  - Inactive segments get aria-selected="false" and no aria-current
@@ -20,7 +20,7 @@ vi.mock("react-i18next", () => ({
       if (key === "aria_main_nav") return "Main navigation";
       if (key === "tab_home")      return "Home";
       if (key === "tab_alerts")    return "Alerts";
-      if (key === "tab_saved")     return "Saved";
+      if (key === "tab_tools")     return "Tools";
       return key;
     },
   }),
@@ -31,7 +31,7 @@ describe("SheetSegmentedControl", () => {
     render(<SheetSegmentedControl activeTab="home" onTabChange={() => {}} />);
     expect(screen.getByRole("tab", { name: "Home"   })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Alerts" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Saved"  })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Tools"  })).toBeInTheDocument();
   });
 
   it("does not render a Map segment", () => {
@@ -55,18 +55,18 @@ describe("SheetSegmentedControl", () => {
 
   it("applies the active modifier class", () => {
     const { container } = render(
-      <SheetSegmentedControl activeTab="saved" onTabChange={() => {}} />,
+      <SheetSegmentedControl activeTab="tools" onTabChange={() => {}} />,
     );
     const active = container.querySelector(".sheet-segmented__btn--active");
     expect(active).not.toBeNull();
-    expect(active.textContent).toBe("Saved");
+    expect(active.textContent).toBe("Tools");
   });
 
   it("calls onTabChange with the segment id when clicked", () => {
     const onTabChange = vi.fn();
     render(<SheetSegmentedControl activeTab="home" onTabChange={onTabChange} />);
-    fireEvent.click(screen.getByRole("tab", { name: "Saved" }));
-    expect(onTabChange).toHaveBeenCalledWith("saved");
+    fireEvent.click(screen.getByRole("tab", { name: "Tools" }));
+    expect(onTabChange).toHaveBeenCalledWith("tools");
   });
 
   it("renders a tablist with a translated aria-label", () => {

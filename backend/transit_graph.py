@@ -23,6 +23,7 @@ import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime
 from difflib import SequenceMatcher
 from functools import lru_cache
 from pathlib import Path
@@ -31,7 +32,7 @@ import networkx as nx
 import numpy as np
 
 from gtfs_loader import GTFS_DIR, find_nearest_train_stations, find_nearest_bus_stops
-from utils import haversine_miles as _haversine_miles, SpatialGrid, TRANSFER_PENALTY_MINUTES
+from utils import haversine_miles as _haversine_miles, SpatialGrid, TRANSFER_PENALTY_MINUTES, CHICAGO_TZ
 from cta_client import LINE_NAMES
 from walking import (
     walk_minutes as street_walk_minutes,
@@ -48,6 +49,14 @@ _TRANSFER_MINUTES = TRANSFER_PENALTY_MINUTES
 # find_routes() drops any candidate path that exceeds this so Yen's algorithm
 # can't surface absurd 4+ transfer itineraries.
 _MAX_TRANSFERS: int = 2
+
+# Deadline applied to NetworkX Yen's k-shortest-paths iteration in find_routes
+# (BUG-049 chunk 1). Yen's is a generator that can take arbitrarily long on a
+# pathologically dense neighbourhood; without a deadline a single stuck request
+# would hold _routing_lock and stall every subsequent caller. The loop returns
+# whatever routes have been accepted so far (possibly zero) when the deadline
+# trips. 0 disables the deadline.
+_YEN_DEADLINE_S: float = _cfg.ROUTING_YEN_DEADLINE_S
 
 
 def _bearing_to_direction(lat1: float, lon1: float, lat2: float, lon2: float) -> str:
@@ -75,8 +84,136 @@ _shape_lookup: dict[tuple[str, str], list[list[float]]] = {}
 # Maximum plausible scheduled leg time; longer values are treated as GTFS noise
 _MAX_LEG_MINUTES: float = _cfg.MAX_LEG_MINUTES
 
-# Target departure time for representative trip selection: noon = 720 min past midnight
+# Target departure time for representative trip selection: noon = 720 min past midnight.
+# Used by the canonical (midday) snapshot that backs aux caches like
+# _train_stop_pos and _bus_seq_cache; per-period builds use their own targets
+# from _PERIODS below (BUG-051).
 _TARGET_NOON_MINUTES = 720.0
+
+
+# ---------------------------------------------------------------------------
+# Service-period graph variants (BUG-051)
+# ---------------------------------------------------------------------------
+# Until 2026-05-12 the engine built ONE graph using trips closest to noon and
+# served every query off that snapshot. A 3 AM owl-hour query could be told to
+# board a line whose service ended at 1:30 AM. The fix is to build five graph
+# variants tagged by service period and pick the appropriate one per request
+# based on the requested departure time (defaults to "now" in Chicago time).
+#
+# Periods are mutually exclusive in real time (every Chicago wall-clock minute
+# resolves to exactly one). Their clock windows for query-time selection are:
+#
+#   weekday_peak     Mon–Fri  06:00–09:30 + 15:30–19:00
+#   weekday_midday   Mon–Fri  09:30–15:30
+#   weekday_evening  Mon–Fri  19:00–22:00
+#   weekend          Sat–Sun  05:00–22:00
+#   owl              Every    22:00–05:00 (wraps midnight)
+#
+# Trip-to-period assignment uses the trip's first-stop departure (GTFS minutes
+# past midnight) normalized to 0–1439, with a day-of-week shift when GTFS time
+# is ≥24:00 (e.g. a weekday trip starting at GTFS 25:30 actually runs at 01:30
+# the FOLLOWING day, so its effective day-set shifts by +1 — sending it to the
+# owl variant whose period.days set spans every weekday).
+#
+# Memory cost: ~5× a single graph, fits Railway free tier.
+# Build cost: lazy per-period — the first request for a given period triggers
+# that variant's build (~few seconds, since the underlying GTFS streams happen
+# only once via _load_canonical_trip_data()). Subsequent same-period requests
+# read the cached graph for free.
+
+@dataclass(frozen=True)
+class _ServicePeriod:
+    name: str
+    days: frozenset           # 0=Mon..6=Sun; days on which the period applies
+    windows: tuple            # ((start_min, end_min), ...) clock minutes in 0–1440
+    target_min: int           # representative-trip selection target (minutes past midnight)
+
+
+_PERIODS_LIST: tuple[_ServicePeriod, ...] = (
+    _ServicePeriod("weekday_peak",    frozenset({0, 1, 2, 3, 4}), ((360, 570), (930, 1140)), 480),
+    _ServicePeriod("weekday_midday",  frozenset({0, 1, 2, 3, 4}), ((570, 930),),             720),
+    _ServicePeriod("weekday_evening", frozenset({0, 1, 2, 3, 4}), ((1140, 1320),),          1230),
+    _ServicePeriod("weekend",         frozenset({5, 6}),          ((300, 1320),),            720),
+    # Owl spans midnight: 22:00–24:00 + 00:00–05:00, every day.
+    _ServicePeriod("owl",             frozenset({0, 1, 2, 3, 4, 5, 6}), ((1320, 1440), (0, 300)), 120),
+)
+_PERIODS: dict[str, _ServicePeriod] = {p.name: p for p in _PERIODS_LIST}
+# Canonical period used by aux caches and as the back-compat default when no
+# departure_time is given AND the current Chicago time happens to fall outside
+# every variant's window (which should never happen — the periods tile the day —
+# but defensively the default is midday).
+_DEFAULT_PERIOD: str = "weekday_midday"
+
+
+def _select_period(dt: datetime | None = None) -> str:
+    """
+    Pick which service-period variant should serve a query at *dt*.
+
+    *dt* is treated as Chicago wall-clock time:
+      - None        → datetime.now(CHICAGO_TZ)
+      - naive       → assume already Chicago-local
+      - tz-aware    → converted to Chicago
+    Returns one of the period names in _PERIODS.
+    """
+    if dt is None:
+        dt = datetime.now(CHICAGO_TZ)
+    elif dt.tzinfo is None:
+        dt = dt.replace(tzinfo=CHICAGO_TZ)
+    else:
+        dt = dt.astimezone(CHICAGO_TZ)
+    dow = dt.weekday()               # 0=Mon … 6=Sun
+    mod = dt.hour * 60 + dt.minute   # 0–1439
+
+    # Owl (every day, wraps midnight) wins before the weekday/weekend split so
+    # that e.g. 03:00 Sat resolves to owl, not weekend.
+    if mod >= 1320 or mod < 300:
+        return "owl"
+    if dow in (5, 6):
+        return "weekend"
+    if 360 <= mod < 570 or 930 <= mod < 1140:
+        return "weekday_peak"
+    if 570 <= mod < 930:
+        return "weekday_midday"
+    if 1140 <= mod < 1320:
+        return "weekday_evening"
+    # Mon–Fri 05:00–06:00 — pre-peak sliver. CTA still runs midday-pattern
+    # service here; treat as midday.
+    return "weekday_midday"
+
+
+def _periods_for_trip(
+    first_dep_min: float,
+    service_id: str,
+    sids_by_day: dict[int, frozenset[str]],
+) -> set[str]:
+    """
+    Return the set of period names this trip belongs to.
+
+    A trip qualifies for period P iff:
+      (1) its service_id is active on at least one calendar day d such that
+          (d + day_offset) % 7 ∈ P.days   — where day_offset = first_dep_min // 1440
+          accounts for GTFS times ≥ 24:00 spilling onto the next day; AND
+      (2) the normalized first-stop minute (first_dep_min % 1440) lies in at
+          least one of P.windows.
+    """
+    normalized = int(first_dep_min) % 1440
+    day_offset = int(first_dep_min) // 1440
+    effective_days: set[int] = set()
+    for d in range(7):
+        if service_id in sids_by_day.get(d, frozenset()):
+            effective_days.add((d + day_offset) % 7)
+    if not effective_days:
+        return set()
+
+    matches: set[str] = set()
+    for p in _PERIODS_LIST:
+        if not (effective_days & p.days):
+            continue
+        for (start, end) in p.windows:
+            if start <= normalized < end:
+                matches.add(p.name)
+                break
+    return matches
 
 # ---------------------------------------------------------------------------
 # Intermodal walk-edge tuning constants (used in _build_graph — Feature B)
@@ -102,7 +239,9 @@ _TRANSFER_SCORE_WALK_FACTOR: float = _cfg.TRANSFER_SCORE_WALK_FACTOR
 # All module-level dicts/None values below are populated exactly once:
 #
 #   _shape_lookup       ← warm_up() → _build_shape_lookup()   (read-only after)
-#   _bus_seq_cache      ← _build_graph() during warm_up()     (read-only after)
+#   _bus_seq_cache      ← _load_canonical_trip_data() during warm_up() (read-only after)
+#   _last_departure     ← _load_canonical_trip_data() during warm_up() (read-only after)
+#   _train_stop_pos     ← _load_canonical_trip_data() during warm_up() (read-only after)
 #   _stop_to_routes     ← warm_up() → _build_stop_to_routes() (read-only after)
 #   _bus_stop_grid      ← module import → _build_bus_stop_grid() (read-only after)
 #   _bus_stop_coords    ← same as above
@@ -121,23 +260,27 @@ _TRANSFER_SCORE_WALK_FACTOR: float = _cfg.TRANSFER_SCORE_WALK_FACTOR
 # is always left in its base state for the next call.
 _routing_lock: threading.Lock = threading.Lock()
 
-# Cache populated by _build_graph() so get_bus_stop_sequences() can return
-# it without re-streaming stop_times.txt a second time.
+# Cache populated by _populate_canonical_aux_caches() during warm_up()
+# so get_bus_stop_sequences() can return it without re-streaming stop_times.txt.
 _bus_seq_cache: dict[tuple[str, str], list[tuple]] | None = None
 
-# Last scheduled departure per (parent_mapid, direction_id) — populated during
-# startup and used by the /stop-arrivals endpoint for Feature Last Train.
-# Keys: (parent_mapid_str, direction_id_str), Values: GTFS departure time string (HH:MM:SS,
-# may be "24:xx"/"25:xx" for post-midnight CTA service runs).
-_last_departure: dict[tuple[str, str], str] = {}
+# Last scheduled departure per (route_id, direction_id, parent_mapid) —
+# populated during startup and used by the /last-departure endpoint
+# (Last Train tool). Keys: (route_id_str, direction_id_str, parent_mapid_str),
+# Values: GTFS departure time string (HH:MM:SS, may be "24:xx"/"25:xx" for
+# post-midnight CTA service runs). Keyed per-line so a multi-line station
+# (Belmont serves Red/Brown/Purple) returns the correct last-train for the
+# line the rider actually wants.
+_last_departure: dict[tuple[str, str, str], str] = {}
 
 # Train stop position index for crowdedness bell-curve.
 # (parent_mapid, route_id, direction_id) → (position_0based, total_stops)
-# Populated during _build_graph(); read-only after startup.
+# Populated during _populate_canonical_aux_caches(); read-only after startup.
 _train_stop_pos: dict[tuple[str, str, str], tuple[int, int]] = {}
 
-# Cache populated by _build_graph() so _build_shape_lookup() can skip its own
-# pass over trips.txt. Tuple of (route_dir_shape_candidates, used_shape_ids).
+# Cache populated by _load_canonical_trip_data() so _build_shape_lookup() can
+# skip its own pass over trips.txt. Tuple of (route_dir_shape_candidates,
+# used_shape_ids).
 _shape_candidates_cache: tuple[dict[tuple[str, str], set[str]], set[str]] | None = None
 
 
@@ -192,6 +335,81 @@ class Route:
             else:
                 parts.append(f"{leg.line} ({leg.from_station}->{leg.to_station} {leg.minutes:.0f}min)")
         return " -> ".join(parts) + f"  [total excl. wait: {self.total_minutes_no_wait:.0f}min]"
+
+
+# ---------------------------------------------------------------------------
+# Single arithmetic authority for total trip minutes (BUG-050).
+#
+# Every site that converts a Route + live-wait data into a displayed total
+# trip time must route through compute_route_total(). This keeps the formula
+# in one place so a change to the leg-2 fallback, the wait semantics, or the
+# transfer-penalty accounting cannot drift between call sites — which is what
+# caused BUG-008. No caller should add to `route.total_minutes_no_wait`
+# directly; pass the route in and let this function do the arithmetic.
+#
+# Walk-speed scaling is normally applied in-place to route legs by
+# main._scale_walk_legs() BEFORE this is called, in which case `walk_factor`
+# is left at 1.0. The `walk_factor` parameter exists for the BUG-045 case
+# inside _build_transfer_routes() where the Route is still baseline-walked
+# but ranking needs the weather-derated walk minutes.
+# ---------------------------------------------------------------------------
+def compute_route_total(
+    route: "Route",
+    first_leg_wait: float = 0.0,
+    transfer_waits: "list | None" = None,
+    walk_factor: float = 1.0,
+) -> float:
+    """Return the total trip minutes for a route given live-wait data.
+
+    Formula:
+        total = route.transit_minutes
+              + route.walk_minutes_total * walk_factor
+              + first_leg_wait
+              + sum(w if w is not None else TRANSFER_PENALTY_MINUTES
+                    for w in transfer_waits[:route.transfers])
+
+    `transfer_waits` is one entry per non-first transit leg, in leg order.
+    Missing or `None` entries fall back to TRANSFER_PENALTY_MINUTES — the same
+    flat estimate used everywhere else as the "no live data yet" wait. If
+    `transfer_waits` is shorter than `route.transfers`, the missing tail
+    likewise falls back.
+
+    `walk_factor` defaults to 1.0; pass a value > 1.0 when the route's
+    walk_minutes_total has not yet been weather-derated by _scale_walk_legs().
+    """
+    waits = list(transfer_waits or [])
+    total = float(route.transit_minutes) + float(route.walk_minutes_total) * walk_factor
+    total += float(first_leg_wait)
+    for i in range(route.transfers):
+        w = waits[i] if i < len(waits) else None
+        total += float(w) if w is not None else TRANSFER_PENALTY_MINUTES
+    return total
+
+
+# BUG-047 — Typed result for find_routes_with_status().
+#
+# When the caller doesn't pre-resolve origin/destination, find_routes() searches
+# outward in 0.25-mile rings up to 2.0 miles for a nearby train station. If
+# nothing is in range, it used to return [] silently — indistinguishable from a
+# transient backend failure. find_routes_with_status() returns this struct so
+# callers can tell the three cases apart:
+#
+#   status="ok"               — `routes` is the (possibly empty) result list
+#   status="out_of_coverage"  — origin and/or destination has no station within
+#                               `max_radius_searched` miles; `side` identifies
+#                               which boundary failed
+#   status="no_path"          — both boundaries resolved but Yen's produced no
+#                               accepted path (all candidates over _MAX_TRANSFERS,
+#                               graph disconnected, etc.)
+#
+# `find_routes()` (back-compat alias) keeps returning `list[Route]` — it discards
+# the status. /recommend uses find_routes_with_status() to surface the signal.
+@dataclass
+class RoutingResult:
+    routes: list = field(default_factory=list)
+    status: str = "ok"                                   # "ok" | "out_of_coverage" | "no_path"
+    side: str | None = None                              # "origin" | "destination" | "both" | None
+    max_radius_searched: float = 2.0                     # miles — outermost ring tried
 
 
 # ---------------------------------------------------------------------------
@@ -294,81 +512,101 @@ def _load_train_route_ids() -> set[str]:
 
 
 @lru_cache(maxsize=1)
-def _load_weekday_service_ids() -> set[str]:
-    """Returns service_ids active on weekdays (Mon–Fri) from calendar.txt,
-    augmented with services defined purely via calendar_dates.txt add-exceptions."""
-    import datetime
-    ids: set[str] = set()
+def _load_service_ids_by_day() -> dict[int, frozenset[str]]:
+    """
+    Returns ``{0..6: frozenset(service_id) active on that weekday}`` from
+    calendar.txt, augmented with services defined purely via calendar_dates.txt
+    add-exceptions (≥3 weekday-specific add-dates required, to avoid one-off
+    holiday specials being treated as recurring service).
+
+    0 = Monday, 6 = Sunday.
+    """
+    import datetime as _dt
+    by_day: dict[int, set[str]] = {i: set() for i in range(7)}
+    day_cols = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+
     cal_file = GTFS_DIR / "calendar.txt"
     if cal_file.exists():
         with open(cal_file, encoding="utf-8-sig") as f:
             for row in csv.DictReader(f):
-                if all(row.get(d, "0").strip() == "1"
-                       for d in ("monday", "tuesday", "wednesday", "thursday", "friday")):
-                    ids.add(row["service_id"].strip())
+                sid = row.get("service_id", "").strip()
+                if not sid:
+                    continue
+                for i, col in enumerate(day_cols):
+                    if row.get(col, "0").strip() == "1":
+                        by_day[i].add(sid)
 
-    # Also include services expressed purely through calendar_dates.txt
-    # (exception_type=1 add-dates on Mon–Fri). Require ≥3 such dates to avoid
-    # including one-off special services.
+    # calendar_dates.txt: services expressed purely through add-exceptions
+    # (exception_type=1). Bucket by the weekday of each add-date and require
+    # ≥3 hits on the same weekday before treating that day as a recurring
+    # service day, so one-off specials don't pollute the variant routing.
     cal_dates_file = GTFS_DIR / "calendar_dates.txt"
     if cal_dates_file.exists():
-        weekday_add_counts: dict[str, int] = {}
+        add_counts: dict[tuple[str, int], int] = {}
         with open(cal_dates_file, encoding="utf-8-sig") as f:
             for row in csv.DictReader(f):
                 if row.get("exception_type", "").strip() != "1":
                     continue
                 sid = row.get("service_id", "").strip()
                 date_str = row.get("date", "").strip()
+                if not sid or len(date_str) < 8:
+                    continue
                 try:
-                    d = datetime.date(int(date_str[:4]), int(date_str[4:6]), int(date_str[6:8]))
-                    if d.weekday() < 5:   # 0=Mon … 4=Fri
-                        weekday_add_counts[sid] = weekday_add_counts.get(sid, 0) + 1
+                    d = _dt.date(int(date_str[:4]), int(date_str[4:6]), int(date_str[6:8]))
                 except (ValueError, IndexError):
                     continue
-        for sid, count in weekday_add_counts.items():
+                key = (sid, d.weekday())
+                add_counts[key] = add_counts.get(key, 0) + 1
+        for (sid, wd), count in add_counts.items():
             if count >= 3:
-                ids.add(sid)
+                by_day[wd].add(sid)
 
-    return ids
+    return {k: frozenset(v) for k, v in by_day.items()}
+
+
+@lru_cache(maxsize=1)
+def _load_weekday_service_ids() -> frozenset[str]:
+    """Back-compat wrapper: union of Mon–Fri service_ids.
+
+    Existing callers that just want a "weekday" boolean still work; the
+    period-aware code uses _load_service_ids_by_day() directly so it can
+    distinguish weekday vs weekend service.
+    """
+    by_day = _load_service_ids_by_day()
+    return frozenset().union(*(by_day[i] for i in range(5)))
 
 
 def _load_trips_unified(
     train_route_ids: set[str],
     bus_route_ids:   set[str],
 ) -> tuple[
-    dict[str, str], dict[str, str],   # train trip_route, trip_dir
-    dict[str, str], dict[str, str],   # bus trip_route, trip_dir
-    dict[tuple[str, str], set[str]],  # route_dir_shape_candidates (unfiltered)
-    set[str],                          # used_shape_ids (unfiltered)
+    dict[str, str], dict[str, str], dict[str, str],   # train trip_route, trip_dir, trip_sid
+    dict[str, str], dict[str, str], dict[str, str],   # bus   trip_route, trip_dir, trip_sid
+    dict[tuple[str, str], set[str]],                  # route_dir_shape_candidates (unfiltered)
+    set[str],                                          # used_shape_ids (unfiltered)
 ]:
     """
     Single-pass read of trips.txt that builds, in one stream:
-      - train weekday candidate trips        (with all-trips fallback if empty)
-      - bus weekday candidate trips          (with all-trips fallback if empty)
-      - shape_id candidates per (route_id, direction_id)  — UNFILTERED
-      - the set of all referenced shape_ids               — UNFILTERED
+      - train candidate trips (ALL service_ids, with the per-trip service_id
+        retained so the variant builder can later bucket trips by service
+        period — BUG-051)
+      - bus candidate trips (same shape)
+      - shape_id candidates per (route_id, direction_id)
+      - the set of all referenced shape_ids
 
-    Replaces three separate streams of trips.txt that used to occur in
-    the legacy train/bus trip-candidate loaders and Step 1 of
-    _build_shape_lookup().
-
-    The weekday filter is applied ONLY to the train/bus trip-candidate outputs.
-    Shape collection considers all trips so that weekend-only services don't
-    lose their GTFS shape (falling back to a straight-line polyline).
+    Returns service_id per trip so period bucketing can intersect it with
+    _load_service_ids_by_day() at variant-build time. Before BUG-051 this
+    function pre-filtered to weekday service_ids; that bake-in is what made the
+    routing engine fixed-noon. We now return every candidate trip and defer
+    the period filter to _build_graph_for_period().
     """
-    weekday_sids = _load_weekday_service_ids()
+    train_route: dict[str, str] = {}
+    train_dir:   dict[str, str] = {}
+    train_sid:   dict[str, str] = {}
 
-    # Train accumulators — keep weekday-only and all-trips versions in parallel
-    # so the fallback (weekday empty → all trips) costs no extra read.
-    train_route_weekday: dict[str, str] = {}
-    train_dir_weekday:   dict[str, str] = {}
-    train_route_all:     dict[str, str] = {}
-    train_dir_all:       dict[str, str] = {}
-
-    bus_route_weekday: dict[str, str] = {}
-    bus_dir_weekday:   dict[str, str] = {}
-    bus_route_all:     dict[str, str] = {}
-    bus_dir_all:       dict[str, str] = {}
+    bus_route: dict[str, str] = {}
+    bus_dir:   dict[str, str] = {}
+    bus_sid:   dict[str, str] = {}
 
     route_dir_shape_candidates: dict[tuple[str, str], set[str]] = defaultdict(set)
     used_shape_ids: set[str] = set()
@@ -381,7 +619,7 @@ def _load_trips_unified(
             tid          = row.get("trip_id",      "").strip()
             sid          = row.get("service_id",   "").strip()
 
-            # Shape lookup — unfiltered (includes weekend-only services).
+            # Shape lookup — unfiltered.
             if rid and shape_id:
                 route_dir_shape_candidates[(rid, direction_id)].add(shape_id)
                 used_shape_ids.add(shape_id)
@@ -389,42 +627,24 @@ def _load_trips_unified(
             if not tid:
                 continue
 
-            is_weekday = sid in weekday_sids
-
             if rid in train_route_ids:
-                train_route_all[tid] = rid
-                train_dir_all[tid]   = direction_id
-                if is_weekday:
-                    train_route_weekday[tid] = rid
-                    train_dir_weekday[tid]   = direction_id
+                train_route[tid] = rid
+                train_dir[tid]   = direction_id
+                train_sid[tid]   = sid
             elif rid in bus_route_ids:
-                bus_route_all[tid] = rid
-                bus_dir_all[tid]   = direction_id
-                if is_weekday:
-                    bus_route_weekday[tid] = rid
-                    bus_dir_weekday[tid]   = direction_id
+                bus_route[tid] = rid
+                bus_dir[tid]   = direction_id
+                bus_sid[tid]   = sid
 
-    # Prefer weekday-filtered; fall back to all trips if weekday yields nothing
-    # (calendar.txt absent or no service-id matches).
-    if train_route_weekday:
-        train_trip_route, train_trip_dir = train_route_weekday, train_dir_weekday
-    else:
-        train_trip_route, train_trip_dir = train_route_all, train_dir_all
-
-    if bus_route_weekday:
-        bus_trip_route, bus_trip_dir = bus_route_weekday, bus_dir_weekday
-    else:
-        bus_trip_route, bus_trip_dir = bus_route_all, bus_dir_all
-
-    n_train_dirs = len({(r, train_trip_dir[t]) for t, r in train_trip_route.items()})
-    n_bus_dirs   = len({(r, bus_trip_dir[t])   for t, r in bus_trip_route.items()})
-    print(f"[transit_graph] Loaded {len(train_trip_route)} weekday candidate trips "
+    n_train_dirs = len({(r, train_dir[t]) for t, r in train_route.items()})
+    n_bus_dirs   = len({(r, bus_dir[t])   for t, r in bus_route.items()})
+    print(f"[transit_graph] Loaded {len(train_route)} candidate train trips "
           f"across {n_train_dirs} line/direction pairs")
-    print(f"[transit_graph] Loaded {len(bus_trip_route)} weekday bus candidate trips "
+    print(f"[transit_graph] Loaded {len(bus_route)} candidate bus trips "
           f"across {n_bus_dirs} route/direction pairs")
     return (
-        train_trip_route, train_trip_dir,
-        bus_trip_route,   bus_trip_dir,
+        train_route, train_dir, train_sid,
+        bus_route,   bus_dir,   bus_sid,
         route_dir_shape_candidates, used_shape_ids,
     )
 
@@ -437,47 +657,45 @@ def _parse_gtfs_time(t: str) -> float:
 
 
 def _stream_all_stop_sequences(
-    train_candidates:   dict[str, str],   # {trip_id: route_id}  — train weekday trips
+    train_candidates:   dict[str, str],   # {trip_id: route_id}  — ALL train candidate trips
     train_dirs:         dict[str, str],   # {trip_id: direction_id}
-    bus_candidates:     dict[str, str],   # {trip_id: route_id}  — bus weekday trips
+    bus_candidates:     dict[str, str],   # {trip_id: route_id}  — ALL bus candidate trips
     bus_dirs:           dict[str, str],   # {trip_id: direction_id}
     platform_to_parent: dict[str, str],   # {platform_stop_id: parent_mapid}
     bus_stop_lookup:    dict[str, dict],  # {stop_id: {name, lat, lon}}
     bus_route_map:      dict[str, str],   # {route_id: route_short_name}
-) -> tuple[dict[str, list[tuple[str, float]]], dict[tuple[str, str], list[tuple]], dict[tuple[str, str], str]]:
+) -> tuple[
+    dict[str, list[tuple[str, float]]],          # train_seqs       tid -> [(parent_mapid, arr_min), ...]
+    dict[str, float],                             # train_first_dep tid -> first stop arr_min
+    dict[str, list[tuple]],                       # bus_seqs        tid -> [(stop_id, name, lat, lon, arr_min), ...]
+    dict[str, float],                             # bus_first_dep   tid -> first stop arr_min
+    dict[tuple[str, str, str], str],              # last_dep_times  (route_id, dir, mapid) -> latest GTFS time string
+]:
     """
-    Single-pass stream of stop_times.txt that simultaneously builds:
-      - train_selected : {trip_id: [(parent_mapid, arrival_min), ...]}
-                         (same output as the old _stream_stop_sequences)
-      - bus_result     : {(route_short_name, direction_id): [(stop_id, stop_name,
-                           lat, lon, arr_minutes), ...]}
-                         (same output as get_bus_stop_sequences)
-      - last_dep_times : {(parent_mapid, direction_id): latest_departure_time_str}
-                         (Feature Last Train — latest GTFS departure across ALL train
-                          weekday trips; times may be "24:xx"/"25:xx" for post-midnight)
+    Single-pass stream of stop_times.txt for every candidate trip in
+    *train_candidates* and *bus_candidates*. Unlike the pre-BUG-051
+    implementation, this no longer picks a single representative trip per
+    (route_id, direction_id) — that choice is now made per service-period
+    variant in _build_graph_for_period(), since different periods need
+    different representatives (an owl-hour run vs. a peak-hour express).
 
-    Replaces the old _stream_stop_sequences and eliminates the second
-    dedicated stop_times.txt pass that get_bus_stop_sequences previously
-    performed.
-
-    Selection strategy (unchanged from original functions):
-      Train — one representative trip per (route_id, direction_id), chosen as
-              the weekday trip whose first-stop departure is closest to noon.
-      Bus   — same midday-targeting strategy per (route_short_name, direction_id).
+    Returns the raw per-trip sequences plus the per-trip first-stop departure
+    minute (used by _periods_for_trip() to bucket each trip) and the
+    Feature-Last-Train lookup, which still aggregates across ALL trips.
     """
     print("[transit_graph] Streaming stop_times.txt (unified train+bus pass) …")
     t0 = time.time()
 
-    # --- raw accumulators ---
     train_raw: dict[str, list] = {tid: [] for tid in train_candidates}
     bus_raw:   dict[str, list] = {tid: [] for tid in bus_candidates}
-    # Feature Last Train: track latest departure per (parent_mapid, direction_id)
-    # across ALL train weekday trips (not just representative ones).
-    last_dep: dict[tuple[str, str], tuple[float, str]] = {}  # key -> (minutes, time_str)
+    # Last Train tool: latest GTFS departure per (route_id, direction_id,
+    # parent_mapid). Per-line keying lets a multi-line station return the
+    # correct last-train for the specific line the rider picked.
+    last_dep: dict[tuple[str, str, str], tuple[float, str]] = {}
 
     all_candidate_tids = set(train_candidates) | set(bus_candidates)
     # CTA stop_times.txt is sorted by trip_id (standard GTFS), so all rows for
-    # a given trip are contiguous.  Track which candidate trips have not yet
+    # a given trip are contiguous. Track which candidate trips have not yet
     # been fully seen; once the set empties, every remaining row is irrelevant.
     remaining_tids: set[str] = set(all_candidate_tids)
     prev_tid: str | None = None
@@ -489,11 +707,10 @@ def _stream_all_stop_sequences(
             tid = row.get("trip_id", "").strip()
 
             if tid != prev_tid:
-                # Trip transition: the previous trip's rows are fully consumed.
                 if prev_tid in remaining_tids:
                     remaining_tids.discard(prev_tid)
                     if not remaining_tids:
-                        break  # All candidate trips complete — skip remaining rows.
+                        break
                 prev_tid = tid
 
             if tid not in all_candidate_tids:
@@ -513,11 +730,14 @@ def _stream_all_stop_sequences(
                 sid = row.get("stop_id", "").strip()
                 parent = platform_to_parent.get(sid, sid)
                 train_raw[tid].append((seq, parent, arr_min))
-                # Feature Last Train: track latest departure per station/direction
                 dep_str = (row.get("departure_time") or arr_str).strip()
-                dep_min = _parse_gtfs_time(dep_str)
+                try:
+                    dep_min = _parse_gtfs_time(dep_str)
+                except (ValueError, IndexError):
+                    dep_min = arr_min
+                rid = train_candidates.get(tid, "")
                 did = train_dirs.get(tid, "0")
-                key = (parent, did)
+                key = (rid, did, parent)
                 prev = last_dep.get(key)
                 if prev is None or dep_min > prev[0]:
                     last_dep[key] = (dep_min, dep_str)
@@ -532,83 +752,42 @@ def _stream_all_stop_sequences(
     )
 
     # ------------------------------------------------------------------ #
-    # Train side — identical post-processing to old _stream_stop_sequences
+    # Sort per-trip rows and produce the per-period builder's inputs.
     # ------------------------------------------------------------------ #
-    train_sorted: dict[str, list] = {}
-    train_first:  dict[str, float] = {}
+    train_seqs:      dict[str, list[tuple[str, float]]] = {}
+    train_first_dep: dict[str, float]                    = {}
     for tid, rows in train_raw.items():
         if not rows:
             continue
         rows.sort(key=lambda x: x[0])
-        train_sorted[tid] = rows
-        train_first[tid]  = rows[0][2]
+        train_seqs[tid]      = [(parent, arr_min) for _, parent, arr_min in rows]
+        train_first_dep[tid] = rows[0][2]
 
-    train_groups: dict[tuple[str, str], list[str]] = {}
-    for tid in train_sorted:
-        rid = train_candidates[tid]
-        did = train_dirs.get(tid, "0")
-        train_groups.setdefault((rid, did), []).append(tid)
-
-    train_selected: dict[str, list[tuple[str, float]]] = {}
-    for (rid, did), tids in train_groups.items():
-        # Prefer the longest trip (most parent-station stops) so that rush-hour-only
-        # express services (e.g. Purple Express, which only runs Linden→Loop at peak)
-        # are chosen over shorter all-day locals. Tie-break by noon proximity so
-        # travel-time estimates reflect typical midday schedules.
-        best = max(tids, key=lambda t: (
-            len(train_sorted.get(t, [])),
-            -abs(train_first.get(t, 0.0) - _TARGET_NOON_MINUTES),
-        ))
-        seq_list: list[tuple[str, float]] = []
-        for _, parent, arr_min in train_sorted[best]:
-            seq_list.append((parent, arr_min))
-        train_selected[best] = seq_list
-
-    print(f"[transit_graph] Selected {len(train_selected)} representative train trips "
-          f"({len(train_groups)} line/direction pairs, targeting noon departures)")
-
-    # ------------------------------------------------------------------ #
-    # Bus side — mirrors get_bus_stop_sequences post-processing exactly
-    # ------------------------------------------------------------------ #
-    bus_sorted: dict[str, list] = {}
-    bus_first:  dict[str, float] = {}
+    bus_seqs:      dict[str, list[tuple]] = {}
+    bus_first_dep: dict[str, float]       = {}
     for tid, rows in bus_raw.items():
         if not rows:
             continue
         rows.sort(key=lambda x: x[0])
-        bus_sorted[tid] = rows
-        bus_first[tid]  = rows[0][2]
-
-    bus_groups: dict[tuple[str, str], list[str]] = {}
-    for tid in bus_sorted:
-        rid = bus_candidates[tid]
-        did = bus_dirs.get(tid, "0")
-        bus_groups.setdefault((rid, did), []).append(tid)
-
-    bus_result: dict[tuple[str, str], list[tuple]] = {}
-    for (rid, did), tids in bus_groups.items():
-        best  = min(tids, key=lambda t: abs(bus_first.get(t, 0.0) - _TARGET_NOON_MINUTES))
-        short = bus_route_map.get(rid, rid)
-        seq_entries: list[tuple] = []
-        for _, sid, arr_min in bus_sorted[best]:
-            meta = bus_stop_lookup.get(sid, {})
-            seq_entries.append((
+        bus_seqs[tid] = [
+            (
                 sid,
-                meta.get("name", sid),
-                meta.get("lat", 0.0),
-                meta.get("lon", 0.0),
+                bus_stop_lookup.get(sid, {}).get("name", sid),
+                bus_stop_lookup.get(sid, {}).get("lat", 0.0),
+                bus_stop_lookup.get(sid, {}).get("lon", 0.0),
                 arr_min,
-            ))
-        bus_result[(short, did)] = seq_entries
+            )
+            for _, sid, arr_min in rows
+        ]
+        bus_first_dep[tid] = rows[0][2]
 
-    n_pairs = len(bus_result)
-    print(f"[transit_graph] Bus sequences built: {n_pairs} route/direction pairs")
+    last_dep_times: dict[tuple[str, str, str], str] = {k: v[1] for k, v in last_dep.items()}
+    print(f"[transit_graph] Per-trip sequences collected: "
+          f"{len(train_seqs)} train, {len(bus_seqs)} bus")
+    print(f"[transit_graph] Last-departure lookup built: "
+          f"{len(last_dep_times)} route/direction/station triples")
 
-    # Feature Last Train: extract time strings from accumulator
-    last_dep_times: dict[tuple[str, str], str] = {k: v[1] for k, v in last_dep.items()}
-    print(f"[transit_graph] Last-departure lookup built: {len(last_dep_times)} station/direction pairs")
-
-    return train_selected, bus_result, last_dep_times
+    return train_seqs, train_first_dep, bus_seqs, bus_first_dep, last_dep_times
 
 
 def _load_transfer_edges(
@@ -655,111 +834,283 @@ def _load_transfer_edges(
 
 
 # ---------------------------------------------------------------------------
-# Graph builder — cached for process lifetime
+# Graph builder — service-period-aware (BUG-051)
 # ---------------------------------------------------------------------------
+#
+# Until 2026-05-12 a single graph was built using trips closest to noon and
+# served every query. The refactor introduces:
+#
+#   _load_canonical_trip_data()  — one-shot GTFS pass. Streams trips.txt and
+#                                  stop_times.txt once for every candidate
+#                                  trip and stashes per-trip sequences,
+#                                  first-stop departure minute, and service_id
+#                                  in module state. Populates _last_departure
+#                                  too (period-independent).
+#
+#   _build_graph_for_period(p)  — lazy per-period build. Filters the canonical
+#                                  trip data to trips operating in period *p*,
+#                                  picks one representative trip per
+#                                  (route_id, direction_id) using that period's
+#                                  target_min, and assembles the NetworkX
+#                                  graph. Each variant is cached on first
+#                                  build; subsequent same-period requests
+#                                  return the cached graph directly.
+#
+#   _build_graph()              — back-compat wrapper returning the canonical-
+#                                  period graph. Tests that patch this function
+#                                  continue to work transparently because
+#                                  find_routes_with_status() funnels
+#                                  default-period requests back through it.
+#
+# Auxiliary caches that are period-independent (_bus_seq_cache for stop-
+# position lookups; _train_stop_pos for the crowdedness bell-curve) are
+# populated from the canonical (midday) trip selection — not per-variant —
+# since their consumers want a stable positional view, not a service-period
+# view.
 
-@lru_cache(maxsize=1)
-def _build_graph() -> tuple[nx.DiGraph, dict[str, dict]]:
+
+@dataclass
+class _CanonicalTripData:
+    parent_stations:    dict[str, dict]
+    platform_to_parent: dict[str, str]
+    bus_route_map:      dict[str, str]
+    bus_stop_lookup:    dict[str, dict]
+
+    train_seqs:        dict[str, list[tuple[str, float]]]
+    train_first_dep:   dict[str, float]
+    train_trip_route:  dict[str, str]
+    train_trip_dir:    dict[str, str]
+    train_trip_sid:    dict[str, str]
+
+    bus_seqs:          dict[str, list[tuple]]
+    bus_first_dep:     dict[str, float]
+    bus_trip_route:    dict[str, str]
+    bus_trip_dir:      dict[str, str]
+    bus_trip_sid:      dict[str, str]
+
+
+_canonical_data: _CanonicalTripData | None = None
+_canonical_lock: threading.Lock = threading.Lock()
+
+# Per-period graph cache. Built lazily on first request for the period.
+_variant_graphs: dict[str, tuple[nx.DiGraph, dict[str, dict]]] = {}
+_variant_locks:  dict[str, threading.Lock] = {p.name: threading.Lock() for p in _PERIODS_LIST}
+
+
+def _load_canonical_trip_data() -> _CanonicalTripData:
     """
-    Build and cache the transit graph.
-
-    Returns (G, parent_stations) where:
-      G               — nx.DiGraph with mapid nodes and weighted edges
-      parent_stations — {mapid: {name, lat, lon}}
+    Stream GTFS files once and stash per-trip data needed by every variant
+    build. Subsequent calls return the cached struct directly.
     """
-    print("[transit_graph] Building CTA transit graph …")
-    t0 = time.time()
+    global _canonical_data, _last_departure, _shape_candidates_cache
+    if _canonical_data is not None:
+        return _canonical_data
+    with _canonical_lock:
+        if _canonical_data is not None:
+            return _canonical_data
 
-    parent_stations, platform_to_parent = _load_station_data()
-    train_route_ids    = _load_train_route_ids()
+        print("[transit_graph] Loading canonical GTFS trip data …")
+        t0 = time.time()
 
-    # Load bus metadata so the unified streamer can process both train and bus
-    # stop_times in a single pass — eliminating the second file stream that
-    # get_bus_stop_sequences() previously performed.
-    bus_route_map   = _load_bus_route_map()
-    bus_stop_lookup = _load_bus_stop_lookup()
+        parent_stations, platform_to_parent = _load_station_data()
+        train_route_ids    = _load_train_route_ids()
+        bus_route_map      = _load_bus_route_map()
+        bus_stop_lookup    = _load_bus_stop_lookup()
 
-    # Single pass over trips.txt: train + bus candidates + shape candidates.
-    # Replaces three separate streams (OPT-010).
-    (
-        selected_trips, trip_dirs,
-        bus_trip_route, bus_trip_dir,
-        shape_candidates, used_shape_ids,
-    ) = _load_trips_unified(train_route_ids, set(bus_route_map.keys()))
+        (
+            train_trip_route, train_trip_dir, train_trip_sid,
+            bus_trip_route,   bus_trip_dir,   bus_trip_sid,
+            shape_candidates, used_shape_ids,
+        ) = _load_trips_unified(train_route_ids, set(bus_route_map.keys()))
 
-    # Hand the shape candidates to _build_shape_lookup() via module cache so it
-    # can skip its own trips.txt pass.
-    global _shape_candidates_cache
-    _shape_candidates_cache = (shape_candidates, used_shape_ids)
+        _shape_candidates_cache = (shape_candidates, used_shape_ids)
 
-    stop_seqs, bus_result, last_dep_times = _stream_all_stop_sequences(
-        selected_trips, trip_dirs,
-        bus_trip_route, bus_trip_dir,
-        platform_to_parent,
-        bus_stop_lookup,
-        bus_route_map,
-    )
+        (
+            train_seqs, train_first_dep,
+            bus_seqs,   bus_first_dep,
+            last_dep_times,
+        ) = _stream_all_stop_sequences(
+            train_trip_route, train_trip_dir,
+            bus_trip_route,   bus_trip_dir,
+            platform_to_parent,
+            bus_stop_lookup,
+            bus_route_map,
+        )
 
-    # Cache bus sequences so get_bus_stop_sequences() returns them immediately
-    # without re-streaming stop_times.txt.
-    global _bus_seq_cache
-    _bus_seq_cache = bus_result
+        _last_departure = last_dep_times
 
-    # Cache last-departure times for Feature Last Train (/stop-arrivals endpoint).
-    global _last_departure
-    _last_departure = last_dep_times
+        _canonical_data = _CanonicalTripData(
+            parent_stations=parent_stations,
+            platform_to_parent=platform_to_parent,
+            bus_route_map=bus_route_map,
+            bus_stop_lookup=bus_stop_lookup,
+            train_seqs=train_seqs,
+            train_first_dep=train_first_dep,
+            train_trip_route=train_trip_route,
+            train_trip_dir=train_trip_dir,
+            train_trip_sid=train_trip_sid,
+            bus_seqs=bus_seqs,
+            bus_first_dep=bus_first_dep,
+            bus_trip_route=bus_trip_route,
+            bus_trip_dir=bus_trip_dir,
+            bus_trip_sid=bus_trip_sid,
+        )
+        _populate_canonical_aux_caches(_canonical_data)
+        print(f"[transit_graph] Canonical trip data ready ({time.time() - t0:.1f}s)")
+        return _canonical_data
 
-    # Build train stop position index for crowdedness bell-curve (BUG-009 fix).
-    global _train_stop_pos
-    _train_pos: dict[tuple[str, str, str], tuple[int, int]] = {}
-    for trip_id, seq in stop_seqs.items():
-        route_id = selected_trips[trip_id]
-        dir_id   = trip_dirs.get(trip_id, "0")
-        total    = len(seq)
+
+def _populate_canonical_aux_caches(data: _CanonicalTripData) -> None:
+    """
+    Pick midday rep trips per (route, dir) and populate _bus_seq_cache plus
+    _train_stop_pos. These caches feed callers that need a stable positional
+    view (crowdedness bell-curve, transfer scoring) — not per-period ones.
+    """
+    global _bus_seq_cache, _train_stop_pos
+
+    # Train stop position index
+    train_groups: dict[tuple[str, str], list[str]] = {}
+    for tid in data.train_seqs:
+        rid = data.train_trip_route.get(tid)
+        if not rid:
+            continue
+        did = data.train_trip_dir.get(tid, "0")
+        train_groups.setdefault((rid, did), []).append(tid)
+
+    train_pos: dict[tuple[str, str, str], tuple[int, int]] = {}
+    for (rid, did), tids in train_groups.items():
+        best = max(tids, key=lambda t: (
+            len(data.train_seqs.get(t, [])),
+            -abs(data.train_first_dep.get(t, 0.0) - _TARGET_NOON_MINUTES),
+        ))
+        seq = data.train_seqs[best]
+        total = len(seq)
         for pos, (mapid, _) in enumerate(seq):
-            _train_pos[(mapid, route_id, dir_id)] = (pos, total)
-    _train_stop_pos = _train_pos
+            train_pos[(mapid, rid, did)] = (pos, total)
+    _train_stop_pos = train_pos
 
+    # Canonical (midday) bus stop sequences
+    bus_groups: dict[tuple[str, str], list[str]] = {}
+    for tid in data.bus_seqs:
+        rid = data.bus_trip_route.get(tid)
+        if not rid:
+            continue
+        did = data.bus_trip_dir.get(tid, "0")
+        bus_groups.setdefault((rid, did), []).append(tid)
+
+    bus_result: dict[tuple[str, str], list[tuple]] = {}
+    for (rid, did), tids in bus_groups.items():
+        best = min(tids, key=lambda t: abs(data.bus_first_dep.get(t, 0.0) - _TARGET_NOON_MINUTES))
+        short = data.bus_route_map.get(rid, rid)
+        bus_result[(short, did)] = data.bus_seqs[best]
+    _bus_seq_cache = bus_result
+    print(f"[transit_graph] Canonical aux caches: "
+          f"{len(train_pos)} train stop-pos entries, {len(bus_result)} bus route/dir sequences")
+
+
+def _select_representative_trips(
+    data: _CanonicalTripData,
+    period_name: str,
+) -> tuple[dict[str, tuple[str, str]], dict[tuple[str, str], list[tuple]]]:
+    """
+    For the given period, return:
+      train_selected — {tid: (route_id, dir_id)} for each chosen rep trip
+                       (longest sequence, tie-break by closest-to-target)
+      bus_for_period — {(route_short, dir_id): bus stop sequence} for the rep
+                       bus trip in that period
+    Trips not operating in the period are filtered via _periods_for_trip().
+    """
+    period = _PERIODS[period_name]
+    sids_by_day = _load_service_ids_by_day()
+
+    # Train
+    train_groups: dict[tuple[str, str], list[str]] = {}
+    for tid, first_dep in data.train_first_dep.items():
+        sid = data.train_trip_sid.get(tid, "")
+        if not sid:
+            continue
+        if period_name not in _periods_for_trip(first_dep, sid, sids_by_day):
+            continue
+        rid = data.train_trip_route.get(tid)
+        if not rid:
+            continue
+        did = data.train_trip_dir.get(tid, "0")
+        train_groups.setdefault((rid, did), []).append(tid)
+
+    train_selected: dict[str, tuple[str, str]] = {}
+    for (rid, did), tids in train_groups.items():
+        # Prefer longest sequence so peak-only expresses (e.g. Purple Express)
+        # are picked when they're in the candidate set; tie-break by closeness
+        # to the period's target minute so travel-time estimates reflect
+        # typical speed in that period.
+        best = max(tids, key=lambda t: (
+            len(data.train_seqs.get(t, [])),
+            -abs(data.train_first_dep.get(t, 0.0) - period.target_min),
+        ))
+        train_selected[best] = (rid, did)
+
+    # Bus
+    bus_groups: dict[tuple[str, str], list[str]] = {}
+    for tid, first_dep in data.bus_first_dep.items():
+        sid = data.bus_trip_sid.get(tid, "")
+        if not sid:
+            continue
+        if period_name not in _periods_for_trip(first_dep, sid, sids_by_day):
+            continue
+        rid = data.bus_trip_route.get(tid)
+        if not rid:
+            continue
+        did = data.bus_trip_dir.get(tid, "0")
+        bus_groups.setdefault((rid, did), []).append(tid)
+
+    bus_for_period: dict[tuple[str, str], list[tuple]] = {}
+    for (rid, did), tids in bus_groups.items():
+        best = min(tids, key=lambda t: abs(data.bus_first_dep.get(t, 0.0) - period.target_min))
+        short = data.bus_route_map.get(rid, rid)
+        bus_for_period[(short, did)] = data.bus_seqs[best]
+
+    return train_selected, bus_for_period
+
+
+def _assemble_graph(
+    parent_stations: dict[str, dict],
+    platform_to_parent: dict[str, str],
+    bus_stop_lookup: dict[str, dict],
+    train_selected: dict[str, tuple[str, str]],
+    train_seqs: dict[str, list[tuple[str, float]]],
+    bus_for_period: dict[tuple[str, str], list[tuple]],
+    period_label: str,
+) -> nx.DiGraph:
+    """Construct the NetworkX graph for a single service-period variant from
+    already-selected representative trips."""
     G = nx.DiGraph()
 
-    # Add all parent station nodes with metadata
     for mapid, meta in parent_stations.items():
         G.add_node(mapid, node_type="train", **meta)
 
-    # Build transit edges from stop sequences
-    # edge_candidates[(from, to)] = list of (route_id, line_name, minutes)
     edge_candidates: dict[tuple[str, str], list] = {}
-
-    for trip_id, seq in stop_seqs.items():
-        route_id  = selected_trips[trip_id]
-        dir_id    = trip_dirs.get(trip_id, "0")
+    for tid, (route_id, dir_id) in train_selected.items():
+        seq = train_seqs[tid]
         line_name = LINE_NAMES.get(route_id, route_id)
-
         for i in range(len(seq) - 1):
             from_mapid, from_min = seq[i]
             to_mapid,   to_min   = seq[i + 1]
-
             if from_mapid not in parent_stations or to_mapid not in parent_stations:
                 continue
             if from_mapid == to_mapid:
                 continue
-
             leg_min = to_min - from_min
             if leg_min <= 0 or leg_min > _MAX_LEG_MINUTES:
                 continue
-
-            key = (from_mapid, to_mapid)
-            edge_candidates.setdefault(key, []).append((route_id, dir_id, line_name, leg_min))
+            edge_candidates.setdefault((from_mapid, to_mapid), []).append(
+                (route_id, dir_id, line_name, leg_min)
+            )
 
     transit_edge_count = 0
     for (from_mapid, to_mapid), candidates in edge_candidates.items():
-        # Keep the fastest route for the edge weight
         best_route, best_dir, best_line, best_min = min(candidates, key=lambda x: x[3])
-        # On shared-track segments (e.g. Red/Purple between Howard and Belmont),
-        # multiple lines compete for the same (from, to) edge. Store all of them
-        # so _path_to_route() can pick the correct label based on the incoming line.
         all_routes = (
-            {c[0]: (c[1], c[2]) for c in candidates}  # {route_id: (dir_id, line_name)}
+            {c[0]: (c[1], c[2]) for c in candidates}
             if len(candidates) > 1 else None
         )
         G.add_edge(
@@ -768,14 +1119,12 @@ def _build_graph() -> tuple[nx.DiGraph, dict[str, dict]]:
             route_id=best_route,
             direction_id=best_dir,
             line=best_line,
-            line_code=best_route,
             edge_type="transit",
             mode="train",
             all_routes=all_routes,
         )
         transit_edge_count += 1
 
-    # Add transfer edges from transfers.txt (bidirectional)
     transfer_edges = _load_transfer_edges(platform_to_parent, parent_stations)
     transfer_edge_count = 0
     for from_mapid, to_mapid, minutes in transfer_edges:
@@ -785,8 +1134,7 @@ def _build_graph() -> tuple[nx.DiGraph, dict[str, dict]]:
                            line="transfer", edge_type="transfer")
                 transfer_edge_count += 1
 
-    # ── Chunk 1 (Feature B): Add bus stop nodes ────────────────────────────
-    # Bus stop IDs (0–29999) never collide with train mapids (40000–49999).
+    # Bus stop nodes (period-independent — physical infrastructure)
     for stop_id, stop in bus_stop_lookup.items():
         G.add_node(
             stop_id,
@@ -795,30 +1143,22 @@ def _build_graph() -> tuple[nx.DiGraph, dict[str, dict]]:
             lon=stop["lon"],
             name=stop["name"],
         )
-    print(f"[transit_graph] Added {len(bus_stop_lookup)} bus stop nodes to graph")
 
-    # ── Chunk 2 (Feature B): Add bus route edges ───────────────────────────
-    # Reuse the already-cached bus sequences — no second stop_times.txt scan.
-    bus_sequences = get_bus_stop_sequences()
+    # Bus transit edges (period-specific weights from this period's rep trips)
     bus_edge_count = 0
-    for (short_name, did), stops in bus_sequences.items():
+    for (short_name, did), stops in bus_for_period.items():
         if len(stops) < 2:
             continue
-        # Derive a cardinal direction string ("Northbound"/etc.) from the
-        # bearing between the first and last stop. GTFS static data has no
-        # direction_name field; without this, `line` would be "0"/"1" which
-        # breaks the frontend's BUS_DIRECTION_COLORS lookup and causes the
-        # route pill to show the direction_id instead of the route number.
         direction_name = _bearing_to_direction(
             stops[0][2], stops[0][3], stops[-1][2], stops[-1][3]
         )
         for i in range(len(stops) - 1):
             from_stop = stops[i]
             to_stop   = stops[i + 1]
-            from_id   = from_stop[0]   # stop_id
-            to_id     = to_stop[0]     # stop_id
-            from_arr  = from_stop[4]   # arr_minutes since midnight
-            to_arr    = to_stop[4]     # arr_minutes since midnight
+            from_id   = from_stop[0]
+            to_id     = to_stop[0]
+            from_arr  = from_stop[4]
+            to_arr    = to_stop[4]
             leg_min   = max(0.5, to_arr - from_arr)
             G.add_edge(
                 from_id, to_id,
@@ -826,30 +1166,17 @@ def _build_graph() -> tuple[nx.DiGraph, dict[str, dict]]:
                 route_id=short_name,
                 direction_id=did,
                 line=direction_name,
-                line_code=short_name,
                 edge_type="transit",
                 mode="bus",
             )
             bus_edge_count += 1
-    print(f"[transit_graph] Added {bus_edge_count} bus transit edges to graph")
 
-    # ── Chunk 3 (Feature B): Add train↔bus transfer walk edges ────────────
-    # Bidirectional walk edges between each train station and nearby bus stops
-    # within 0.15 miles (street walk ≤ 5 min). These enable Dijkstra to
-    # discover intermodal paths naturally alongside pure-train/bus paths.
-    # Edge weights use Haversine × 1.3 (street-detour factor) to avoid loading
-    # the full street graph into memory during startup — the graph would OOM on
-    # Railway before any requests are served.  Routing requests compute precise
-    # turn-by-turn paths lazily via street_walk_* only when needed.
+    # Train↔bus intermodal walk edges (period-independent)
     intermodal_edge_count = 0
-
-    # Use the pre-built SpatialGrid (populated at module import) instead of the
-    # O(stations × stops) cross-product.  query() returns (dist_miles, stop_id)
-    # pairs already haversine-filtered to the radius — no inner loop needed.
     for mapid, station in parent_stations.items():
         s_lat, s_lon = station["lat"], station["lon"]
         for dist, stop_id in _bus_stop_grid.query(s_lat, s_lon, _TRANSFER_RADIUS_MILES):
-            walk_min = dist / 3.0 * 60 * _DETOUR_FACTOR  # 3 mph, detour-corrected
+            walk_min = dist / 3.0 * 60 * _DETOUR_FACTOR
             walk_min = max(walk_min, _TRANSFER_MINUTES)
             if walk_min > _TRANSFER_WALK_CAP_MIN:
                 continue
@@ -859,23 +1186,75 @@ def _build_graph() -> tuple[nx.DiGraph, dict[str, dict]]:
                        weight=walk_min, edge_type="walk", route_id="walk", mode="walk")
             intermodal_edge_count += 2
 
-    print(f"[transit_graph] Added {intermodal_edge_count} train<->bus transfer walk edges")
     print(
-        f"[transit_graph] Graph ready: {G.number_of_nodes()} nodes, "
-        f"{G.number_of_edges()} edges "
+        f"[transit_graph] Variant '{period_label}' ready: "
+        f"{G.number_of_nodes()} nodes, {G.number_of_edges()} edges "
         f"(train: {transit_edge_count} transit + {transfer_edge_count} transfer; "
-        f"bus: {bus_edge_count} transit + {intermodal_edge_count} intermodal walk) "
-        f"({time.time() - t0:.1f}s)"
+        f"bus: {bus_edge_count} transit + {intermodal_edge_count} intermodal walk)"
     )
-    return G, parent_stations
+    return G
+
+
+def _build_graph(period_name: str | None = None) -> tuple[nx.DiGraph, dict[str, dict]]:
+    """
+    Return ``(G, parent_stations)`` for the requested service period, lazily
+    building and caching the variant on first request.
+
+    *period_name* is one of the keys in ``_PERIODS`` (or ``None`` for the
+    canonical default). Unknown names fall back to the default.
+
+    This is the unified entry point: legacy callers that pass no argument get
+    the canonical (midday) variant, and the period-aware routing path calls it
+    with the resolved period name. Tests that patch ``_build_graph`` with a
+    fixture mock intercept every variant request — the patch ignores
+    ``period_name``, so tests stay deterministic regardless of wall-clock time.
+    """
+    if period_name is None or period_name not in _PERIODS:
+        period_name = _DEFAULT_PERIOD
+    cached = _variant_graphs.get(period_name)
+    if cached is not None:
+        return cached
+    with _variant_locks[period_name]:
+        cached = _variant_graphs.get(period_name)
+        if cached is not None:
+            return cached
+
+        t0 = time.time()
+        data = _load_canonical_trip_data()
+        train_selected, bus_for_period = _select_representative_trips(data, period_name)
+        print(
+            f"[transit_graph] Building '{period_name}' variant: "
+            f"{len(train_selected)} train reps, {len(bus_for_period)} bus reps"
+        )
+        G = _assemble_graph(
+            data.parent_stations,
+            data.platform_to_parent,
+            data.bus_stop_lookup,
+            train_selected,
+            data.train_seqs,
+            bus_for_period,
+            period_name,
+        )
+        print(f"[transit_graph] Variant '{period_name}' built in {time.time() - t0:.1f}s")
+        _variant_graphs[period_name] = (G, data.parent_stations)
+        return _variant_graphs[period_name]
+
+
+# Back-compat alias retained for callers that imported _build_graph_for_period
+# before the unification. Identical semantics — pass the period name through.
+_build_graph_for_period = _build_graph
 
 
 def warm_up() -> None:
     """
-    Trigger graph construction and bus stop sequence loading at startup
-    so the first user request is fast.
-    Call this from the FastAPI lifespan or startup event.
+    Pre-stream GTFS data and pre-build the canonical (midday) graph at startup.
+
+    Per the BUG-051 design (lazy per-period), variant graphs for other periods
+    are NOT built here — they build on first request that needs them. The
+    canonical pre-pass means each lazy build is just in-memory selection
+    + edge assembly (a few seconds), not a fresh file stream.
     """
+    _load_canonical_trip_data()
     G, _ = _build_graph()
     print(f"[transit_graph] Graph size: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
     get_bus_stop_sequences()
@@ -1012,16 +1391,30 @@ def get_station_coords(mapid: str) -> tuple[float, float] | None:
     return (s["lat"], s["lon"]) if s else None
 
 
-def get_last_departure(mapid: str, direction_id: str) -> str | None:
+def get_last_departure(route_id: str, direction_id: str, mapid: str) -> str | None:
     """
     Return the latest scheduled GTFS departure time string (HH:MM:SS, may be
-    "24:xx"/"25:xx" for post-midnight CTA runs) for a train parent station in
-    a given direction, or None if unknown.
+    "24:xx"/"25:xx" for post-midnight CTA runs) for a specific
+    (route, direction, parent station), or None if unknown.
 
     Populated during startup by _build_graph() / _stream_all_stop_sequences().
-    Used by the /stop-arrivals endpoint for Feature Last Train.
+    Used by the /last-departure endpoint (Last Train tool).
     """
-    return _last_departure.get((mapid, direction_id))
+    return _last_departure.get((route_id, direction_id, mapid))
+
+
+def to_parent_mapid(stop_id: str) -> str:
+    """
+    Resolve a CTA stop_id to its parent station mapid. Platform stop_ids
+    (30000–39999) are mapped to their parent (40000–49999) via the
+    platform_to_parent index built from stops.txt; parent mapids and unknown
+    IDs pass through unchanged.
+
+    Needed because schedule_data (built offline) publishes platform stop_ids
+    in route schedules, while runtime caches keyed on station (e.g.
+    _last_departure) use parent mapids.
+    """
+    return _load_platform_to_parent().get(stop_id, stop_id)
 
 
 # Station name index — built once during warm_up(); read-only after that.
@@ -1172,24 +1565,22 @@ def _load_bus_stop_lookup() -> dict[str, dict]:
 
 def get_bus_stop_sequences() -> dict[tuple[str, str], list[tuple]]:
     """
-    Return the cached bus stop sequence table, building the graph on first use.
+    Return the canonical (midday) bus stop sequence table.
 
     Returns:
         {(route_short_name, direction_id): [
             (stop_id, stop_name, lat, lon, arr_minutes), ...
         ]}
         Sequences are ordered by stop_sequence. arr_minutes is minutes since
-        midnight for the representative midday trip.
+        midnight for the canonical midday representative trip — period-
+        independent, suitable for positional/transfer-scoring callers.
 
-    The cache is populated by ``_build_graph()`` (which streams stop_times.txt
-    once for both train and bus sequences via ``_load_trips_unified`` +
-    ``_stream_all_stop_sequences``). Callers that hit this function before
-    ``warm_up()`` triggers ``_build_graph()`` will trigger it now via the
-    ``@lru_cache``-backed call below.
+    Populated by ``_load_canonical_trip_data()`` during ``warm_up()``. Callers
+    that hit this function before warm_up trigger the canonical pass now.
     """
     if _bus_seq_cache is None:
-        _build_graph()
-    # Mypy: _bus_seq_cache is set during _build_graph(); narrow the Optional.
+        _load_canonical_trip_data()
+    # _bus_seq_cache is set by _populate_canonical_aux_caches(); narrow Optional.
     assert _bus_seq_cache is not None
     return _bus_seq_cache
 
@@ -1459,10 +1850,50 @@ def find_routes(
     n_routes: int = 3,
     origin_bus_stops: list[dict] | None = None,
     dest_bus_stops: list[dict] | None = None,
+    effective_speed: float = 1.0,
+    departure_time: datetime | None = None,
 ) -> list[Route]:
     """
+    Back-compat wrapper around find_routes_with_status() that returns just the
+    list of routes. Callers that need to distinguish out-of-coverage from
+    no-path (BUG-047) should use find_routes_with_status() directly.
+
+    *departure_time* — see find_routes_with_status (BUG-051). None means "now".
+    """
+    return find_routes_with_status(
+        origin_lat, origin_lon, dest_lat, dest_lon,
+        origin_stations=origin_stations,
+        n_routes=n_routes,
+        origin_bus_stops=origin_bus_stops,
+        dest_bus_stops=dest_bus_stops,
+        effective_speed=effective_speed,
+        departure_time=departure_time,
+    ).routes
+
+
+# Progressive-expansion rings used when the caller doesn't pre-resolve
+# origin/destination train stations. _MAX_RADIUS_MILES is the outermost ring;
+# beyond that the boundary is reported as out_of_coverage instead of returning
+# an empty list silently (BUG-047).
+_RADIUS_RINGS: tuple[float, ...] = (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0)
+_MAX_RADIUS_MILES: float = _RADIUS_RINGS[-1]
+
+
+def find_routes_with_status(
+    origin_lat: float,
+    origin_lon: float,
+    dest_lat: float,
+    dest_lon: float,
+    origin_stations: list[dict] | None = None,
+    n_routes: int = 3,
+    origin_bus_stops: list[dict] | None = None,
+    dest_bus_stops: list[dict] | None = None,
+    effective_speed: float = 1.0,
+    departure_time: datetime | None = None,
+) -> RoutingResult:
+    """
     Find the fastest transit routes from (origin_lat, origin_lon) to
-    (dest_lat, dest_lon).
+    (dest_lat, dest_lon) and report the outcome as a typed RoutingResult.
 
     Args:
         origin_lat / origin_lon:  User's current coordinates
@@ -1478,12 +1909,41 @@ def find_routes(
                                   in gtfs_loader already does this work for the
                                   user-supplied origin/destination, so the
                                   /recommend path passes its results in.
+        effective_speed:          User walk-speed factor × weather precip factor
+                                  (BUG-045). When <1.0 (rain, snow, cold, gusts),
+                                  Dijkstra derates every walk-type edge weight by
+                                  1/effective_speed so route SELECTION reflects
+                                  the rider's actual walking pace. The graph
+                                  itself is not mutated — a weight callback is
+                                  passed to shortest_simple_paths instead. Stored
+                                  edge weights remain baseline, so _path_to_route
+                                  builds WalkLegs at baseline minutes and the
+                                  caller's _scale_walk_legs() pass is the single
+                                  authority that scales DISPLAY minutes. Default
+                                  1.0 = no-op for tests and direct callers.
+        departure_time:           Chicago wall-clock datetime the query is
+                                  planned for. None → datetime.now(CHICAGO_TZ).
+                                  Resolves to one of five service-period graph
+                                  variants (BUG-051): weekday_peak,
+                                  weekday_midday, weekday_evening, weekend, owl.
+                                  Trips that don't operate in the chosen period
+                                  are absent from the variant — a 03:00 query
+                                  cannot board a line whose service ended at
+                                  01:30, because that line's edges are not in
+                                  the owl variant. See _select_period().
 
     Returns:
-        List of Route objects sorted by total time (transit + walk, no wait).
-        Empty list if no path found.
+        RoutingResult with `.routes` sorted by total time (transit + walk, no
+        wait) and `.status` one of:
+            "ok"               — routes (possibly empty after filtering) computed.
+            "out_of_coverage"  — origin and/or destination > _MAX_RADIUS_MILES
+                                 from any CTA train station. `.side` is
+                                 "origin" / "destination" / "both".
+            "no_path"          — both boundaries resolved but Yen's produced
+                                 no accepted itinerary.
     """
-    G_base, stations = _build_graph()
+    period_name = _select_period(departure_time)
+    G_base, stations = _build_graph(period_name)
 
     # Origin stations (nearest train stations with walk times already computed).
     # If the caller passed an empty list (no stations within 0.5 miles per
@@ -1492,7 +1952,7 @@ def find_routes(
     # user is in a neighbourhood that is more than 0.5 miles from the nearest
     # station).
     if not origin_stations:
-        for _r in (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0):
+        for _r in _RADIUS_RINGS:
             origin_stations = find_nearest_train_stations(
                 origin_lat, origin_lon, max_distance_miles=_r
             )
@@ -1503,7 +1963,8 @@ def find_routes(
     # Same progressive-expansion logic: prefer the closest station but don't
     # fail just because the destination is slightly over 0.5 miles from the
     # nearest platform.
-    for _r in (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0):
+    dest_stations: list[dict] = []
+    for _r in _RADIUS_RINGS:
         dest_stations = find_nearest_train_stations(
             dest_lat, dest_lon, walk_to_station=False, max_distance_miles=_r
         )
@@ -1511,7 +1972,21 @@ def find_routes(
             break
 
     if not origin_stations or not dest_stations:
-        return []
+        # BUG-047: distinguish "out of CTA coverage" from "no path found" so the
+        # API can surface a helpful user-facing explanation instead of an
+        # unexplained blank result.
+        if not origin_stations and not dest_stations:
+            side = "both"
+        elif not origin_stations:
+            side = "origin"
+        else:
+            side = "destination"
+        return RoutingResult(
+            routes=[],
+            status="out_of_coverage",
+            side=side,
+            max_radius_searched=_MAX_RADIUS_MILES,
+        )
 
     # Feature H: drop candidate stations that add no new transit lines vs.
     # a closer same-line station — eliminates near-duplicate routes.
@@ -1578,8 +2053,26 @@ def find_routes(
                                weight=stop["walk_minutes"], edge_type="walk",
                                route_id="walk", mode="walk")
 
+            # BUG-045: when effective_speed < 1.0 (bad weather), derate every
+            # walk-type edge weight by 1/effective_speed during route SELECTION.
+            # Covers both virtual ORIGIN/DEST walk edges (added above) and the
+            # cached intermodal train↔bus walk edges (built once at startup).
+            # Stored edge weights are not mutated — the callback is per-request.
+            if effective_speed and effective_speed < 1.0:
+                walk_weight_multiplier = 1.0 / effective_speed
+
+                def _weight_fn(u, v, edge_data):
+                    w = edge_data.get("weight", 0.0)
+                    if edge_data.get("edge_type") == "walk":
+                        return w * walk_weight_multiplier
+                    return w
+
+                weight_arg = _weight_fn
+            else:
+                weight_arg = "weight"
+
             try:
-                path_gen = nx.shortest_simple_paths(G, ORIGIN, DEST, weight="weight")
+                path_gen = nx.shortest_simple_paths(G, ORIGIN, DEST, weight=weight_arg)
                 # Diversity filter: Yen's algorithm naturally surfaces many
                 # near-duplicate paths that differ only in their first walk leg
                 # (ORIGIN has multiple low-weight walk edges to nearby stations
@@ -1592,11 +2085,25 @@ def find_routes(
                 # where every candidate collides with an existing signature.
                 max_path_iterations = max(n_routes * 8, 25)
                 iterations = 0
+                # Wall-clock deadline (BUG-049 chunk 1) — protects against a
+                # hung Yen's iteration holding _routing_lock indefinitely.
+                deadline = (
+                    time.monotonic() + _YEN_DEADLINE_S
+                    if _YEN_DEADLINE_S > 0
+                    else None
+                )
                 for path in path_gen:
                     iterations += 1
                     if iterations > max_path_iterations:
                         break
                     if len(routes) >= n_routes:
+                        break
+                    if deadline is not None and time.monotonic() > deadline:
+                        print(
+                            f"[transit_graph] Yen's deadline ({_YEN_DEADLINE_S}s) "
+                            f"reached after {iterations} iterations; "
+                            f"returning {len(routes)} partial route(s)."
+                        )
                         break
                     route = _path_to_route(
                         path, G, stations, origin_walk, dest_walk,
@@ -1625,7 +2132,19 @@ def find_routes(
             # even if routing raised. remove_nodes_from also drops their edges.
             G.remove_nodes_from([ORIGIN, DEST])
 
-    return routes
+    # BUG-047: both boundaries resolved but Yen's produced nothing usable —
+    # surface a "no_path" status so callers can distinguish this from
+    # "out_of_coverage" above. The empty-routes case still returns status="ok"
+    # for callers that pre-resolved stations and got a real (empty) answer back
+    # from Yen's; only the truly unreachable case carries no_path.
+    if not routes:
+        return RoutingResult(
+            routes=[],
+            status="no_path",
+            side=None,
+            max_radius_searched=_MAX_RADIUS_MILES,
+        )
+    return RoutingResult(routes=routes, status="ok")
 
 
 # ---------------------------------------------------------------------------
@@ -1952,6 +2471,8 @@ def _build_transfer_routes(
     dest_lat: float,
     dest_lon: float,
     n_routes: int,
+    *,
+    effective_speed: float = 1.0,
 ) -> list[tuple[float, int, object]]:
     """
     Pass 2: build Route objects for the candidates returned by Pass 1.
@@ -1960,12 +2481,19 @@ def _build_transfer_routes(
     objects, and applies the 90-minute trip cap.  Returns up to n_routes
     results sorted by (in-vehicle + walk + live wait for A + leg-2
     estimated wait estimated as TRANSFER_PENALTY_MINUTES).
+
+    BUG-045: when effective_speed < 1.0 (bad weather), walk components of the
+    sort key and 90-min cap are scaled by 1/effective_speed so that bus+bus
+    candidate ranking reflects the rider's actual walking pace. WalkLeg.minutes
+    on the returned Route objects remain baseline so the caller's
+    _scale_walk_legs() pass is the single authority that scales display.
+
+    BUG-050: the sort key and the 90-min cap both run through
+    compute_route_total() so the per-transfer wait fallback stays in lockstep
+    with _rank_routes / _apply_transfer_wait_estimates in main.py.
     """
-    # Use the shared per-transfer fallback so /recommend's later live-wait
-    # adjustment in _apply_transfer_wait_estimates() subtracts the same value
-    # it added — keeping bus+bus totals consistent with all other routes.
-    _LEG2_WAIT_ESTIMATE = TRANSFER_PENALTY_MINUTES
-    _MAX_TRIP_MINUTES   = 90.0
+    _MAX_TRIP_MINUTES = 90.0
+    walk_factor = (1.0 / effective_speed) if effective_speed and effective_speed < 1.0 else 1.0
 
     ranked: list[tuple[float, int, object]] = []
 
@@ -2026,10 +2554,19 @@ def _build_transfer_routes(
 
         exit_walk_min = street_walk_minutes(exit_lat, exit_lon, dest_lat, dest_lon)
 
-        total_no_wait = (board_walk_min + in_vehicle_A + transfer_walk_min
-                         + in_vehicle_B + exit_walk_min)
-
-        if total_no_wait + wait_min_A + _LEG2_WAIT_ESTIMATE > _MAX_TRIP_MINUTES:
+        # Pre-flight 90-minute cap. Walks are weather-derated via walk_factor
+        # (BUG-045) and the leg-2 fallback comes from compute_route_total
+        # (BUG-050) so the cap matches what the user will eventually see.
+        cap_pretotal = (
+            board_walk_min * walk_factor
+            + in_vehicle_A
+            + transfer_walk_min * walk_factor
+            + in_vehicle_B
+            + exit_walk_min * walk_factor
+            + wait_min_A
+            + TRANSFER_PENALTY_MINUTES  # leg-2 fallback (same as compute_route_total)
+        )
+        if cap_pretotal > _MAX_TRIP_MINUTES:
             continue
 
         direction_A = next(
@@ -2093,7 +2630,7 @@ def _build_transfer_routes(
             transfers=1,
             first_transit_leg_index=1,  # always Walk[0], Transit[1], Walk[2], Transit[3], Walk[4]
         )
-        sort_key = total_no_wait + wait_min_A + _LEG2_WAIT_ESTIMATE
+        sort_key = compute_route_total(route, wait_min_A, walk_factor=walk_factor)
         ranked.append((sort_key, wait_min_A, route))
 
     ranked.sort(key=lambda x: x[0])
@@ -2108,6 +2645,7 @@ def find_bus_transfer_routes(
     bus_arrivals: list[dict],      # from cta_client.get_bus_arrivals(); must include stop_id
     origin_bus_stops: list[dict],  # from gtfs_loader.find_nearest_bus_stops(); includes walk_minutes
     n_routes: int = 3,
+    effective_speed: float = 1.0,  # BUG-045: weather × user walk-speed factor (<=1.0 derates walks during selection)
 ) -> list[tuple[float, int, object]]:
     """
     Find bus+bus transfer routes from origin to destination.
@@ -2150,6 +2688,7 @@ def find_bus_transfer_routes(
     return _build_transfer_routes(
         candidate_map, board_index, bus_arrivals, sequences,
         origin_lat, origin_lon, dest_lat, dest_lon, n_routes,
+        effective_speed=effective_speed,
     )
 
 

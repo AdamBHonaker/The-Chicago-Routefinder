@@ -8,6 +8,12 @@ import {
   WALK_STEP_PROXIMITY_M,
 } from "../constants.js";
 import { computeTripPositionUpdates } from "../utils/tripGeometry.js";
+import {
+  TRIP_STATE_KEY,
+  loadPersistedTrip,
+  savePersistedTrip,
+  clearPersistedTrip,
+} from "../utils/tripPersistence.js";
 
 /**
  * Encapsulates the live trip-tracking state machine:
@@ -15,6 +21,10 @@ import { computeTripPositionUpdates } from "../utils/tripGeometry.js";
  *  - Leg advancement, walk-step completion, and off-route detection
  *  - "On vehicle" confirmation toggle
  *  - Reroute suppression timer
+ *  - Trip-resume across PWA reloads (BUG-resume): durable fields persist to
+ *    localStorage with a 4 h TTL; the watch effect auto-attaches when the
+ *    rehydrated state has tripActive=true, so a backgrounded-then-evicted
+ *    PWA picks up the trip on next open. See utils/tripPersistence.js.
  *
  * @param {{ result: object|null, selectedRouteIndex: number }} params
  * @returns {{
@@ -34,31 +44,65 @@ import { computeTripPositionUpdates } from "../utils/tripGeometry.js";
  * }}
  */
 export function useTripTracker({ result, selectedRouteIndex }) {
-  const [tripActive, setTripActive]         = useState(false);
+  // Rehydrate durable fields from localStorage. Volatile fields (userPosition,
+  // isOffRoute, tripGeoError, suppressRerouteUntil) start fresh — GPS will
+  // repopulate them within seconds. Reading happens once at mount via the
+  // lazy-init form of useState.
+  const persisted = loadPersistedTrip(TRIP_STATE_KEY);
+  const persistedActive       = persisted?.tripActive === true;
+  const persistedLegIndex     = persistedActive ? (persisted.activeLegIndex ?? 0) : null;
+  const persistedSteps        = persistedActive ? new Set(persisted.completedSteps ?? []) : new Set();
+  const persistedOnVehicle    = persistedActive ? !!persisted.onVehicle : false;
+
+  const [tripActive, setTripActive]         = useState(persistedActive);
   const [userPosition, setUserPosition]     = useState(null);
-  const [activeLegIndex, setActiveLegIndex] = useState(null);
-  const [completedSteps, setCompletedSteps] = useState(new Set());
+  const [activeLegIndex, setActiveLegIndex] = useState(persistedLegIndex);
+  const [completedSteps, setCompletedSteps] = useState(persistedSteps);
   const [isOffRoute, setIsOffRoute]         = useState(false);
   const [tripGeoError, setTripGeoError]     = useState(false);
-  const [onVehicle, setOnVehicle]           = useState(false);
+  const [onVehicle, setOnVehicle]           = useState(persistedOnVehicle);
 
   const watchIdRef           = useRef(null);
   const suppressRerouteUntil = useRef(0);
   // Ref mirrors for synchronous reads inside the GPS position effect (OPT-FE-005).
-  const activeLegIndexRef    = useRef(null);
-  const onVehicleRef         = useRef(false);
+  const activeLegIndexRef    = useRef(persistedLegIndex);
+  const onVehicleRef         = useRef(persistedOnVehicle);
 
   // Close over the latest completedSteps for the position updater without
   // adding it to the GPS effect's deps (which would re-subscribe needlessly).
   const completedStepsRef = useRef(completedSteps);
   useEffect(() => { completedStepsRef.current = completedSteps; }, [completedSteps]);
 
-  function startTrip() {
-    if (!navigator.geolocation) {
-      setTripGeoError(true);
+  // ── Persistence ────────────────────────────────────────────────────────
+  // Re-serialise durable state on every change. When tripActive flips false
+  // (stopTrip, PERMISSION_DENIED, etc.) the blob is cleared so the next mount
+  // starts fresh. Quota / private-browsing failures are swallowed inside the
+  // helpers — persistence is best-effort.
+  useEffect(() => {
+    if (!tripActive) {
+      clearPersistedTrip(TRIP_STATE_KEY);
       return;
     }
-    // Defensive: clear any prior watch so a re-entrant startTrip cannot leak
+    savePersistedTrip(TRIP_STATE_KEY, {
+      tripActive: true,
+      activeLegIndex,
+      completedSteps: Array.from(completedSteps),
+      onVehicle,
+    });
+  }, [tripActive, activeLegIndex, completedSteps, onVehicle]);
+
+  // ── watchPosition lifecycle ────────────────────────────────────────────
+  // Driven by `tripActive` so both fresh startTrip AND rehydration-on-mount
+  // attach the watch via the same code path. Cleanup runs on tripActive→false
+  // and on unmount, so stopTrip and a host unmount both tear down cleanly.
+  useEffect(() => {
+    if (!tripActive) return undefined;
+    if (!navigator.geolocation) {
+      setTripGeoError(true);
+      setTripActive(false);
+      return undefined;
+    }
+    // Defensive: clear any prior watch so a re-entrant attach cannot leak
     // a watchPosition handler whose ID we'd otherwise lose track of.
     if (watchIdRef.current !== null) {
       navigator.geolocation.clearWatch(watchIdRef.current);
@@ -73,12 +117,33 @@ export function useTripTracker({ result, selectedRouteIndex }) {
         console.error("[trip] GPS error:", err);
         if (err.code === err.PERMISSION_DENIED) {
           setTripGeoError(true);
-          stopTrip();
+          // Inline stopTrip's resets; setTripActive(false) lets this effect's
+          // cleanup clear the watch on the next commit.
+          setUserPosition(null);
+          activeLegIndexRef.current = null;
+          setActiveLegIndex(null);
+          setCompletedSteps(new Set());
+          setIsOffRoute(false);
+          setOnVehicle(false);
+          onVehicleRef.current = false;
+          setTripActive(false);
         }
       },
       TRIP_GEO_OPTIONS,
     );
-    setTripActive(true);
+    return () => {
+      if (watchIdRef.current !== null) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+        watchIdRef.current = null;
+      }
+    };
+  }, [tripActive]);
+
+  function startTrip() {
+    if (!navigator.geolocation) {
+      setTripGeoError(true);
+      return;
+    }
     activeLegIndexRef.current = 0;
     setActiveLegIndex(0);
     setCompletedSteps(new Set());
@@ -86,14 +151,11 @@ export function useTripTracker({ result, selectedRouteIndex }) {
     suppressRerouteUntil.current = 0;
     setOnVehicle(false);
     onVehicleRef.current = false;
+    setTripActive(true); // watch effect attaches on next commit
   }
 
   function stopTrip() {
-    if (watchIdRef.current !== null) {
-      navigator.geolocation.clearWatch(watchIdRef.current);
-      watchIdRef.current = null;
-    }
-    setTripActive(false);
+    setTripActive(false); // watch effect cleanup detaches + persist effect clears storage
     setUserPosition(null);
     activeLegIndexRef.current = null;
     setActiveLegIndex(null);
@@ -134,17 +196,6 @@ export function useTripTracker({ result, selectedRouteIndex }) {
     setOnVehicle(false);
     onVehicleRef.current = false;
   }, [activeLegIndex]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Defensive teardown: if the host component unmounts mid-trip without
-  // calling stopTrip (error boundary swap, HMR, future routing-driven
-  // unmount), watchPosition would otherwise keep firing into a dead React
-  // tree, draining battery until the page is closed.
-  useEffect(() => () => {
-    if (watchIdRef.current !== null) {
-      navigator.geolocation.clearWatch(watchIdRef.current);
-      watchIdRef.current = null;
-    }
-  }, []);
 
   // GPS position → trip state updates.
   // Intentionally deps on `userPosition` only — all other values are read via

@@ -374,6 +374,18 @@ class TestFetchBusChunk:
         assert result[0]["psgld"] == "HALF_EMPTY"
 
     @pytest.mark.asyncio
+    async def test_null_psgld_does_not_drop_arrival(self):
+        # CTA sometimes ships `"psgld": null` on routes that don't report
+        # passenger load. The arrival must still appear in the result list
+        # (BUG-054 — previously the AttributeError was swallowed silently and
+        # the rider lost the prediction).
+        session = _mock_session(self._payload([self._prd(psgld=None)]))
+        result = await _fetch_bus_chunk(session, ["1234"], "k", routes=None)
+        assert len(result) == 1
+        assert result[0]["psgld"] == ""
+        assert result[0]["route"] == "22"
+
+    @pytest.mark.asyncio
     async def test_dly_true_string_parsed_as_true(self):
         session = _mock_session(self._payload([self._prd(dly="true")]))
         result = await _fetch_bus_chunk(session, ["1234"], "k", routes=None)

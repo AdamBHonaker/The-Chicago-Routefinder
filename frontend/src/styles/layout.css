@@ -268,7 +268,7 @@
   [data-active-tab="map"] .panel-cards,
   [data-active-tab="home"] .panel-map,
   [data-active-tab="alerts"] .panel-map,
-  [data-active-tab="saved"] .panel-map {
+  [data-active-tab="tools"] .panel-map {
     position: absolute;
     inset: 0;
     opacity: 0;

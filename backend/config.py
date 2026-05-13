@@ -18,6 +18,15 @@ import os
 # as data noise and dropped during graph construction.  Range: 30–90 min.
 MAX_LEG_MINUTES: float = float(os.getenv("MAX_LEG_MINUTES", "45"))
 
+# Deadline applied to NetworkX Yen's k-shortest-paths iteration inside
+# find_routes().  Yen's is a generator that can take arbitrarily long on
+# pathological graphs; without a deadline a stuck request would hold the
+# routing lock and stall every subsequent caller.  In normal operation the
+# loop completes in well under 200 ms, so 3 s is comfortably above p99 while
+# still bounding worst-case latency.  Set to 0 to disable (not recommended).
+# Range: 1.0–10.0 s.
+ROUTING_YEN_DEADLINE_S: float = float(os.getenv("ROUTING_YEN_DEADLINE_S", "3.0"))
+
 # Default transfer penalty added to trip time for each line change.  Range: 2–5 min.
 # Shared with utils.TRANSFER_PENALTY_MINUTES — defined there to avoid circular import.
 
@@ -36,8 +45,14 @@ TRANSFER_WALK_CAP_MIN: float = float(os.getenv("TRANSFER_WALK_CAP_MIN", "5.0"))
 
 # Straight-line → street-network correction factor applied to Haversine distances
 # at graph-build time (avoids loading the full street graph into memory on startup).
-# Chicago's grid is very regular; 1.25–1.35 is typical for US cities.
-DETOUR_FACTOR: float = float(os.getenv("DETOUR_FACTOR", "1.3"))
+# Calibrated empirically against the street graph by
+# backend/scripts/calibrate_detour_factor.py (n=500 random O/D pairs within the
+# coverage polygon, Haversine 0.05–3 mi, seed=0, run on 2026-05-12):
+#   overall mean = 1.287, 95% CI [1.270, 1.304]
+#   0.25–1 mi    = 1.346 (n=61)   1–3 mi = 1.281 (n=433)
+# 1.29 is the rounded mean and sits inside the CI. Re-run the script after any
+# street-graph rebuild and update if the new mean falls outside the prior CI.
+DETOUR_FACTOR: float = float(os.getenv("DETOUR_FACTOR", "1.29"))
 
 # ---------------------------------------------------------------------------
 # Bus-to-bus transfer candidate scoring (Feature C)
@@ -62,9 +77,9 @@ FWD_PROGRESS_RATIO: float = float(os.getenv("FWD_PROGRESS_RATIO", "0.9"))
 MAX_CANDIDATES_PER_ARRIVAL: int = int(os.getenv("MAX_CANDIDATES_PER_ARRIVAL", "3"))
 
 # Walk-time penalty factor in the candidate score (minutes per mile).
-# Derived as: 60 min/hr ÷ 3 mph × 1.3 detour ≈ 26.0 min/mile.
+# Derived as: 60 min/hr ÷ 3 mph × 1.29 detour ≈ 25.8 min/mile.
 # Adjust in lockstep with WALKING_SPEED_MPH and DETOUR_FACTOR.
-TRANSFER_SCORE_WALK_FACTOR: float = float(os.getenv("TRANSFER_SCORE_WALK_FACTOR", "26.0"))
+TRANSFER_SCORE_WALK_FACTOR: float = float(os.getenv("TRANSFER_SCORE_WALK_FACTOR", "25.8"))
 
 # ---------------------------------------------------------------------------
 # Walking
@@ -100,6 +115,15 @@ CTA_API_TIMEOUT_SECONDS: float = float(os.getenv("CTA_API_TIMEOUT_SECONDS", "8")
 # ---------------------------------------------------------------------------
 # Street graph memory management (see walking.py)
 # ---------------------------------------------------------------------------
+
+# Hard cap (Haversine miles) on origin↔destination distance before the
+# street-graph Dijkstra is bypassed and the Haversine + detour fallback is
+# used instead.  igraph's get_shortest_paths() has no native timeout; this
+# pre-flight check is a cheap proxy that catches the only realistic
+# pathological case (cross-city or out-of-region queries) without needing
+# real cancellation.  Legitimate Chicago walks are virtually always <2 mi;
+# 5 mi leaves comfortable headroom.  Range: 3.0–10.0 miles.
+MAX_STREET_WALK_MILES: float = float(os.getenv("MAX_STREET_WALK_MILES", "5.0"))
 
 # Seconds of walk-request inactivity before the in-memory street graph is freed
 # so Railway can reclaim ~300–600 MB during quiet periods (e.g. overnight).

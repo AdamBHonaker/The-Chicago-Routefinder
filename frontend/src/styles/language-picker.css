@@ -154,6 +154,31 @@
   left: 0;
 }
 
+/* Mobile: the 320px popover is wider than many phone viewports, and because
+ * the trigger can wrap to any horizontal position in the masthead controls
+ * row, anchoring relative to the trigger can push the popover off-screen.
+ * Detach from the trigger and center it as a fixed card under the masthead. */
+@media (max-width: 480px) {
+  .language-picker-popover {
+    position: fixed;
+    top: var(--sp-4);
+    left: 50%;
+    right: auto;
+    transform: translateX(-50%);
+    width: min(92vw, 360px);
+    max-height: calc(100vh - 2 * var(--sp-4));
+    overflow-y: auto;
+  }
+  .language-picker-popover--continents,
+  .language-picker-popover--languages {
+    width: min(92vw, 360px);
+  }
+  [dir="rtl"] .language-picker-popover {
+    left: 50%;
+    right: auto;
+  }
+}
+
 /* ── Machine-translated review badge (Chunk 1) ──────────────────────────── */
 
 .mt-review-notice {

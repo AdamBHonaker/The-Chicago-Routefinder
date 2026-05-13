@@ -60,8 +60,6 @@ function PinnedStopsBoard({ stops, arrivals, onUnpin, onRefresh }) {
         {stops.map((stop) => {
           const data = arrivals?.[`${stop.type}:${stop.stop_id}`];
           const arrList = data?.arrivals ?? [];
-          const lastMin = data?.last_departure_minutes;
-          const showLastTrain = lastMin !== undefined && lastMin !== null;
 
           return (
             <div key={stop.id} className="psb-card">
@@ -86,7 +84,7 @@ function PinnedStopsBoard({ stops, arrivals, onUnpin, onRefresh }) {
                 ) : (
                   arrList.map((a, i) => (
                     <ArrivalRow
-                      key={`${a.route}|${a.destination}|${a.minutes}|${i}`}
+                      key={`${a.route}|${a.destination}|${i}`}
                       route={a.route}
                       destination={a.destination}
                       minutes={a.minutes}
@@ -94,12 +92,6 @@ function PinnedStopsBoard({ stops, arrivals, onUnpin, onRefresh }) {
                   ))
                 )}
               </div>
-
-              {showLastTrain && (
-                <p className={`psb-last-train${lastMin <= 15 ? " psb-last-train--urgent" : ""}`}>
-                  {t("last_train_in", { min: lastMin })}
-                </p>
-              )}
             </div>
           );
         })}

@@ -125,6 +125,12 @@ class TestParseWind:
         wind = svc._parse_wind("0 mph")
         assert wind.speed_mph == pytest.approx(0.0)
 
+    def test_zero_gust_preserved_not_dropped(self, svc):
+        # Regression: '0 mph' gust is a real reading (genuine calm), not "no data".
+        # A truthy check would coerce 0.0 → None and lose the distinction.
+        wind = svc._parse_wind("5 mph", "0 mph")
+        assert wind.gust_mph == pytest.approx(0.0)
+
 
 # ---------------------------------------------------------------------------
 # _feels_like

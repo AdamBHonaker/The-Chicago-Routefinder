@@ -291,7 +291,7 @@ _STATS_TEMPLATE = Template(_TEMPLATE_PATH.read_text(encoding="utf-8"))
 # because the Dockerfile only copies ``backend/`` into the image. Update in
 # lockstep with docs/PRIVACY.md when material changes land.
 PRIVACY_TEXT = """\
-CTA Transit PWA — privacy notes
+The Chicago Routefinder — privacy notes
 
 This app collects the minimum information needed to operate the service and
 to publish coarse, aggregate usage numbers. It uses no third-party analytics

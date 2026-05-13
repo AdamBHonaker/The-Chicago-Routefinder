@@ -23,19 +23,24 @@ load_dotenv()
 
 from gtfs_loader import (
     resolve_location, geocode_google, reverse_geocode_google, NEIGHBORHOOD_COORDS,
-    fuzzy_match_neighborhood, _normalize_street_abbr, _load_stops, coords_for_location,
+    fuzzy_match_neighborhood, _load_stops, coords_for_location,
 )
+from geocode_text import _normalize_street_abbr
 from cta_client import get_train_arrivals, get_bus_arrivals, get_alerts, get_route_statuses, TRAIN_LINE_TO_ALERT_ID, LINE_NAMES, init_session as _init_cta_session, close_session as _close_cta_session, _get_session as _get_cta_session
 from transit_graph import (
-    find_routes, find_bus_transfer_routes, warm_up, get_bus_stop_sequences,
+    find_routes, find_routes_with_status, find_bus_transfer_routes, warm_up,
+    get_bus_stop_sequences,
     WalkLeg, TransitLeg, Route, get_station_coords, get_station_by_name,
     get_last_departure, get_stop_sequence_position,
+    to_parent_mapid,
+    compute_route_total,
 )
 from walking import (
     walk_minutes as _walk_minutes,
     walk_directions as _walk_directions,
     walk_path as _walk_path,
     walk_all as _walk_all,
+    get_fallback_metrics as _walk_fallback_metrics,
 )
 from weather_service import WeatherService, WeatherContext, PrecipitationType
 from utils import CHICAGO_TZ as _CHICAGO_TZ, TRANSFER_PENALTY_MINUTES
@@ -87,7 +92,7 @@ def _maybe_log_cache_stats() -> None:
 _SAME_LOCATION_THRESHOLD_DEG2: float = 0.001 ** 2   # degrees²
 
 # ---------------------------------------------------------------------------
-# /stop-arrivals cache (Feature Pinned Stops + Feature Last Train)
+# /stop-arrivals cache (Feature Pinned Stops)
 # ---------------------------------------------------------------------------
 _STOP_ARRIVALS_TTL = 30   # seconds
 _stop_arrivals_cache: TTLCache = TTLCache(maxsize=200, ttl=_STOP_ARRIVALS_TTL)
@@ -280,6 +285,10 @@ from routes.stats import router as _stats_router
 app.include_router(_admin_router)
 app.include_router(_stats_router)
 
+# FEAT-018: published CTA schedule viewer endpoints.
+from schedule import router as _schedule_router
+app.include_router(_schedule_router)
+
 
 _VALID_TRANSIT_MODES  = {"All", "Train", "Bus", "Walk"}
 _VALID_BUS_FULLNESS   = {"All", "Empty", "Half-Full", "Full"}
@@ -305,6 +314,13 @@ class RouteRequest(BaseModel):
     #   adjusted_minutes = baseline_minutes / walk_speed
     # Slow: 0.75 (33% longer), Standard: 1.0 (no-op), Brisk: 1.25 (20% shorter).
     walk_speed: float = Field(default=1.0, ge=0.5, le=2.0)
+    # Optional planned departure time, Chicago wall-clock (BUG-051). When set,
+    # the routing engine picks the service-period graph variant (weekday peak,
+    # weekday midday, weekday evening, weekend, or owl) whose service window
+    # contains this time. None → use server-side datetime.now(CHICAGO_TZ).
+    # ISO-8601 strings are accepted by Pydantic; naive values are treated as
+    # already Chicago-local; tz-aware values are converted to Chicago time.
+    departure_time: datetime | None = None
 
     @field_validator("transit_mode")
     @classmethod
@@ -370,20 +386,43 @@ def _build_arrival_lookup(
     return lookup
 
 
+# BUG-046 thresholds for _pick_wait robustness.
+# _PICK_WAIT_SHORT_HOP_DEG: if the boarding→exit vector is shorter than this
+#   (≈0.35 mi in lat/lon degrees), the bearing is noise-sensitive — use the
+#   route's further-downstream station as a longer baseline if available.
+# _PICK_WAIT_AMBIGUOUS_MARGIN: minimum gap between the top two normalized
+#   cosine similarities. Below this, the direction is genuinely ambiguous
+#   and we fall back to the earliest arrival across all directions.
+_PICK_WAIT_SHORT_HOP_DEG = 0.005
+_PICK_WAIT_AMBIGUOUS_MARGIN = 0.15
+
+
 def _pick_wait(
     dest_map: dict[str, int],
     from_mapid: str,
     to_mapid: str,
+    fallback_to_mapid: str | None = None,
 ) -> int | None:
     """
-    Pick live wait minutes from a destination→minutes map using a dot-product
-    bearing test to resolve multi-direction stations. Returns None when
-    dest_map is empty (no live data).
+    Pick live wait minutes from a destination→minutes map using a normalized
+    cosine-similarity bearing test to resolve multi-direction stations.
+    Returns None when dest_map is empty (no live data).
 
     When multiple arrival directions exist (e.g. Howard vs 95th/Dan Ryan on
-    the Red Line), selects the terminal whose vector from the boarding station
-    is most aligned with the boarding→exit vector. Falls back to earliest
-    arrival if coordinates are unavailable.
+    the Red Line), selects the terminal whose unit-bearing from the boarding
+    station is most aligned with the boarding→exit unit-bearing.
+
+    BUG-046 guards against fragile selection at near-orthogonal vectors:
+      * If the boarding→exit vector is very short (one- or two-stop hop),
+        fallback_to_mapid (a further-downstream station from the same route)
+        is used for a longer, more stable baseline vector when provided.
+      * Comparisons use normalized cosine similarity, not raw dot products,
+        so vector magnitudes do not dominate. If the top two scores differ
+        by less than _PICK_WAIT_AMBIGUOUS_MARGIN, the direction is genuinely
+        ambiguous and we return the earliest arrival across directions —
+        matching user expectations of "show the train coming sooner".
+
+    Falls back to earliest arrival if coordinates are unavailable.
     """
     if not dest_map:
         return None
@@ -395,21 +434,49 @@ def _pick_wait(
         return min(dest_map.values())
     dlat = to_coords[0] - from_coords[0]
     dlon = to_coords[1] - from_coords[1]
-    if dlat == 0.0 and dlon == 0.0:
+    dmag = (dlat * dlat + dlon * dlon) ** 0.5
+    if dmag < _PICK_WAIT_SHORT_HOP_DEG and fallback_to_mapid and fallback_to_mapid != to_mapid:
+        far = get_station_coords(fallback_to_mapid)
+        if far:
+            flat = far[0] - from_coords[0]
+            flon = far[1] - from_coords[1]
+            fmag = (flat * flat + flon * flon) ** 0.5
+            if fmag > dmag:
+                dlat, dlon, dmag = flat, flon, fmag
+    if dmag == 0.0:
         return min(dest_map.values())
-    best_score = float("-inf")
-    best_wait: int | None = None
+    scored: list[tuple[float, int]] = []
     for dest_name, minutes in dest_map.items():
         term = get_station_by_name(dest_name)
         if term is None:
             continue
         tlat = term[0] - from_coords[0]
         tlon = term[1] - from_coords[1]
-        score = dlat * tlat + dlon * tlon
-        if score > best_score:
-            best_score = score
-            best_wait  = minutes
-    return best_wait if best_wait is not None else min(dest_map.values())
+        tmag = (tlat * tlat + tlon * tlon) ** 0.5
+        if tmag == 0.0:
+            continue
+        cos_sim = (dlat * tlat + dlon * tlon) / (dmag * tmag)
+        scored.append((cos_sim, minutes))
+    if not scored:
+        return min(dest_map.values())
+    # BUG-060: if every candidate points opposite the boarding→exit vector,
+    # the "highest" cosine similarity is still the least-wrong of two wrong
+    # answers — fall back to the earliest arrival instead.
+    scored = [(cs, m) for cs, m in scored if cs > 0.0]
+    if not scored:
+        return min(dest_map.values())
+    scored.sort(key=lambda x: x[0], reverse=True)
+    if len(scored) >= 2 and (scored[0][0] - scored[1][0]) < _PICK_WAIT_AMBIGUOUS_MARGIN:
+        return min(dest_map.values())
+    return scored[0][1]
+
+
+def _route_last_transit_to_mapid(route) -> str | None:
+    """Return the to_mapid of the last TransitLeg in the route, or None."""
+    for leg in reversed(route.legs):
+        if isinstance(leg, TransitLeg):
+            return leg.to_mapid
+    return None
 
 
 def _rank_routes(
@@ -436,7 +503,13 @@ def _rank_routes(
         if first_transit:
             key = (first_transit.line_code, first_transit.from_mapid)
             dest_map = arrival_lookup.get(key, {})
-            wait = _pick_wait(dest_map, first_transit.from_mapid, first_transit.to_mapid)
+            final_to = _route_last_transit_to_mapid(route)
+            wait = _pick_wait(
+                dest_map,
+                first_transit.from_mapid,
+                first_transit.to_mapid,
+                fallback_to_mapid=final_to if final_to != first_transit.to_mapid else None,
+            )
         if wait is not None:
             first_walk = next(
                 (l.minutes for l in route.legs
@@ -444,12 +517,13 @@ def _rank_routes(
                 0.0,
             )
             station_wait = max(0.0, wait - first_walk)
-            total = route.total_minutes_no_wait + station_wait
         else:
-            total = route.total_minutes_no_wait
-        # Fallback wait estimate for each transfer (line change). _fetch_transfer_arrivals
-        # later overrides this with live data via _apply_transfer_wait_estimates().
-        total += route.transfers * TRANSFER_PENALTY_MINUTES
+            station_wait = 0.0
+        # Per-transfer waits are unknown at this point; compute_route_total fills
+        # each one with the shared TRANSFER_PENALTY_MINUTES fallback.
+        # _apply_transfer_wait_estimates later replaces those fallbacks with live
+        # data — also through compute_route_total — keeping the formula in one place.
+        total = compute_route_total(route, station_wait)
         ranked.append((total, wait, route))
     ranked.sort(key=lambda x: x[0])
     return ranked
@@ -462,9 +536,14 @@ def _apply_transfer_wait_estimates(
 
     Called after _fetch_transfer_arrivals() has annotated each transit leg
     (other than the first) with leg.transfer_wait_minutes from live CTA data.
-    For each route, replaces the flat TRANSFER_PENALTY_MINUTES estimate added
-    by _rank_routes() with the live wait — falling back to TRANSFER_PENALTY_MINUTES
-    when the live data is missing for a particular transfer.
+    For each route, rebuilds the total via compute_route_total() — the single
+    arithmetic authority — substituting live transfer waits where available
+    and falling back to TRANSFER_PENALTY_MINUTES otherwise.
+
+    The first-leg wait baked into the previous `total` is recovered by
+    subtracting compute_route_total's estimate-only baseline; this keeps
+    `route.total_minutes_no_wait` arithmetic inside compute_route_total
+    (BUG-050 invariant).
 
     Returns a re-sorted list of (total, wait, route) tuples.
     """
@@ -473,18 +552,21 @@ def _apply_transfer_wait_estimates(
         if route.transfers <= 0:
             updated.append((total, wait, route))
             continue
-        # Undo the flat estimate added in _rank_routes.
-        adjusted = total - route.transfers * TRANSFER_PENALTY_MINUTES
-        # Add the per-transfer live wait (or fall back to the same penalty).
-        seen_transit = False
+        # Recover first_leg_wait without touching route.total_minutes_no_wait
+        # directly: the previous total was compute_route_total(route, fl, None),
+        # so fl = total - compute_route_total(route, 0, None).
+        first_leg_wait = total - compute_route_total(route, 0.0, None)
+        # Collect live transfer waits per non-first transit leg, in leg order.
+        live_waits: list = []
+        seen_first = False
         for leg in route.legs:
             if not isinstance(leg, TransitLeg):
                 continue
-            if not seen_transit:
-                seen_transit = True
+            if not seen_first:
+                seen_first = True
                 continue
-            live = leg.transfer_wait_minutes
-            adjusted += float(live) if live is not None else TRANSFER_PENALTY_MINUTES
+            live_waits.append(leg.transfer_wait_minutes)
+        adjusted = compute_route_total(route, first_leg_wait, live_waits)
         updated.append((adjusted, wait, route))
     updated.sort(key=lambda x: x[0])
     return updated
@@ -789,11 +871,21 @@ async def _run_routing(
     bus_arrivals: list[dict],
     weather: "WeatherContext | None" = None,
     dest_bus_stops: list[dict] | None = None,
-) -> list[tuple]:
-    """Run the unified routing engine and return ranked (total, wait, route) tuples."""
+) -> tuple[list[tuple], dict]:
+    """Run the unified routing engine and return (ranked_routes, status_info).
+
+    `status_info` carries the BUG-047 routing-coverage signal:
+        {"status": "ok" | "out_of_coverage" | "no_path",
+         "side":   "origin" | "destination" | "both" | None,
+         "max_radius_searched": float | None}
+    so the API response, prompt builder, and frontend can surface a clear
+    explanation for out-of-coverage queries instead of an unexplained blank
+    result.
+    """
     ranked_routes: list[tuple] = []
+    status_info: dict = {"status": "ok", "side": None, "max_radius_searched": None}
     if not origin_coords or not dest_coords:
-        return ranked_routes
+        return ranked_routes, status_info
 
     precip_factor = _precip_walk_factor(weather)
     effective_speed = request.walk_speed * precip_factor
@@ -804,7 +896,10 @@ async def _run_routing(
     try:
         bus_stop_walk_map = {s["stop_id"]: s["walk_minutes"] for s in origin_bus_stops}
         arrival_lookup = _build_arrival_lookup(train_arrivals, bus_arrivals, bus_stop_walk_map)
-        raw_routes = find_routes(
+        # BUG-047: capture the typed routing result so out-of-coverage is
+        # surfaced explicitly rather than being indistinguishable from a
+        # transient backend failure.
+        routing_result = find_routes_with_status(
             origin_lat=origin_coords[0],
             origin_lon=origin_coords[1],
             dest_lat=dest_coords[0],
@@ -813,7 +908,15 @@ async def _run_routing(
             n_routes=5,
             origin_bus_stops=origin_bus_stops,
             dest_bus_stops=dest_bus_stops,
+            effective_speed=effective_speed,
+            departure_time=request.departure_time,
         )
+        raw_routes = routing_result.routes
+        status_info = {
+            "status": routing_result.status,
+            "side": routing_result.side,
+            "max_radius_searched": routing_result.max_radius_searched,
+        }
         _scale_walk_legs(raw_routes, effective_speed)
         ranked_routes = _rank_routes(raw_routes, arrival_lookup)
         if request.transit_mode == "Bus":
@@ -840,26 +943,21 @@ async def _run_routing(
                 bus_arrivals=bus_arrivals,
                 origin_bus_stops=origin_bus_stops,
                 n_routes=2,
+                effective_speed=effective_speed,
             )
             if transfer_ranked_raw:
                 _scale_walk_legs(
                     [r for _t, _w, r in transfer_ranked_raw],
                     effective_speed,
                 )
-                # Rebuild totals after walk scaling (total was computed before scaling).
-                # Include `route.transfers * TRANSFER_PENALTY_MINUTES` so this matches
-                # the train-route shape (_rank_routes adds the same penalty), keeping
-                # _apply_transfer_wait_estimates() — which assumes the penalty is in
-                # the total and subtracts it before re-adding live waits — correct
-                # for bus+bus routes too.
+                # Rebuild totals after walk scaling using compute_route_total —
+                # the single arithmetic authority shared with _rank_routes and
+                # _apply_transfer_wait_estimates. compute_route_total fills any
+                # missing per-transfer waits with TRANSFER_PENALTY_MINUTES, so
+                # this matches the train-route shape and keeps the live-wait
+                # adjustment step correct for bus+bus routes too (BUG-050).
                 transfer_ranked_raw = [
-                    (
-                        route.total_minutes_no_wait
-                        + (w or 0)
-                        + route.transfers * TRANSFER_PENALTY_MINUTES,
-                        w,
-                        route,
-                    )
+                    (compute_route_total(route, w or 0), w, route)
                     for _t, w, route in transfer_ranked_raw
                 ]
                 transfer_ranked = _rank_bus_routes(transfer_ranked_raw)
@@ -872,7 +970,13 @@ async def _run_routing(
         except Exception as exc:
             print(f"[recommend] bus transfer routing error: {exc}")
 
-    return ranked_routes
+    # BUG-047: if bus+bus transfers salvaged routes after the unified graph
+    # came back out_of_coverage, promote status back to "ok" so the API
+    # response/UI doesn't claim no coverage when we actually have results.
+    if ranked_routes and status_info.get("status") != "ok":
+        status_info = {"status": "ok", "side": None, "max_radius_searched": None}
+
+    return ranked_routes, status_info
 
 
 async def _fetch_transfer_arrivals(ranked_routes: list[tuple]) -> list[dict]:
@@ -918,8 +1022,12 @@ async def _fetch_transfer_arrivals(ranked_routes: list[tuple]) -> list[dict]:
                         dest_map = train_xfer_lookup.get(
                             (leg.line_code, leg.from_mapid), {}
                         )
+                        final_to = _route_last_transit_to_mapid(route)
                         leg.transfer_wait_minutes = _pick_wait(
-                            dest_map, leg.from_mapid, leg.to_mapid
+                            dest_map,
+                            leg.from_mapid,
+                            leg.to_mapid,
+                            fallback_to_mapid=final_to if final_to != leg.to_mapid else None,
                         )
                     else:
                         leg.transfer_wait_minutes = bus_xfer_lookup.get(
@@ -987,11 +1095,21 @@ def _format_response(
     alerts: list[dict],
     ranked_routes: list[tuple],
     weather: "WeatherContext | None" = None,
+    routing_status: dict | None = None,
 ) -> dict:
     """Assemble the final JSON-serialisable response dict."""
+    # BUG-047: surface the routing-coverage signal so the frontend can render a
+    # clear "you're outside CTA coverage" empty state instead of mistaking an
+    # out-of-coverage query for a transient backend failure.
+    status_payload = routing_status or {
+        "status": "ok",
+        "side": None,
+        "max_radius_searched": None,
+    }
     return {
         "recommendation": recommendation,
         "model_used": model_used,
+        "routing_status": status_payload,
         "weather": (
             {
                 "temperature_f":           round(weather.current.temperature_f),
@@ -1086,7 +1204,7 @@ async def _safe_weather(
 
 
 # ---------------------------------------------------------------------------
-# /stop-arrivals helpers (Feature Pinned Stops + Feature Last Train)
+# /last-departure helpers (Last Train tool)
 # ---------------------------------------------------------------------------
 
 def _parse_gtfs_time_mins(t: str) -> float:
@@ -1096,36 +1214,15 @@ def _parse_gtfs_time_mins(t: str) -> float:
     return h * 60.0 + m + s / 60.0
 
 
-def _last_dep_minutes(mapid: str, now_chicago: datetime) -> int | None:
+def _normalize_gtfs_time_to_wall_clock(gtfs_hhmmss: str) -> str:
     """
-    Return minutes until the last scheduled train departure from a station
-    (across both directions), or None if outside the 0–120 minute window.
-
-    Post-midnight CTA service is encoded as "24:xx"/"25:xx" in GTFS.
-    Current times between 00:00–02:59 are treated as continuation of the
-    previous service day by offsetting now_mins by +1440 (24 h) so they
-    compare correctly against post-midnight departure times.
+    Normalize a GTFS time string ("HH:MM:SS", HH may be 24-29 for post-midnight
+    CTA service) to a 24-hour wall-clock "HH:MM" string. "25:30:00" → "01:30".
     """
-    now_mins = now_chicago.hour * 60.0 + now_chicago.minute + now_chicago.second / 60.0
-    # 00:00–02:59 → still "last night's" service day
-    if now_chicago.hour < 3:
-        now_mins += 24 * 60.0
-
-    best: int | None = None
-    for did in ("0", "1"):
-        dep_str = get_last_departure(mapid, did)
-        if dep_str is None:
-            continue
-        try:
-            dep_mins = _parse_gtfs_time_mins(dep_str)
-        except Exception:
-            continue
-        minutes_until = dep_mins - now_mins
-        if 0 <= minutes_until <= 120:
-            rounded = round(minutes_until)
-            if best is None or rounded > best:
-                best = rounded
-    return best
+    parts = gtfs_hhmmss.strip().split(":")
+    h = int(parts[0]) % 24
+    m = int(parts[1])
+    return f"{h:02d}:{m:02d}"
 
 
 # ---------------------------------------------------------------------------
@@ -1134,7 +1231,7 @@ def _last_dep_minutes(mapid: str, now_chicago: datetime) -> int | None:
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    return {"status": "ok", "walking": _walk_fallback_metrics()}
 
 
 @app.get("/ping")
@@ -1185,10 +1282,9 @@ async def stop_arrivals(stops: list[str] = Query(default=[])):
     Each stop is specified as "<type>:<stop_id>" — e.g. "train:40500" or "bus:1234".
     Maximum 10 stops per request.
 
-    Response: { "arrivals": { "<type>:<stop_id>": { "arrivals": [...], "last_departure_minutes"?: int } } }
+    Response: { "arrivals": { "<type>:<stop_id>": { "arrivals": [...] } } }
     Keys are typed (e.g. "train:40900", "bus:1234") so bus stop IDs and train
     mapids do not collide when they share a numeric value.
-    "last_departure_minutes" is included for train stops when within 0–120 min of last run.
     """
     if len(stops) > 10:
         raise HTTPException(status_code=400, detail="Maximum 10 stops per request")
@@ -1263,16 +1359,62 @@ async def stop_arrivals(stops: list[str] = Query(default=[])):
             continue
         arrivals.setdefault(f"{typ}:{sid}", {"arrivals": []})
 
-    # Feature Last Train: add last_departure_minutes for train stops within window
-    now_chicago = datetime.now(_CHICAGO_TZ)
-    for sid in train_stop_ids:
-        mins = _last_dep_minutes(sid, now_chicago)
-        if mins is not None:
-            arrivals.setdefault(f"train:{sid}", {"arrivals": []})["last_departure_minutes"] = mins
-
     result = {"arrivals": arrivals}
     _stop_arrivals_cache[cache_key] = result
     return result
+
+
+@app.get("/last-departure")
+async def last_departure(
+    route_id: str = Query(..., min_length=1, max_length=32),
+    direction_id: str = Query(..., min_length=1, max_length=2),
+    stop_id: str = Query(..., min_length=1, max_length=32),
+):
+    """
+    Last Train tool — return the last scheduled GTFS departure for a specific
+    (route, direction, parent station), with the current minutes-until-departure
+    countdown computed against Chicago wall-clock time.
+
+    Response:
+      {
+        "time": "23:58",          // wall-clock 24-h HH:MM (post-midnight runs
+                                  // like "25:30:00" normalize to "01:30")
+        "minutes_until": 510,     // null when already departed
+        "departed": false
+      }
+
+    Times 00:00–02:59 Chicago are treated as a continuation of the previous
+    service day (offset +1440 min) so a 2 AM lookup against a 1 AM last-train
+    correctly reports "departed."
+
+    404 when there is no last-departure on record for the supplied combination
+    (e.g. the picker's manifest drifted from the GTFS feed currently loaded).
+
+    Accepts either a platform stop_id (30xxx, as published in schedule_data and
+    consumed by the Last Train picker) or a parent station mapid (40xxx); both
+    resolve to the same parent for the lookup.
+    """
+    mapid = to_parent_mapid(stop_id)
+    dep_str = get_last_departure(route_id, direction_id, mapid)
+    if dep_str is None:
+        raise HTTPException(status_code=404, detail="No last departure on record")
+
+    try:
+        dep_mins = _parse_gtfs_time_mins(dep_str)
+    except (ValueError, IndexError):
+        raise HTTPException(status_code=500, detail="Malformed GTFS time on record")
+
+    now_chicago = datetime.now(_CHICAGO_TZ)
+    now_mins = now_chicago.hour * 60.0 + now_chicago.minute + now_chicago.second / 60.0
+    if now_chicago.hour < 3:
+        now_mins += 24 * 60.0  # continuation of previous service day
+
+    delta = dep_mins - now_mins
+    time_label = _normalize_gtfs_time_to_wall_clock(dep_str)
+
+    if delta < 0:
+        return {"time": time_label, "minutes_until": None, "departed": True}
+    return {"time": time_label, "minutes_until": round(delta), "departed": False}
 
 
 # /admin/* and /stats/* + /privacy endpoints live in routes/admin.py and
@@ -1572,7 +1714,7 @@ async def recommend(
         _safe_weather(origin_coords),
     )
 
-    ranked_routes = await _run_routing(
+    ranked_routes, routing_status = await _run_routing(
         request, origin_coords, dest_coords,
         origin_stations, origin_bus_stops, train_arrivals, bus_arrivals,
         weather=weather,
@@ -1607,6 +1749,7 @@ async def recommend(
             transfer_arrivals=transfer_arrivals_combined or None,
             language=request.language,
             weather=weather,
+            routing_status=routing_status,
         )
         recommendation, model_used = await _call_claude(claude_client, prompt, ranked_routes)
 
@@ -1623,6 +1766,7 @@ async def recommend(
         alerts=alerts,
         ranked_routes=ranked_routes,
         weather=weather,
+        routing_status=routing_status,
     )
 
     if _CACHE_ENABLED:

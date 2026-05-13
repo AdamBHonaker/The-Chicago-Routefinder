@@ -7,6 +7,12 @@ frontend/.env.local
 # CTA GTFS data — large files, re-downloaded via fetch_gtfs.py
 backend/gtfs_data/
 
+# FEAT-018 schedule index — large build artifact (~30 MB) regenerated locally
+# via scripts/build_schedule_index.py after every GTFS refresh. The _README.md
+# is kept tracked so contributors know what the directory is for.
+backend/schedule_data/*.json
+!backend/schedule_data/_README.md
+
 # MaxMind GeoLite2 City database — large file, updated periodically by fetch_geolite.py
 backend/GeoLite2-City.mmdb
 
@@ -17,6 +23,13 @@ backend/geocode_cache.tmp
 
 # Monthly Google Maps API call counter — temporary pre-deployment rate limiter
 backend/geocode_counter.json
+
+# Local-first geocoder SQLite store + WAL/SHM sidecars — built quarterly by
+# scripts/build_address_points.py + build_intersections.py. Large derived
+# artifact; never committed.
+backend/static_data/chicago_geocode.db
+backend/static_data/chicago_geocode.db-wal
+backend/static_data/chicago_geocode.db-shm
 
 # Runtime analytics counter outputs — the analytics modules write per-day
 # aggregates to backend/data/ in dev (sibling to the modules) and to /app/data

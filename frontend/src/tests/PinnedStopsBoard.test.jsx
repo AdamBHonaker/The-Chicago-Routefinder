@@ -8,8 +8,6 @@
  *  - "no arrivals" placeholder when arrivals[stop key] is missing or empty
  *  - Each arrival row renders with route + destination + minutes
  *  - "Due" displayed when minutes === 0 (instead of "0m")
- *  - last_train_in line rendered when last_departure_minutes is set
- *  - last-train urgent modifier added when last_departure_minutes ≤ 15
  *  - Unpin button click invokes onUnpin with the stop id
  *  - Refresh button click invokes onRefresh
  */
@@ -30,7 +28,6 @@ vi.mock("react-i18next", () => ({
       if (key === "caps_stops")         return "STOPS";
       if (key === "pinned_stops_heading") return "Pinned Stops";
       if (key === "unpin_stop"   && vars?.stop) return `Unpin ${vars.stop}`;
-      if (key === "last_train_in" && vars?.min != null) return `Last train in ${vars.min}m`;
       if (key === "map_bus_label" && vars?.code != null) return `Bus ${vars.code}`;
       return key;
     },
@@ -109,39 +106,6 @@ describe("PinnedStopsBoard", () => {
     />);
     expect(screen.getByText("Due")).toBeInTheDocument();
     expect(screen.queryByText("0m")).toBeNull();
-  });
-
-  it("renders last-train-in text when last_departure_minutes is provided", () => {
-    const arrivals = {
-      "train:a_sid": { arrivals: [], last_departure_minutes: 45 },
-    };
-    render(<PinnedStopsBoard
-      stops={[stop("a", "Howard")]}
-      arrivals={arrivals} onUnpin={() => {}} onRefresh={() => {}}
-    />);
-    expect(screen.getByText("Last train in 45m")).toBeInTheDocument();
-  });
-
-  it("adds urgent modifier when last_departure_minutes ≤ 15", () => {
-    const arrivals = {
-      "train:a_sid": { arrivals: [], last_departure_minutes: 10 },
-    };
-    const { container } = render(<PinnedStopsBoard
-      stops={[stop("a", "Howard")]}
-      arrivals={arrivals} onUnpin={() => {}} onRefresh={() => {}}
-    />);
-    expect(container.querySelector(".psb-last-train--urgent")).toBeInTheDocument();
-  });
-
-  it("does NOT apply urgent modifier when last_departure_minutes > 15", () => {
-    const arrivals = {
-      "train:a_sid": { arrivals: [], last_departure_minutes: 30 },
-    };
-    const { container } = render(<PinnedStopsBoard
-      stops={[stop("a", "Howard")]}
-      arrivals={arrivals} onUnpin={() => {}} onRefresh={() => {}}
-    />);
-    expect(container.querySelector(".psb-last-train--urgent")).toBeNull();
   });
 
   it("invokes onUnpin with the stop id when unpin clicked", () => {

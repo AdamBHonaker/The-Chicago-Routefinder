@@ -36,8 +36,6 @@ import pickle
 import re
 import threading
 import time
-from collections import Counter
-from difflib import SequenceMatcher
 from functools import lru_cache
 from pathlib import Path
 
@@ -48,6 +46,10 @@ _http_session = requests.Session()
 
 from walking import walk_minutes
 from utils import haversine_miles as _haversine_miles, CHICAGO_BBOX_GOOGLE, SpatialGrid
+from geocode_text import (
+    _normalize_street_abbr,
+    fuzzy_match_neighborhood as _fuzzy_match_neighborhood,
+)
 import config as _cfg
 
 GTFS_DIR = Path(__file__).parent / "gtfs_data"
@@ -733,137 +735,16 @@ def find_nearest_bus_stops(
     return sorted(candidates, key=lambda s: s["walk_minutes"])
 
 
-_FUZZY_STOP_WORDS: frozenset[str] = frozenset(
-    {"the", "of", "a", "an", "and", "at", "in", "on", "chicago"}
-)
-
-
-@lru_cache(maxsize=1)
-def _neighborhood_word_index() -> dict[str, frozenset[str]]:
-    """
-    Inverted index: meaningful word → frozenset of NEIGHBORHOOD_COORDS keys
-    containing that word. Built once; lets multi-word fuzzy queries skip
-    keys that can't possibly share a meaningful token.
-    """
-    word_keys: dict[str, set[str]] = {}
-    for key in NEIGHBORHOOD_COORDS:
-        for w in set(key.split()) - _FUZZY_STOP_WORDS:
-            word_keys.setdefault(w, set()).add(key)
-    return {w: frozenset(ks) for w, ks in word_keys.items()}
-
-
 @lru_cache(maxsize=1024)
 def fuzzy_match_neighborhood(query: str) -> tuple[tuple[float, float] | None, str | None]:
-    """
-    Fuzzy-match a lowercased, stripped query against NEIGHBORHOOD_COORDS.
-
-    Requires both a similarity score ≥ 0.95 AND at least one meaningful word
-    in common (multi-word queries only) so that "chicago art museum" never
-    matches "chicago history museum" on structural words alone.
-
-    Returns (coords, matched_key) if a match is found, else (None, None).
-    This is a shared helper used by both resolve_location() (here) and
-    _coords_for_location() in main.py so the threshold and stop-word list
-    stay in sync automatically.
-    """
-    q_words = set(query.split()) - _FUZZY_STOP_WORDS
-
-    # Multi-word queries must share a meaningful word with the matched key
-    # — use the inverted index to skip keys that can't possibly qualify.
-    # Single-word / stop-word-only queries scan the full map (behavior
-    # preserved — those never had the word-overlap requirement).
-    if len(q_words) > 1:
-        word_index = _neighborhood_word_index()
-        candidates: set[str] = set()
-        for w in q_words:
-            hits = word_index.get(w)
-            if hits:
-                candidates.update(hits)
-        if not candidates:
-            return None, None
-        iterable: "object" = candidates
-    else:
-        iterable = NEIGHBORHOOD_COORDS
-
-    # SequenceMatcher caches info about seq2, so hold `query` as seq2 and
-    # swap seq1 per key — this is the documented fast pattern for "one vs many".
-    matcher = SequenceMatcher()
-    matcher.set_seq2(query)
-
-    best_score, best_key = 0.0, None
-    for key in iterable:
-        matcher.set_seq1(key)
-        # quick_ratio() is a cheap upper bound on ratio(); if it can't beat
-        # the current best we can skip the expensive real computation.
-        if matcher.quick_ratio() <= best_score:
-            continue
-        score = matcher.ratio()
-        if score <= best_score:
-            continue
-        best_score = score
-        best_key = key
-        # A ratio of 1.0 means exact match — nothing can beat it.
-        if best_score >= 0.99:
-            break
-    if best_score >= 0.95 and best_key:
-        return NEIGHBORHOOD_COORDS[best_key], best_key
-    return None, None
+    """Cached, NEIGHBORHOOD_COORDS-bound wrapper around the pure matcher in
+    geocode_text.fuzzy_match_neighborhood. The cache lives here (not in
+    geocode_text) so the underlying function stays decoupled from any
+    specific coords dict — see geocode_text module docstring."""
+    return _fuzzy_match_neighborhood(query, NEIGHBORHOOD_COORDS)
 
 
-# ---------------------------------------------------------------------------
-# Street abbreviation normalization
-# ---------------------------------------------------------------------------
-
-# Defined as a tuple of (abbr, expansion) pairs rather than a dict literal so
-# that a duplicate key is caught at import time instead of silently winning.
-_ABBR_PAIRS: tuple[tuple[str, str], ...] = (
-    ("blvd", "boulevard"),
-    ("pkwy", "parkway"),
-    ("expy", "expressway"),
-    ("terr", "terrace"),
-    ("ter",  "terrace"),
-    ("hwy",  "highway"),
-    ("ave",  "avenue"),
-    ("cir",  "circle"),
-    ("st",   "street"),
-    ("dr",   "drive"),
-    ("ln",   "lane"),
-    ("ct",   "court"),
-    ("rd",   "road"),
-    ("pl",   "place"),
-    ("sq",   "square"),
-)
-_ABBR_MAP: dict[str, str] = dict(_ABBR_PAIRS)
-_dup_abbr_keys = [k for k, n in Counter(p[0] for p in _ABBR_PAIRS).items() if n > 1]
-assert not _dup_abbr_keys, f"_ABBR_PAIRS contains duplicate keys: {_dup_abbr_keys}"
-del _dup_abbr_keys
-# Sort longest-first so longer patterns are tried before shorter ones
-_sorted_abbrs = sorted(_ABBR_MAP, key=len, reverse=True)
 _COORD_RE = re.compile(r"^(-?\d{1,3}\.?\d*),\s*(-?\d{1,3}\.?\d*)$")
-
-_STREET_ABBR_RE = re.compile(
-    # Lookahead (?=\s*(?:,|$)) requires the token to be at end-of-string or
-    # immediately before a comma.  This prevents "St." in "St. Michael's Church"
-    # from matching (it's followed by more words), while still matching
-    # "123 N Clark St" (end of string) and "123 N Clark St, Chicago" (before comma).
-    r"\b(" + "|".join(re.escape(a) + r"\.?" for a in _sorted_abbrs) + r")\b(?=\s*(?:,|$))",
-    re.IGNORECASE,
-)
-
-
-def _street_abbr_replace(m: re.Match) -> str:
-    token = m.group(0).lower().rstrip(".")
-    return _ABBR_MAP.get(token, m.group(0))
-
-
-def _normalize_street_abbr(query: str) -> str:
-    """
-    Expand USPS street suffix abbreviations (e.g. "Ave" → "avenue",
-    "Blvd." → "boulevard") in a lowercased address string.
-
-    Directional prefixes (N/S/E/W) are intentionally not expanded.
-    """
-    return _STREET_ABBR_RE.sub(_street_abbr_replace, query)
 
 
 def resolve_location(

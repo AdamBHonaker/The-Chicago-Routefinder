@@ -64,6 +64,7 @@ from transit_graph import (
     _load_all_stops,
     _load_all_routes,
     _load_weekday_service_ids,
+    _load_service_ids_by_day,
     _load_trips_unified,
     _stream_all_stop_sequences,
     _load_transfer_edges,
@@ -90,10 +91,12 @@ def _clear_loader_caches():
     _load_all_stops.cache_clear()
     _load_all_routes.cache_clear()
     _load_weekday_service_ids.cache_clear()
+    _load_service_ids_by_day.cache_clear()
     yield
     _load_all_stops.cache_clear()
     _load_all_routes.cache_clear()
     _load_weekday_service_ids.cache_clear()
+    _load_service_ids_by_day.cache_clear()
 
 
 @pytest.fixture
@@ -264,24 +267,29 @@ class TestLoadWeekdayServiceIds:
         ids = _load_weekday_service_ids()
         assert "WEEKEND" not in ids
 
-    def test_partial_weekday_service_excluded(self, gtfs_dir):
-        # Mon-Thu only — missing Fri → not a true weekday service
+    def test_partial_weekday_service_included(self, gtfs_dir):
+        # BUG-051: _load_weekday_service_ids() is now a back-compat union of
+        # any service that runs on Mon-Fri (since the per-day map is what
+        # production code actually uses). Mon-Thu-only services therefore
+        # count as weekday service here.
         _write_csv(gtfs_dir / "calendar.txt", self.CAL_HEADER, [
             ["MON_THU", "1", "1", "1", "1", "0", "0", "0", "20260101", "20261231"],
         ])
         ids = _load_weekday_service_ids()
-        assert "MON_THU" not in ids
+        assert "MON_THU" in ids
 
     def test_missing_calendar_file_returns_empty(self, gtfs_dir):
         # No calendar.txt and no calendar_dates.txt → empty
         assert _load_weekday_service_ids() == set()
 
-    def test_calendar_dates_three_weekday_adds_included(self, gtfs_dir):
-        # No regular calendar.txt; service exists only via calendar_dates.txt
+    def test_calendar_dates_three_same_weekday_adds_included(self, gtfs_dir):
+        # BUG-051: per-day counting — ≥3 adds on the SAME weekday qualifies
+        # that weekday as a recurring service day. Three different weekdays
+        # with 1 add each does NOT, because no single day reaches threshold.
         _write_csv(gtfs_dir / "calendar_dates.txt", self.DATES_HEADER, [
             ["EXC1", "20260504", "1"],   # Mon
-            ["EXC1", "20260505", "1"],   # Tue
-            ["EXC1", "20260506", "1"],   # Wed
+            ["EXC1", "20260511", "1"],   # Mon
+            ["EXC1", "20260518", "1"],   # Mon
         ])
         ids = _load_weekday_service_ids()
         assert "EXC1" in ids
@@ -318,10 +326,11 @@ class TestLoadWeekdayServiceIds:
         _write_csv(gtfs_dir / "calendar.txt", self.CAL_HEADER, [
             ["WEEKDAY", "1", "1", "1", "1", "1", "0", "0", "20260101", "20261231"],
         ])
+        # 3 adds all on the same weekday → counts as recurring service that day.
         _write_csv(gtfs_dir / "calendar_dates.txt", self.DATES_HEADER, [
-            ["EXC", "20260504", "1"],
-            ["EXC", "20260505", "1"],
-            ["EXC", "20260506", "1"],
+            ["EXC", "20260504", "1"],   # Mon
+            ["EXC", "20260511", "1"],   # Mon
+            ["EXC", "20260518", "1"],   # Mon
         ])
         ids = _load_weekday_service_ids()
         assert ids == {"WEEKDAY", "EXC"}
@@ -342,16 +351,22 @@ class TestLoadTripsUnified:
         ])
 
     def test_train_trips_collected(self, gtfs_dir):
+        # BUG-051: _load_trips_unified no longer pre-filters by weekday — all
+        # candidate trips are returned and the service_id is retained so the
+        # downstream period bucketer can classify each trip by service period.
         self._seed_weekday_service(gtfs_dir)
         _write_csv(gtfs_dir / "trips.txt", self.TRIPS_HEADER, [
             ["Red", "WEEKDAY", "T1", "0", "shape_red_NB"],
             ["Red", "WEEKDAY", "T2", "1", "shape_red_SB"],
         ])
-        train_route, train_dir, bus_route, bus_dir, shapes, used = _load_trips_unified(
+        (train_route, train_dir, train_sid,
+         bus_route,   bus_dir,   bus_sid,
+         shapes, used) = _load_trips_unified(
             train_route_ids={"Red"}, bus_route_ids=set(),
         )
         assert train_route == {"T1": "Red", "T2": "Red"}
         assert train_dir   == {"T1": "0",   "T2": "1"}
+        assert train_sid   == {"T1": "WEEKDAY", "T2": "WEEKDAY"}
         assert bus_route   == {}
         assert ("Red", "0") in shapes
         assert ("Red", "1") in shapes
@@ -362,45 +377,36 @@ class TestLoadTripsUnified:
         _write_csv(gtfs_dir / "trips.txt", self.TRIPS_HEADER, [
             ["22", "WEEKDAY", "B1", "0", "shape_22"],
         ])
-        _, _, bus_route, bus_dir, _, _ = _load_trips_unified(
+        (_, _, _, bus_route, bus_dir, bus_sid, _, _) = _load_trips_unified(
             train_route_ids=set(), bus_route_ids={"22"},
         )
         assert bus_route == {"B1": "22"}
         assert bus_dir   == {"B1": "0"}
+        assert bus_sid   == {"B1": "WEEKDAY"}
 
-    def test_weekend_trips_excluded_when_weekday_present(self, gtfs_dir):
+    def test_weekend_trips_kept_for_period_bucketing(self, gtfs_dir):
+        # BUG-051: weekend trips are now retained so the weekend variant has
+        # something to build from. Period filtering happens downstream in
+        # _select_representative_trips, not here.
         self._seed_weekday_service(gtfs_dir, "WEEKDAY")
         _write_csv(gtfs_dir / "trips.txt", self.TRIPS_HEADER, [
             ["Red", "WEEKDAY", "T1", "0", "s1"],
-            ["Red", "WEEKEND", "T2", "0", "s2"],   # WEEKEND not in calendar → excluded
+            ["Red", "WEEKEND", "T2", "0", "s2"],
         ])
-        train_route, _, _, _, _, _ = _load_trips_unified(
+        (train_route, _, train_sid, _, _, _, _, _) = _load_trips_unified(
             train_route_ids={"Red"}, bus_route_ids=set(),
         )
-        # Only WEEKDAY trip kept
-        assert train_route == {"T1": "Red"}
-
-    def test_fallback_when_no_weekday_match(self, gtfs_dir):
-        # No calendar.txt → no weekday service IDs → fallback to all trips
-        _write_csv(gtfs_dir / "trips.txt", self.TRIPS_HEADER, [
-            ["Red", "ANY",      "T1", "0", "s1"],
-            ["Red", "WHATEVER", "T2", "1", "s2"],
-        ])
-        train_route, _, _, _, _, _ = _load_trips_unified(
-            train_route_ids={"Red"}, bus_route_ids=set(),
-        )
-        # Fallback path keeps both trips
         assert train_route == {"T1": "Red", "T2": "Red"}
+        assert train_sid   == {"T1": "WEEKDAY", "T2": "WEEKEND"}
 
     def test_shape_candidates_unfiltered_by_service(self, gtfs_dir):
-        # WEEKEND trip has its own shape — the shape candidates set must include
-        # it even though the trip itself is filtered out of train_route mapping.
+        # WEEKEND trip has its own shape — shape candidates must include it.
         self._seed_weekday_service(gtfs_dir)
         _write_csv(gtfs_dir / "trips.txt", self.TRIPS_HEADER, [
             ["Red", "WEEKDAY", "T1", "0", "shape_wd"],
             ["Red", "WEEKEND", "T2", "0", "shape_we"],
         ])
-        _, _, _, _, shapes, used = _load_trips_unified(
+        (_, _, _, _, _, _, shapes, used) = _load_trips_unified(
             train_route_ids={"Red"}, bus_route_ids=set(),
         )
         assert "shape_wd" in used
@@ -413,7 +419,7 @@ class TestLoadTripsUnified:
             ["Red", "WEEKDAY", "",   "0", "s1"],   # missing trip_id → skipped
             ["Red", "WEEKDAY", "T2", "0", "s2"],
         ])
-        train_route, _, _, _, _, _ = _load_trips_unified(
+        (train_route, _, _, _, _, _, _, _) = _load_trips_unified(
             train_route_ids={"Red"}, bus_route_ids=set(),
         )
         assert train_route == {"T2": "Red"}
@@ -425,7 +431,7 @@ class TestLoadTripsUnified:
             ["Red",     "WEEKDAY", "T1",      "0", "s1"],
             ["Unknown", "WEEKDAY", "T_other", "0", "s_other"],
         ])
-        train_route, _, bus_route, _, _, _ = _load_trips_unified(
+        (train_route, _, _, bus_route, _, _, _, _) = _load_trips_unified(
             train_route_ids={"Red"}, bus_route_ids=set(),
         )
         assert train_route == {"T1": "Red"}
@@ -438,20 +444,20 @@ class TestLoadTripsUnified:
 
 class TestStreamAllStopSequences:
     """
-    Synthetic stop_times.txt used here only models what the streamer needs:
-    it must read trip_id, stop_id, stop_sequence, arrival_time, departure_time.
+    BUG-051 reshaped the streamer: it now returns raw per-trip sequences and
+    first-stop departure minutes (NOT pre-selected representative trips). The
+    representative-trip selection moved to _select_representative_trips() so
+    that each service-period variant can pick its own.
     """
 
     HEADER = ["trip_id", "arrival_time", "departure_time", "stop_id", "stop_sequence"]
 
     def test_train_sequence_resolved_to_parent_mapids(self, gtfs_dir):
-        # Two platform stops, both children of the same parent station chain.
-        # Streamer must map 30100→40100 and 30200→40200 via platform_to_parent.
         _write_csv(gtfs_dir / "stop_times.txt", self.HEADER, [
             ["T1", "12:00:00", "12:00:00", "30100", "1"],
             ["T1", "12:05:00", "12:05:00", "30200", "2"],
         ])
-        train_sel, _, last_dep = _stream_all_stop_sequences(
+        (train_seqs, train_first, _bus_seqs, _bus_first, last_dep) = _stream_all_stop_sequences(
             train_candidates={"T1": "Red"},
             train_dirs={"T1": "0"},
             bus_candidates={},
@@ -460,15 +466,14 @@ class TestStreamAllStopSequences:
             bus_stop_lookup={},
             bus_route_map={},
         )
-        # Sequence preserved, platforms resolved to parents
-        assert train_sel == {"T1": [("40100", 720.0), ("40200", 725.0)]}
-        # Latest-departure tracker captured both stops in the same direction
-        assert last_dep[("40100", "0")] == "12:00:00"
-        assert last_dep[("40200", "0")] == "12:05:00"
+        assert train_seqs == {"T1": [("40100", 720.0), ("40200", 725.0)]}
+        assert train_first == {"T1": 720.0}
+        assert last_dep[("Red", "0", "40100")] == "12:00:00"
+        assert last_dep[("Red", "0", "40200")] == "12:05:00"
 
-    def test_train_representative_picks_longest_trip(self, gtfs_dir):
-        # T1 and T2 serve (Red, dir 0); T1 has 2 stops, T2 has 3.
-        # T2 must win on length even though T1 starts closer to noon.
+    def test_train_all_trips_retained_for_period_bucketing(self, gtfs_dir):
+        # Pre-BUG-051 this function picked ONE rep trip per (route_id, dir_id).
+        # Now it returns every candidate so per-period builds can choose.
         _write_csv(gtfs_dir / "stop_times.txt", self.HEADER, [
             ["T1", "12:00:00", "12:00:00", "30100", "1"],
             ["T1", "12:05:00", "12:05:00", "30200", "2"],
@@ -476,7 +481,7 @@ class TestStreamAllStopSequences:
             ["T2", "11:35:00", "11:35:00", "30200", "2"],
             ["T2", "11:40:00", "11:40:00", "30300", "3"],
         ])
-        train_sel, _, _ = _stream_all_stop_sequences(
+        (train_seqs, train_first, _, _, _) = _stream_all_stop_sequences(
             train_candidates={"T1": "Red", "T2": "Red"},
             train_dirs={"T1": "0", "T2": "0"},
             bus_candidates={},
@@ -485,19 +490,20 @@ class TestStreamAllStopSequences:
             bus_stop_lookup={},
             bus_route_map={},
         )
-        # Only the longer trip (T2) is kept as representative
-        assert "T2" in train_sel
-        assert "T1" not in train_sel
-        assert len(train_sel["T2"]) == 3
+        # Both trips retained; rep-trip selection now lives in
+        # _select_representative_trips, exercised in TestSelectRepresentativeTrips.
+        assert set(train_seqs) == {"T1", "T2"}
+        assert len(train_seqs["T1"]) == 2
+        assert len(train_seqs["T2"]) == 3
+        assert train_first == {"T1": 720.0, "T2": 690.0}
 
     def test_train_stops_sorted_by_sequence(self, gtfs_dir):
-        # Rows out of order — stop_sequence (not file order) defines path
         _write_csv(gtfs_dir / "stop_times.txt", self.HEADER, [
             ["T1", "12:10:00", "12:10:00", "30300", "3"],
             ["T1", "12:00:00", "12:00:00", "30100", "1"],
             ["T1", "12:05:00", "12:05:00", "30200", "2"],
         ])
-        train_sel, _, _ = _stream_all_stop_sequences(
+        (train_seqs, _, _, _, _) = _stream_all_stop_sequences(
             train_candidates={"T1": "Red"},
             train_dirs={"T1": "0"},
             bus_candidates={},
@@ -506,7 +512,7 @@ class TestStreamAllStopSequences:
             bus_stop_lookup={},
             bus_route_map={},
         )
-        ordered = train_sel["T1"]
+        ordered = train_seqs["T1"]
         assert [parent for parent, _ in ordered] == ["40100", "40200", "40300"]
 
     def test_bus_sequence_resolves_metadata(self, gtfs_dir):
@@ -514,7 +520,7 @@ class TestStreamAllStopSequences:
             ["B1", "12:00:00", "12:00:00", "1234", "1"],
             ["B1", "12:08:00", "12:08:00", "5678", "2"],
         ])
-        _, bus_result, _ = _stream_all_stop_sequences(
+        (_, _, bus_seqs, bus_first, _) = _stream_all_stop_sequences(
             train_candidates={},
             train_dirs={},
             bus_candidates={"B1": "22"},
@@ -526,19 +532,18 @@ class TestStreamAllStopSequences:
             },
             bus_route_map={"22": "22"},
         )
-        # Keyed by (route_short_name, direction_id)
-        seq = bus_result[("22", "0")]
+        seq = bus_seqs["B1"]
         assert seq[0] == ("1234", "Clark & Belmont", 41.94, -87.65, 720.0)
         assert seq[1] == ("5678", "State & Madison", 41.88, -87.62, 728.0)
+        assert bus_first == {"B1": 720.0}
 
     def test_bus_unknown_stop_dropped(self, gtfs_dir):
-        # Stop ID not present in bus_stop_lookup is dropped from the trip
         _write_csv(gtfs_dir / "stop_times.txt", self.HEADER, [
             ["B1", "12:00:00", "12:00:00", "1234",   "1"],
-            ["B1", "12:08:00", "12:08:00", "GHOST",  "2"],   # unknown — dropped
+            ["B1", "12:08:00", "12:08:00", "GHOST",  "2"],
             ["B1", "12:15:00", "12:15:00", "5678",   "3"],
         ])
-        _, bus_result, _ = _stream_all_stop_sequences(
+        (_, _, bus_seqs, _, _) = _stream_all_stop_sequences(
             train_candidates={},
             train_dirs={},
             bus_candidates={"B1": "22"},
@@ -550,19 +555,16 @@ class TestStreamAllStopSequences:
             },
             bus_route_map={"22": "22"},
         )
-        seq = bus_result[("22", "0")]
+        seq = bus_seqs["B1"]
         assert len(seq) == 2
-        ids = [s[0] for s in seq]
-        assert "GHOST" not in ids
+        assert "GHOST" not in [s[0] for s in seq]
 
-    def test_last_departure_tracks_latest_per_station_direction(self, gtfs_dir):
-        # Two trips on (Red, dir 0) departing 30100 — last_dep must reflect
-        # the LATER departure (12:55), not the earlier (12:00).
+    def test_last_departure_tracks_latest_per_route_direction_station(self, gtfs_dir):
         _write_csv(gtfs_dir / "stop_times.txt", self.HEADER, [
             ["T1", "12:00:00", "12:00:00", "30100", "1"],
             ["T2", "12:55:00", "12:55:00", "30100", "1"],
         ])
-        _, _, last_dep = _stream_all_stop_sequences(
+        (_, _, _, _, last_dep) = _stream_all_stop_sequences(
             train_candidates={"T1": "Red", "T2": "Red"},
             train_dirs={"T1": "0", "T2": "0"},
             bus_candidates={},
@@ -571,14 +573,34 @@ class TestStreamAllStopSequences:
             bus_stop_lookup={},
             bus_route_map={},
         )
-        assert last_dep[("40100", "0")] == "12:55:00"
+        assert last_dep[("Red", "0", "40100")] == "12:55:00"
+
+    def test_last_departure_keyed_per_line_at_multi_line_station(self, gtfs_dir):
+        # Belmont (40100) is served by both Red and Brown lines northbound.
+        # Red's last train is 11:55 PM, Brown's is 12:18 AM (encoded as 24:18).
+        # Each must surface under its own key — the older (mapid, dir) shape
+        # would have collapsed these into a single "latest of any line" value.
+        _write_csv(gtfs_dir / "stop_times.txt", self.HEADER, [
+            ["T1", "23:55:00", "23:55:00", "30100", "1"],
+            ["T2", "24:18:00", "24:18:00", "30100", "1"],
+        ])
+        (_, _, _, _, last_dep) = _stream_all_stop_sequences(
+            train_candidates={"T1": "Red", "T2": "Brn"},
+            train_dirs={"T1": "1", "T2": "1"},
+            bus_candidates={},
+            bus_dirs={},
+            platform_to_parent={"30100": "40100"},
+            bus_stop_lookup={},
+            bus_route_map={},
+        )
+        assert last_dep[("Red", "1", "40100")] == "23:55:00"
+        assert last_dep[("Brn", "1", "40100")] == "24:18:00"
 
     def test_post_midnight_time_parsed(self, gtfs_dir):
-        # GTFS allows hours > 24 for overnight service — must be preserved as time string.
         _write_csv(gtfs_dir / "stop_times.txt", self.HEADER, [
             ["T1", "25:30:00", "25:30:00", "30100", "1"],
         ])
-        _, _, last_dep = _stream_all_stop_sequences(
+        (_, _, _, _, last_dep) = _stream_all_stop_sequences(
             train_candidates={"T1": "Red"},
             train_dirs={"T1": "0"},
             bus_candidates={},
@@ -587,7 +609,7 @@ class TestStreamAllStopSequences:
             bus_stop_lookup={},
             bus_route_map={},
         )
-        assert last_dep[("40100", "0")] == "25:30:00"
+        assert last_dep[("Red", "0", "40100")] == "25:30:00"
 
 
 # ---------------------------------------------------------------------------

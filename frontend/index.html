@@ -41,6 +41,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="Routefinder" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
 
     <!-- Social / SEO -->
     <meta name="description" content="A working guide to the trains, buses, and schedules of the city." />
@@ -98,6 +99,18 @@
             doesn't activate and the browser falls back to system font.
             Documented acceptable gap.
     -->
+    <!--
+      Map tile origin — warm DNS + TLS in parallel with the JS bundle download,
+      and start fetching the style document before the lazy MapView chunk has
+      parsed. By the time `new maplibregl.Map({ style })` runs in MapView.jsx,
+      the style JSON is already in the preload cache.
+      Keep this URL aligned with DEFAULT_STYLE in MapView.jsx. If
+      VITE_MAP_STYLE_URL overrides at build time the preload becomes a no-op
+      (harmless) — the default path here covers the common production case.
+    -->
+    <link rel="preconnect" href="https://tiles.openfreemap.org" crossorigin />
+    <link rel="preload" as="fetch" href="https://tiles.openfreemap.org/styles/liberty" crossorigin />
+
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Fraunces:ital,opsz,wght@0,9..144,400..900;1,9..144,400..900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" />

@@ -79,6 +79,7 @@ cd backend
 pip install -r requirements.txt
 python fetch_gtfs.py          # download CTA GTFS data
 python fetch_street_graph.py  # build the OSMnx street graph (one-time, ~3–10 min)
+python ../scripts/build_schedule_index.py  # build the published-schedule index (FEAT-018)
 uvicorn main:app --reload
 
 # Frontend (separate terminal)
@@ -101,6 +102,8 @@ The FastAPI server (`backend/main.py`) exposes:
 | `GET /reverse-geocode?lat=&lon=` | GPS coordinate → human-readable address (Google Maps) |
 | `GET /alerts` | CTA service alerts feed |
 | `GET /stop-arrivals` | Live arrivals for the home-screen pinned stops board |
+| `GET /schedule/routes` | Schedule picker manifest — all CTA routes with categories + reverse stop→routes index (FEAT-018) |
+| `GET /schedule/{route_id}` | Full published schedule for a route, bucketed by direction → stop → service-day (FEAT-018) |
 | `GET /admin/dau` | Daily-unique-user counts (protected by `DAU_ADMIN_TOKEN` — internal/operator only) |
 | `GET /admin/geography` | Per-day per-city visitor counts + Chicago-metro rollup (FEAT-003, `DAU_ADMIN_TOKEN`) |
 | `GET /admin/sessions` | Per-day session aggregates: count, total duration, bounces, derived avg-duration + bounce-rate (FEAT-001, `DAU_ADMIN_TOKEN`) |
@@ -145,7 +148,7 @@ Standalone scripts that run independently of the server:
 
 - [docs/PROJECT_CONTEXT.md](docs/PROJECT_CONTEXT.md) — Full project brief, architecture, decisions, and phase history
 - [docs/FEATURE_PLANS.md](docs/FEATURE_PLANS.md) — Chunked implementation plans for upcoming features and post-launch enhancement ideas
-- [docs/BUGS.md](docs/BUGS.md) — Open bugs (0 🔴 high, 5 🟡 medium, 1 🟢 low)
+- [docs/BUGS.md](docs/BUGS.md) — Open bugs (0 🔴 high, 1 🟡 medium, 1 🟢 low)
 - [docs/TODO.md](docs/TODO.md) — Tasks requiring human action (accounts, API keys, deployment steps)
 - [docs/TECH_DEBT.md](docs/TECH_DEBT.md) — Known technical debt items
 - [docs/EFFICIENCY.md](docs/EFFICIENCY.md) — Optimization notes and efficiency improvements

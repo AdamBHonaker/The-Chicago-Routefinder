@@ -1,0 +1,349 @@
+/* FEAT-018 — Tools hub + Schedules tool styles.
+ * Uses only Heritage Organic design tokens from foundations.css.
+ * No new tokens introduced. */
+
+/* ── Tools hub: vertical stack of tool cards ───────────────────────── */
+
+.tools-hub {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  padding: var(--sp-4);
+}
+
+.tools-hub__heading {
+  margin: 0 0 var(--sp-2);
+}
+
+.tool-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-4);
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: var(--ink);
+  transition: background-color 120ms ease;
+}
+
+.tool-card:hover,
+.tool-card:focus-visible {
+  background: var(--paper-bright, var(--paper));
+  outline: none;
+}
+
+.tool-card:focus-visible {
+  outline: 2px solid var(--rust);
+  outline-offset: 2px;
+}
+
+.tool-card__headline {
+  font-family: var(--serif);
+  font-size: var(--fs-headline);
+  margin: 0;
+  color: var(--ink);
+}
+
+.tool-card__desc {
+  font-family: var(--sans);
+  font-size: var(--fs-body-sm);
+  color: var(--ink-soft);
+  margin: 0;
+}
+
+.tool-card__cta {
+  font-family: var(--sans);
+  font-size: var(--fs-caps);
+  letter-spacing: var(--ls-caps);
+  color: var(--rust);
+  text-transform: uppercase;
+  margin-top: var(--sp-2);
+}
+
+/* ── Sub-view shell (used by both tools) ───────────────────────────── */
+
+.tool-view {
+  display: flex;
+  flex-direction: column;
+  padding: var(--sp-4);
+  gap: var(--sp-3);
+}
+
+.tool-view__header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.tool-view__back {
+  font-family: var(--sans);
+  font-size: var(--fs-caps);
+  letter-spacing: var(--ls-caps);
+  background: transparent;
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  padding: var(--sp-1) var(--sp-3);
+  color: var(--ink);
+  cursor: pointer;
+  text-transform: uppercase;
+}
+
+.tool-view__title {
+  font-family: var(--serif);
+  font-size: var(--fs-headline);
+  margin: 0;
+  color: var(--ink);
+}
+
+/* ── Saved Locations tool ──────────────────────────────────────────── */
+
+.saved-tool__section + .saved-tool__section {
+  margin-top: var(--sp-4);
+}
+
+.saved-tool__caps {
+  font-family: var(--sans);
+  font-size: var(--fs-caps);
+  letter-spacing: var(--ls-caps);
+  color: var(--ink-soft);
+  text-transform: uppercase;
+  margin: 0 0 var(--sp-2);
+}
+
+.saved-stop-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.saved-stop-row__label {
+  flex: 1 1 auto;
+  font-family: var(--sans);
+  color: var(--ink);
+}
+
+.saved-stop-row__schedule {
+  font-family: var(--sans);
+  font-size: var(--fs-caps);
+  letter-spacing: var(--ls-caps);
+  color: var(--rust);
+  text-transform: uppercase;
+  background: transparent;
+  border: 1px solid var(--rust);
+  border-radius: 4px;
+  padding: 2px var(--sp-2);
+  cursor: pointer;
+}
+
+.saved-stop-row__schedule:hover,
+.saved-stop-row__schedule:focus-visible {
+  background: var(--rust);
+  color: var(--paper);
+  outline: none;
+}
+
+/* ── Schedules picker (route → direction → stop) ───────────────────── */
+
+.sched-picker__section + .sched-picker__section {
+  margin-top: var(--sp-4);
+}
+
+.sched-picker__section-title {
+  font-family: var(--sans);
+  font-size: var(--fs-caps);
+  letter-spacing: var(--ls-caps);
+  color: var(--ink-soft);
+  text-transform: uppercase;
+  margin: 0 0 var(--sp-2);
+}
+
+.sched-picker__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.sched-picker__row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--hairline);
+  font: inherit;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.sched-picker__row:hover,
+.sched-picker__row:focus-visible {
+  background: var(--paper-bright, var(--paper));
+  outline: none;
+}
+
+.sched-picker__row--highlight {
+  box-shadow: inset 2px 0 0 0 var(--rust);
+}
+
+.sched-picker__pill {
+  display: inline-block;
+  min-width: 36px;
+  padding: 2px var(--sp-2);
+  text-align: center;
+  font-family: var(--sans);
+  font-size: var(--fs-caps);
+  letter-spacing: var(--ls-caps);
+  color: #fff;
+  border-radius: 3px;
+}
+
+.sched-picker__short {
+  font-family: var(--serif);
+  font-size: var(--fs-body);
+  color: var(--ink);
+}
+
+.sched-picker__long {
+  flex: 1 1 auto;
+  font-family: var(--sans);
+  font-size: var(--fs-body-sm);
+  color: var(--ink-soft);
+}
+
+/* ── Schedules view: day tabs + hour-grouped times ─────────────────── */
+
+.sched-view__tabs {
+  display: flex;
+  gap: var(--sp-2);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.sched-view__tab {
+  font-family: var(--sans);
+  font-size: var(--fs-caps);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: var(--sp-2) var(--sp-3);
+  cursor: pointer;
+  color: var(--ink-soft);
+}
+
+.sched-view__tab--active {
+  color: var(--ink);
+  border-bottom-color: var(--rust);
+}
+
+.sched-view__now {
+  align-self: flex-start;
+  font-family: var(--sans);
+  font-size: var(--fs-caps);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--rust);
+  background: transparent;
+  border: 1px solid var(--rust);
+  border-radius: 999px;
+  padding: 2px var(--sp-3);
+  cursor: pointer;
+}
+
+.sched-view__hour-group {
+  display: grid;
+  grid-template-columns: 60px 1fr;
+  align-items: baseline;
+  gap: var(--sp-3);
+  padding: var(--sp-2) 0;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.sched-view__hour-label {
+  font-family: var(--serif);
+  font-size: var(--fs-caps);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+.sched-view__minutes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.sched-view__minute {
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  font-family: var(--sans);
+}
+
+.sched-view__minute--past {
+  color: var(--ink-soft);
+}
+
+.sched-view__empty {
+  font-family: var(--sans);
+  font-size: var(--fs-body-sm);
+  color: var(--ink-soft);
+  padding: var(--sp-4) 0;
+}
+
+.sched-view__route-header {
+  font-family: var(--serif);
+  font-size: var(--fs-headline);
+  margin: 0;
+  color: var(--ink);
+}
+
+.sched-view__route-header-btn {
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+}
+
+/* ── Last Train tool: result card ──────────────────────────────────── */
+
+.last-train-result__card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-4);
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+}
+
+.last-train-result__time {
+  font-family: var(--serif);
+  font-size: var(--fs-headline);
+  margin: 0;
+  color: var(--ink);
+}
+
+.last-train-result__sub {
+  font-family: var(--mono);
+  font-size: var(--fs-mono);
+  margin: 0;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.last-train-result__sub--departed {
+  color: var(--rust);
+  font-weight: 700;
+}

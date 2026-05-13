@@ -1,4 +1,4 @@
-"""NWS-backed weather service for the CTA Transit PWA backend.
+"""NWS-backed weather service for The Chicago Routefinder backend.
 
 Provides WeatherContext (current conditions + hourly forecast + active alerts)
 for a given lat/lon. Used by build_prompt() to inject live weather context into
@@ -35,7 +35,7 @@ if not _nws_contact_email:
         "User-Agent. Set this environment variable to a real address before deploying."
     )
     _nws_contact_email = "nws-contact-not-configured@example.com"
-_NWS_USER_AGENT = f"CTA-Transit-PWA/1.0 ({_nws_contact_email})"
+_NWS_USER_AGENT = f"The-Chicago-Routefinder/1.0 ({_nws_contact_email})"
 _NWS_BASE = "https://api.weather.gov"
 
 # Grid-point URL cache: (lat_2dp, lon_2dp) → (forecast_url, forecast_hourly_url)
@@ -229,7 +229,7 @@ class WeatherService:
 
         speed = _to_mph(wind_speed_str)
         gust  = _to_mph(wind_gust_str) if wind_gust_str.strip() else None
-        return WindInfo(speed_mph=speed, gust_mph=gust if gust else None)
+        return WindInfo(speed_mph=speed, gust_mph=gust)
 
     def _feels_like(
         self, temp_f: float, wind_speed_mph: float, humidity_pct: float = 50.0

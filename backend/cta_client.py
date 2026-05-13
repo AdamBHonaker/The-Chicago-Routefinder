@@ -231,7 +231,13 @@ async def _fetch_bus_chunk(
                 minutes = int(prdctdn)
             else:
                 minutes = 0
-            raw_psgld = prd.get("psgld", "")
+            # `prd.get("psgld", "")` returns "" only when the key is absent;
+            # CTA sometimes ships `"psgld": null` for routes that don't report
+            # passenger load, which would AttributeError on .replace and drop
+            # the entire arrival via the surrounding try/except. `or ""`
+            # coerces both missing key and explicit null to "", mirroring the
+            # defensive coercion above for prdctdn.
+            raw_psgld = prd.get("psgld") or ""
             # Normalize to UPPER_SNAKE so filter comparisons work regardless
             # of whether CTA sends "HALF EMPTY" (space) or "HALF_EMPTY" (underscore)
             psgld = raw_psgld.replace(" ", "_").upper()

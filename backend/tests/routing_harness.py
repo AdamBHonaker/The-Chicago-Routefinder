@@ -194,6 +194,28 @@ class ScenarioResult:
     all_routes_raw: list[Any]
 
 
+# CTA train line_code values per `cta_client.LINE_NAMES`. Anything not in
+# this set is treated as a bus route (numeric/short bus route IDs like
+# "66", "X9", "N5"). Kept inline so this module does not pull cta_client
+# at import time — golden tests should be able to summarize a route
+# without touching the network-fetching module.
+_TRAIN_LINE_CODES = frozenset({"Red", "Blue", "Brn", "G", "Org", "P", "Pink", "Y"})
+
+
+def _leg_mode(leg: Any) -> str:
+    """
+    Classify a TransitLeg as 'train' or 'bus' from its `line_code`.
+
+    Falls back to 'transit' if `line_code` is missing — that should not
+    happen in production, but the fallback keeps `summarize_route` robust
+    against future TransitLeg shape changes.
+    """
+    code = getattr(leg, "line_code", None)
+    if code is None:
+        return "transit"
+    return "train" if code in _TRAIN_LINE_CODES else "bus"
+
+
 def summarize_route(route: Any) -> tuple[list[str], list[str], int, float]:
     """
     Reduce a Route object to (modes, lines, transfers, total_minutes).
@@ -201,15 +223,25 @@ def summarize_route(route: Any) -> tuple[list[str], list[str], int, float]:
     Kept in this module rather than on `Route` itself so the golden
     suite controls its own assertion shape — changes to `Route`'s
     internals don't silently shift golden expectations.
+
+    `modes` is derived from `TransitLeg.line_code` against the known set
+    of CTA train line codes — train codes produce "train", everything
+    else produces "bus". `total_minutes` reads `Route.total_minutes_no_wait`
+    (the property, not a bare attribute) so it matches what `find_routes`
+    sorts on. Golden tests should still NOT assert on `total_minutes`
+    — see the authoring guide in `test_routing_accuracy.py`.
     """
     transit_legs = [
         leg for leg in route.legs
         if getattr(leg, "__class__", type(None)).__name__ == "TransitLeg"
     ]
-    modes = [getattr(leg, "mode", "transit") for leg in transit_legs]
+    modes = [_leg_mode(leg) for leg in transit_legs]
     lines = [getattr(leg, "line", "") for leg in transit_legs]
     transfers = max(0, len(transit_legs) - 1)
-    total = float(getattr(route, "total_minutes", 0.0))
+    total = float(
+        getattr(route, "total_minutes_no_wait", None)
+        or getattr(route, "total_minutes", 0.0)
+    )
     return modes, lines, transfers, total
 
 

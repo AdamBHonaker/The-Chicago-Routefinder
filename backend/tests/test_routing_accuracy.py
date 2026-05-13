@@ -8,15 +8,32 @@ This file is a **scaffold only**. The determinism harness it depends on
 (`routing_harness.py`) is complete and covered by 7 passing smoke tests,
 but the golden-route fixtures themselves are NOT YET AUTHORED.
 
-A human with Chicago rider knowledge must fill in the OD pairs before
-this suite provides any regression protection. Claude (or any tool
-without local Chicago knowledge) cannot author these correctly — the
-fixtures encode judgment calls about what counts as the "right" route,
-and those calls must come from someone who actually rides the system.
+A human with Chicago rider knowledge must verify the OD pairs and
+assertions before this suite provides any regression protection.
+Claude (or any tool without local Chicago knowledge) cannot author
+these correctly — the fixtures encode judgment calls about what
+counts as the "right" route, and those calls must come from someone
+who actually rides the system.
+
+To make finishing this less painful, two scaffolding pieces ship
+alongside this file:
+
+  - `backend/tests/known_stops.py`       — every CTA L parent station
+                                           pre-loaded as a named
+                                           (lat, lon) constant.
+  - `backend/scripts/probe_route.py`     — CLI that runs one scenario
+                                           and prints the engine's
+                                           output in the shape this
+                                           suite asserts on, so an
+                                           author can sanity-check a
+                                           candidate fixture before
+                                           pinning an assertion.
 
 Every placeholder test below is marked `@pytest.mark.skip` so CI does
 not red-light on a stub. Each skip marker should be removed only when
-the OD coordinates and expected shape have been filled in.
+the OD coordinates are pinned AND the expected shape has been
+verified against rider-level intent — not just against whatever the
+engine returns today.
 
 ================================================================================
   AUTHORING GUIDE — what a human author must do
@@ -43,10 +60,26 @@ from two or three each, picked to stress different parts of the graph.
 ## 2. Pin OD coordinates (do not rely on the geocoder)
 
 The geocoder is a separate moving part — fixtures must not depend on
-it. Capture coordinates by:
+it. Three options, in order of preference:
 
-  - Google Maps right-click → "What's here?" → copy the lat/lon.
-  - Or pull a known stop's lat/lon from `backend/gtfs_data/stops.txt`.
+  1. **Use a constant from `known_stops.py`** (next to this file). It
+     pre-loads every CTA L parent station from `gtfs_data/stops.txt`
+     under a readable name:
+
+         from .known_stops import KNOWN_STOPS
+
+         origin = KNOWN_STOPS["LOGAN_SQUARE_BLUE"]
+         dest   = KNOWN_STOPS["GARFIELD_RED"]
+
+     If the station you want is missing, add it to `known_stops.py`
+     (do NOT inline a one-off lat/lon when the station exists in GTFS).
+
+  2. **Pull a specific bus stop's lat/lon** directly from
+     `backend/gtfs_data/stops.txt` and paste it inline with a comment
+     naming the stop_id and rider-level intent.
+
+  3. **Google Maps right-click → "What's here?"** for a non-stop anchor
+     (an address, a building entrance). Paste the lat/lon inline.
 
 Coordinates are (lat, lon) — note the order matches the harness; both
 positive lat and negative lon for Chicago (e.g. `(41.929, -87.708)`
@@ -123,6 +156,23 @@ When a previously-passing fixture starts to fail:
   - If the failure has no clear cause, do not update the fixture —
     treat it as a real regression and investigate.
 
+## 6.5. Probe the engine before pinning an assertion
+
+Before you write the expected `primary_modes` / `lines` / `transfers`
+for a new fixture, run the engine yourself and eyeball what it returns:
+
+    python -m backend.scripts.probe_route \\
+        --origin-stop LOGAN_SQUARE_BLUE \\
+        --dest-stop   GARFIELD_RED
+
+That script prints the ranked alternatives in the same shape this
+suite asserts on. **Read the output critically** — if the engine's
+top route disagrees with your rider-level expectation, do NOT just
+copy the engine's answer into the test. That would encode whatever
+bug the engine has today as the "correct" behavior. Investigate the
+disagreement first; the fixture exists to catch exactly this kind of
+silent drift.
+
 ## 7. Removing the skip markers
 
 When a fixture is fully authored:
@@ -160,6 +210,7 @@ import pytest
 
 from utils import CHICAGO_TZ
 
+from .known_stops import KNOWN_STOPS
 from .routing_harness import RoutingScenario, run_scenario
 
 
@@ -172,31 +223,41 @@ WEEKDAY_MIDDAY = datetime(2026, 6, 16, 14, 30, 0, tzinfo=CHICAGO_TZ)  # Tuesday 
 
 
 # ---------------------------------------------------------------------------
-# PLACEHOLDER FIXTURES — every test below requires a human to fill in OD
-# coordinates and remove the skip marker. See the authoring guide above.
+# PLACEHOLDER FIXTURES — each test below has a rider-level intent encoded in
+# its docstring but its assertion is NOT YET VERIFIED. Two of the three have
+# OD coordinates pinned from `known_stops.py` so a human author can probe
+# them immediately (see authoring guide step 6.5). Each skip marker should
+# only be removed after `probe_route.py` confirms the assertion matches
+# rider-level expectation — not just whatever the engine currently returns.
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skip(reason="TD-BE-005 layer 1: awaiting human-authored OD coords (see module docstring)")
+@pytest.mark.skip(reason="TD-BE-005 layer 1: assertion needs human verification — run probe_route.py and confirm before un-skipping")
 @pytest.mark.asyncio
-async def test_logan_square_to_hyde_park_prefers_blue_then_red():
-    """Train+train transfer fixture — PLACEHOLDER.
+async def test_logan_square_to_garfield_red_prefers_blue_then_red():
+    """Train+train transfer fixture — PLACEHOLDER (coords pinned, assertion pending).
 
-    Rider-level expectation: from Logan Square (Blue Line) to Hyde Park
-    (Red Line area), the routing engine should pick Blue→Red over any
-    bus-heavy alternative. This is one of the most-mentioned "obvious"
-    transfers in Chicago — if the engine ever stops preferring it,
-    something has gone wrong upstream.
+    Rider-level expectation: from Logan Square (Blue Line) to Garfield
+    (Red Line, near Washington Park / U of C area), the routing engine
+    should pick Blue→Red over any bus-heavy alternative. This is one
+    of the most-mentioned "obvious" transfers in Chicago — if the
+    engine ever stops preferring it, something has gone wrong upstream.
 
-    To author: replace the (0.0, 0.0) coords with the actual Logan
-    Square Blue Line stop and a Hyde Park destination (e.g. 53rd & S
-    Lake Park, or a U of C address). See authoring guide step 2.
+    To finish authoring:
+      1. Run `python -m backend.scripts.probe_route
+             --origin-stop LOGAN_SQUARE_BLUE --dest-stop GARFIELD_RED`.
+      2. Confirm the best route is in fact ["Blue Line", "Red Line"]
+         with one transfer. If it is, remove the skip marker. If it is
+         NOT, do not "fix" the assertion — investigate the disagreement.
+      3. Consider whether a destination closer to Hyde Park proper
+         (e.g. 51ST_GREEN, or a non-station U-of-C address) better
+         encodes the rider intent.
     """
     scenario = RoutingScenario(
         frozen_at=WEEKDAY_MIDDAY,
-        origin=(0.0, 0.0),   # TODO(human): Logan Square coords (lat, lon)
-        dest=(0.0, 0.0),     # TODO(human): Hyde Park coords (lat, lon)
-        description="Logan Square → Hyde Park should prefer Blue→Red over a 3-bus chain",
+        origin=KNOWN_STOPS["LOGAN_SQUARE_BLUE"],
+        dest=KNOWN_STOPS["GARFIELD_RED"],
+        description="Logan Square → Garfield (Red) should prefer Blue→Red over a bus chain",
     )
     result = await run_scenario(scenario)
     assert result.primary_modes == ["train", "train"]
@@ -204,30 +265,37 @@ async def test_logan_square_to_hyde_park_prefers_blue_then_red():
     assert result.transfers == 1
 
 
-@pytest.mark.skip(reason="TD-BE-005 layer 1: awaiting human-authored OD coords (see module docstring)")
+@pytest.mark.skip(reason="TD-BE-005 layer 1: assertion needs human verification — run probe_route.py and confirm before un-skipping")
 @pytest.mark.asyncio
 async def test_single_line_train_no_transfers():
-    """Single-line train fixture — PLACEHOLDER.
+    """Single-line train fixture — PLACEHOLDER (coords pinned, assertion pending).
 
-    Rider-level expectation: two points both clearly served by the
-    same train line should produce a one-line route with zero
-    transfers (e.g. Belmont → Roosevelt, both Red Line).
+    Rider-level expectation: Belmont (Red) → Roosevelt (Red) — both
+    clearly on the Red Line — should produce a one-line route with
+    zero transfers. This is the simplest possible "single-line"
+    assertion; if it fails, the merge-consecutive-edges logic in
+    `_path_to_route` has regressed.
 
-    To author: pick two well-known stops on the same line. See
-    authoring guide step 2.
+    To finish authoring: run `python -m backend.scripts.probe_route
+    --origin-stop BELMONT_RED --dest-stop ROOSEVELT` and confirm the
+    output before un-skipping. Note: BELMONT_RED is the shared
+    Red/Brown/Purple station; the routing engine may pick Brown or
+    Purple Express depending on time of day. The assertion uses
+    `set(result.lines)` to allow that flexibility but still catch a
+    spurious transfer.
     """
     scenario = RoutingScenario(
         frozen_at=WEEKDAY_MIDDAY,
-        origin=(0.0, 0.0),   # TODO(human): origin coords on a single train line
-        dest=(0.0, 0.0),     # TODO(human): dest coords on the same line
-        description="Two stops on the same line should not introduce a transfer",
+        origin=KNOWN_STOPS["BELMONT_RED"],
+        dest=KNOWN_STOPS["ROOSEVELT"],
+        description="Belmont → Roosevelt should ride one line without transferring",
     )
     result = await run_scenario(scenario)
     assert result.transfers == 0
     assert len(set(result.lines)) == 1
 
 
-@pytest.mark.skip(reason="TD-BE-005 layer 1: awaiting human-authored OD coords (see module docstring)")
+@pytest.mark.skip(reason="TD-BE-005 layer 1: assertion needs human verification — pick a non-station OD <0.5 mi apart and confirm with probe_route.py")
 @pytest.mark.asyncio
 async def test_walk_only_short_hop_has_no_transit_legs():
     """Walk-only fixture — PLACEHOLDER.
@@ -236,8 +304,11 @@ async def test_walk_only_short_hop_has_no_transit_legs():
     apart, the engine should return a walk-only route — no transit
     legs, no transfers.
 
-    To author: pick two points <0.5 miles apart. See authoring guide
-    step 2.
+    To author: pick two points <0.5 miles apart. Do NOT use two
+    KNOWN_STOPS entries — L stations 0.5 mi apart on the same line
+    can still produce a one-stop train ride, which is correct but
+    not what this fixture is meant to assert. Use addresses or
+    specific bus stop_ids on a corridor without an L station nearby.
     """
     scenario = RoutingScenario(
         frozen_at=WEEKDAY_MIDDAY,

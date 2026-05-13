@@ -10,6 +10,8 @@ import LoadingSkeleton from "./components/LoadingSkeleton.jsx";
 // — keep them out of the eager bundle (OPT-FE-204).
 const SettingsPanel    = lazy(() => import("./components/SettingsPanel.jsx"));
 const SavedRoutesPanel = lazy(() => import("./components/SavedRoutesPanel.jsx"));
+// FEAT-018: ToolsHub replaces the body of the (renamed) "Tools" tab.
+const ToolsHub = lazy(() => import("./components/ToolsHub.jsx"));
 import RouteCard from "./components/RouteCard.jsx";
 import PinnedStopsBoard from "./components/PinnedStopsBoard.jsx";
 import ServiceAlertsBar from "./components/ServiceAlertsBar.jsx";
@@ -37,6 +39,7 @@ import {
 import LabelSavePanel from "./components/LabelSavePanel.jsx";
 import LocationInput from "./components/LocationInput.jsx";
 import SharedRouteBanner from "./components/SharedRouteBanner.jsx";
+import InstallPrompt from "./components/InstallPrompt.jsx";
 import SideRail from "./components/SideRail.jsx";
 import PanelSplitter from "./components/PanelSplitter.jsx";
 import SheetSegmentedControl from "./components/SheetSegmentedControl.jsx";
@@ -50,6 +53,13 @@ import { renderMarkdown } from "./utils/renderMarkdown.js";
 import { extractTransitLines } from "./utils/routeUtils.js";
 import { LINE_COLORS } from "./lineColors.js";
 import { deriveTransferPoints } from "./utils/deriveTransferPoints.js";
+import {
+  TRIP_PLAN_KEY,
+  TRIP_STATE_KEY,
+  loadPersistedTrip,
+  savePersistedTrip,
+  clearPersistedTrip,
+} from "./utils/tripPersistence.js";
 import { track } from "./analytics.js";
 
 // Thin wrapper so call-sites don't need to pass RETRY_DELAYS_MS explicitly.
@@ -82,16 +92,32 @@ export default function App() {
   const { t, i18n } = useTranslation();
   useDocumentLanguage();
 
-  const [origin, setOrigin] = useState("");
+  // Rehydrate the in-flight trip's plan if a fresh (within 4 h) blob exists.
+  // Paired with useTripTracker's TRIP_STATE_KEY rehydration; both are written
+  // together while tripActive=true and cleared together on stopTrip. See
+  // utils/tripPersistence.js for the rationale and TTL.
+  //
+  // Defensive: if the plan blob is gone (TTL expired or never written due to
+  // quota) but a stale tracker blob remains, drop the tracker blob too so the
+  // hook does not boot into a tripActive=true state with no route to render.
+  // useMemo runs before the useTripTracker call below — so the cleanup lands
+  // before the hook reads its own persisted state on mount.
+  const persistedPlan = useMemo(() => {
+    const plan = loadPersistedTrip(TRIP_PLAN_KEY);
+    if (!plan) clearPersistedTrip(TRIP_STATE_KEY);
+    return plan;
+  }, []);
+
+  const [origin, setOrigin] = useState(persistedPlan?.origin ?? "");
   const [originGeoCoords, setOriginGeoCoords] = useState(null);
-  const [destination, setDestination] = useState("");
+  const [destination, setDestination] = useState(persistedPlan?.destination ?? "");
   const [transitMode, setTransitMode] = useState("All");
 
-  const [result, setResult] = useState(null);   // { recommendation, routes }
+  const [result, setResult] = useState(persistedPlan?.result ?? null);   // { recommendation, routes }
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const [selectedRouteIndex, setSelectedRouteIndex] = useState(0);
+  const [selectedRouteIndex, setSelectedRouteIndex] = useState(persistedPlan?.selectedRouteIndex ?? 0);
   const [isSharedLink, setIsSharedLink] = useState(false);
 
   // BYOK state — key persisted to sessionStorage (clears on tab close, NOT across tabs).
@@ -102,7 +128,7 @@ export default function App() {
     BYOK_ENABLED ? (sessionStorage.getItem("byok_api_key") || "") : ""
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState("home"); // mobile tab bar; on desktop drives cards-column content (Home/Alerts/Saved)
+  const [activeTab, setActiveTab] = useState("home"); // mobile tab bar; on desktop drives cards-column content (Home/Alerts/Tools)
 
   // Desktop cards-column width (px). User-resizable via the .panel-splitter
   // handle between the cards and map panels. Persisted across sessions.
@@ -327,6 +353,18 @@ export default function App() {
     startTrip, stopTrip, toggleOnVehicle, dismissOffRoute, dismissTripGeoError, resetForReroute,
   } = useTripTracker({ result, selectedRouteIndex });
 
+  // Persist the route plan (origin/destination/result/selectedRouteIndex)
+  // alongside useTripTracker's state blob while a trip is active, so the
+  // PWA can resume mid-trip if the OS evicts the page. Clears on
+  // tripActive=false so abandoned plans don't leak past the trip's lifetime.
+  useEffect(() => {
+    if (tripActive && result) {
+      savePersistedTrip(TRIP_PLAN_KEY, { origin, destination, result, selectedRouteIndex });
+    } else if (!tripActive) {
+      clearPersistedTrip(TRIP_PLAN_KEY);
+    }
+  }, [tripActive, origin, destination, result, selectedRouteIndex]);
+
   // ── Feature TransferMarkers — selected transfer ID ────────────────────────
   const [selectedTransferId, setSelectedTransferId] = useState(null);
 
@@ -433,6 +471,9 @@ export default function App() {
       destCoords:   data.dest_coords,
       busDataPartial: (data.bus_errors > 0) && !(data.bus_arrivals?.length),
       weather: data.weather || null,
+      // BUG-047: capture coverage status so the UI can show an explicit empty
+      // state when the rider's origin/destination is outside CTA coverage.
+      routingStatus: data.routing_status || null,
     });
     return routes.length;
   }
@@ -529,11 +570,14 @@ export default function App() {
     await performSearch(originGeoCoords ?? origin.trim(), destination.trim());
   }
 
-  const effectiveShowSavedRoutes = showSavedRoutes || activeTab === "saved";
+  // The legacy Masthead "saved routes" overlay still surfaces saved routes
+  // via SavedRoutesPanel; FEAT-018 swapped the dedicated tab for a Tools-hub
+  // sub-view, so the tab itself no longer auto-opens the panel.
+  const effectiveShowSavedRoutes = showSavedRoutes;
 
   const handleTabChange = (id) => {
     setActiveTab(id);
-    if (id !== "saved") setShowSavedRoutes(false);
+    if (id !== "tools") setShowSavedRoutes(false);
   };
 
   // ── sidebarContents ──────────────────────────────────────────────────────
@@ -580,7 +624,7 @@ export default function App() {
                 }}
                 onClose={() => {
                   setShowSavedRoutes(false);
-                  if (activeTab === "saved") setActiveTab("home");
+                  if (activeTab === "tools") setActiveTab("home");
                 }}
               />
             </Suspense>
@@ -622,7 +666,23 @@ export default function App() {
             </main>
           )}
 
-          {activeTab !== "alerts" && activeTab !== "saved" && (
+          {activeTab === "tools" && (
+            <Suspense fallback={null}>
+              <ToolsHub
+                savedRoutes={savedRoutes}
+                pinnedStops={pinnedStops}
+                onDeleteRoute={handleDeleteRoute}
+                onRouteSelect={(orig, dest) => {
+                  setOrigin(orig);
+                  setDestination(dest);
+                  setActiveTab("home");
+                }}
+                onUnpin={handleUnpin}
+              />
+            </Suspense>
+          )}
+
+          {activeTab !== "alerts" && activeTab !== "tools" && (
           <main className="main">
             <PinnedStopsBoard
               stops={pinnedStops}
@@ -727,6 +787,13 @@ export default function App() {
                         {t("trip_dismiss_btn")}
                       </button>
                     </div>
+                  </div>
+                )}
+
+                {result.routes.length === 0 && result.routingStatus?.status === "out_of_coverage" && (
+                  <div className="special-dispatch special-dispatch--advisory" role="alert">
+                    <span className="special-dispatch__kicker">{t("out_of_coverage_kicker")}</span>
+                    <p className="special-dispatch__body">{t("out_of_coverage_message")}</p>
                   </div>
                 )}
 
@@ -870,6 +937,8 @@ export default function App() {
           <div className="panel-map" aria-hidden="true" />
         </div>
       )}
+
+      <InstallPrompt />
 
       {showArrivedToast && (
         <div

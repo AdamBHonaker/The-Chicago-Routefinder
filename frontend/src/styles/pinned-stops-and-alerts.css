@@ -6,7 +6,7 @@
  * sufficient and color-flash doesn't register on tap for icon-sized targets).
  */
 
-/* ── Feature Pinned Stops + Feature Last Train ──────────────────────────── */
+/* ── Feature Pinned Stops ───────────────────────────────────────────────── */
 
 /* Pin button on transit legs */
 .pin-btn {
@@ -149,19 +149,6 @@
   font-size: var(--fs-body-sm);
   font-style: italic;
   color: var(--mute);
-}
-
-/* Last Train warning */
-.psb-last-train {
-  font-family: var(--mono);
-  font-size: var(--fs-mono);
-  color: var(--mute);
-  margin: var(--sp-2) 0 0;
-}
-
-.psb-last-train--urgent {
-  color: var(--rust);
-  font-weight: 700;
 }
 
 /* ── Feature Service Alerts ──────────────────────────────────────────────── */

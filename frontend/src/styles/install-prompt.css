@@ -1,0 +1,104 @@
+/* Install-to-home-screen prompt — mobile-only, first-visit nudge.
+ * Floats above the bottom sheet (z-index sits above .bottom-sheet but below
+ * any toast). safe-area-inset-bottom keeps it clear of iOS home-indicator.
+ */
+
+.install-prompt {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  z-index: 1200;
+  padding: 14px 16px 14px 14px;
+  background: var(--paper);
+  border: var(--hairline);
+  border-inline-start: 3px solid var(--navy);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+  color: var(--ink);
+  font-family: var(--serif);
+  font-size: var(--fs-body-sm);
+  line-height: 1.45;
+  animation: install-prompt-rise 320ms ease-out;
+}
+
+@keyframes install-prompt-rise {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .install-prompt { animation: none; }
+}
+
+.install-prompt__kicker {
+  display: block;
+  font-family: var(--sans);
+  font-size: var(--fs-caps);
+  font-weight: 700;
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--mute);
+  margin-bottom: 4px;
+}
+
+.install-prompt__title {
+  font-family: var(--serif);
+  font-weight: 600;
+  font-size: var(--fs-body);
+  margin-bottom: 4px;
+}
+
+.install-prompt__body {
+  color: var(--ink-soft);
+  margin-bottom: 10px;
+}
+
+.install-prompt__actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.install-prompt__install-btn,
+.install-prompt__later-btn {
+  font-family: var(--sans);
+  font-size: var(--fs-caps);
+  font-weight: 700;
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  padding: 8px 14px;
+  border: 1px solid var(--ink);
+  cursor: pointer;
+  min-height: 36px;
+  transition: opacity 120ms ease, background-color 120ms ease, color 120ms ease;
+}
+
+.install-prompt__install-btn {
+  background: var(--ink);
+  color: var(--paper);
+}
+.install-prompt__install-btn:hover  { opacity: var(--opacity-hover, 0.88); }
+.install-prompt__install-btn:active { opacity: var(--opacity-pressed, 0.72); }
+
+.install-prompt__later-btn {
+  background: transparent;
+  color: var(--ink);
+}
+.install-prompt__later-btn:hover  { background: var(--paper-folio); }
+.install-prompt__later-btn:active { background: var(--ink); color: var(--paper); }
+
+.install-prompt__close {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  border: 0;
+  font-size: 20px;
+  line-height: 1;
+  color: var(--mute);
+  cursor: pointer;
+}
+.install-prompt__close:hover { color: var(--ink); }

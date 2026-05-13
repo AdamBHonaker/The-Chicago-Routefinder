@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { useTripTracker } from "../hooks/useTripTracker.js";
+import { TRIP_STATE_KEY, TRIP_TTL_MS } from "../utils/tripPersistence.js";
 
 // Two-leg fixture: walk from origin to a transit board point, then a single
 // transit leg to the destination. Coordinates are real Chicago lat/lng so
@@ -63,10 +64,12 @@ beforeEach(() => {
     configurable: true,
     value: fakeGeolocation(),
   });
+  localStorage.removeItem(TRIP_STATE_KEY);
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
+  localStorage.removeItem(TRIP_STATE_KEY);
 });
 
 describe("useTripTracker", () => {
@@ -171,6 +174,64 @@ describe("useTripTracker", () => {
     // stopTrip() runs synchronously after the error path and unsubscribes the watch.
     expect(result.current.tripActive).toBe(false);
     expect(watchCallbacks.cleared).toBe(true);
+  });
+
+  it("persists trip state to localStorage while active and clears on stop", () => {
+    const { result } = renderHook(() =>
+      useTripTracker({ result: TWO_LEG_RESULT, selectedRouteIndex: 0 })
+    );
+    expect(localStorage.getItem(TRIP_STATE_KEY)).toBe(null);
+
+    act(() => result.current.startTrip());
+    const saved = JSON.parse(localStorage.getItem(TRIP_STATE_KEY));
+    expect(saved.tripActive).toBe(true);
+    expect(saved.activeLegIndex).toBe(0);
+    expect(saved.savedAt).toBeTypeOf("number");
+
+    // Advancing the leg should update the persisted blob.
+    emitPosition(WALK_BOARD);
+    const savedAfter = JSON.parse(localStorage.getItem(TRIP_STATE_KEY));
+    expect(savedAfter.activeLegIndex).toBe(1);
+
+    act(() => result.current.stopTrip());
+    expect(localStorage.getItem(TRIP_STATE_KEY)).toBe(null);
+  });
+
+  it("rehydrates an in-progress trip from a fresh persisted blob and re-attaches the watch", () => {
+    localStorage.setItem(TRIP_STATE_KEY, JSON.stringify({
+      tripActive: true,
+      activeLegIndex: 1,
+      completedSteps: ["leg0:step0"],
+      onVehicle: true,
+      savedAt: Date.now() - 60_000, // 1 minute ago — well within TTL
+    }));
+
+    const { result } = renderHook(() =>
+      useTripTracker({ result: TWO_LEG_RESULT, selectedRouteIndex: 0 })
+    );
+    expect(result.current.tripActive).toBe(true);
+    expect(result.current.activeLegIndex).toBe(1);
+    expect(result.current.completedSteps.has("leg0:step0")).toBe(true);
+    // Watch effect attached on mount without an explicit startTrip call.
+    expect(watchCallbacks.success).toBeTypeOf("function");
+  });
+
+  it("ignores a stale persisted blob older than the TTL", () => {
+    localStorage.setItem(TRIP_STATE_KEY, JSON.stringify({
+      tripActive: true,
+      activeLegIndex: 1,
+      completedSteps: [],
+      onVehicle: false,
+      savedAt: Date.now() - (TRIP_TTL_MS + 60_000),
+    }));
+
+    const { result } = renderHook(() =>
+      useTripTracker({ result: TWO_LEG_RESULT, selectedRouteIndex: 0 })
+    );
+    expect(result.current.tripActive).toBe(false);
+    expect(result.current.activeLegIndex).toBe(null);
+    // Stale blob is removed by the loader on first read.
+    expect(localStorage.getItem(TRIP_STATE_KEY)).toBe(null);
   });
 
   it("does not stop the trip on a non-permission GPS error", () => {

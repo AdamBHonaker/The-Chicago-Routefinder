@@ -31,9 +31,10 @@ from main import (
     RouteRequest,
     _rank_routes,
     _apply_transfer_wait_estimates,
+    _pick_wait,
     _rate_store,
 )
-from transit_graph import Route, WalkLeg, TransitLeg
+from transit_graph import Route, WalkLeg, TransitLeg, compute_route_total
 from utils import TRANSFER_PENALTY_MINUTES
 
 
@@ -703,3 +704,280 @@ class TestBusBusTransferTotalShape:
         # Post-fix:    adjusted == 36 + 4 + 3 = 43 (correct)
         assert adjusted == pytest.approx(43.0)
         assert adjusted != pytest.approx(40.0)
+
+
+# ---------------------------------------------------------------------------
+# compute_route_total — single arithmetic authority (BUG-050)
+# ---------------------------------------------------------------------------
+
+class TestComputeRouteTotal:
+    """Unit tests for the formula function itself."""
+
+    def test_no_transfers_no_wait(self):
+        r = Route(transit_minutes=20.0, walk_minutes_total=5.0, transfers=0)
+        assert compute_route_total(r) == pytest.approx(25.0)
+
+    def test_no_transfers_with_first_leg_wait(self):
+        r = Route(transit_minutes=20.0, walk_minutes_total=5.0, transfers=0)
+        assert compute_route_total(r, first_leg_wait=4.0) == pytest.approx(29.0)
+
+    def test_transfers_use_penalty_fallback_when_no_waits_passed(self):
+        r = Route(transit_minutes=20.0, walk_minutes_total=5.0, transfers=2)
+        # 25 + 0 + 2 * 3 = 31
+        assert compute_route_total(r) == pytest.approx(25.0 + 2 * TRANSFER_PENALTY_MINUTES)
+
+    def test_live_transfer_waits_replace_fallback(self):
+        r = Route(transit_minutes=20.0, walk_minutes_total=5.0, transfers=2)
+        # 25 + 1 + 7 + 9 = 42
+        assert compute_route_total(r, 1.0, [7, 9]) == pytest.approx(42.0)
+
+    def test_partial_live_waits_fall_back_for_missing_entries(self):
+        r = Route(transit_minutes=20.0, walk_minutes_total=5.0, transfers=2)
+        # Only one live wait provided; the second falls back to PENALTY.
+        # 25 + 0 + 7 + 3 = 35
+        expected = 25.0 + 7 + TRANSFER_PENALTY_MINUTES
+        assert compute_route_total(r, 0.0, [7]) == pytest.approx(expected)
+
+    def test_none_in_waits_list_falls_back_to_penalty(self):
+        r = Route(transit_minutes=20.0, walk_minutes_total=5.0, transfers=2)
+        # 25 + 0 + 3 (fallback for None) + 9 = 37
+        expected = 25.0 + TRANSFER_PENALTY_MINUTES + 9
+        assert compute_route_total(r, 0.0, [None, 9]) == pytest.approx(expected)
+
+    def test_walk_factor_scales_walk_minutes(self):
+        r = Route(transit_minutes=20.0, walk_minutes_total=5.0, transfers=1)
+        # walk_factor=1.25 means walks take 25% longer.
+        # 20 + 5*1.25 + 0 + 3 = 29.25
+        expected = 20.0 + 5.0 * 1.25 + TRANSFER_PENALTY_MINUTES
+        assert compute_route_total(r, 0.0, None, walk_factor=1.25) == pytest.approx(expected)
+
+    def test_extra_waits_beyond_transfers_are_ignored(self):
+        r = Route(transit_minutes=20.0, walk_minutes_total=5.0, transfers=1)
+        # transfers=1 so only first entry counts.
+        # 25 + 0 + 6 = 31
+        assert compute_route_total(r, 0.0, [6, 99, 99]) == pytest.approx(31.0)
+
+
+class TestRouteTotalInvariant:
+    """Property-based invariant test (BUG-050 chunk 3).
+
+    For a bus+bus-style route with random walk-leg minutes and a random live
+    transfer wait, the displayed total returned by the
+    _rank_routes → rebuild → _apply_transfer_wait_estimates pipeline must
+    equal the simple expected formula:
+
+        displayed_total = sum(walk_minutes)
+                        + sum(transit_minutes)
+                        + first_leg_wait
+                        + sum(transfer_waits)
+
+    This invariant holds regardless of the internal estimate-handling order,
+    so it would have caught BUG-008 directly. Adding it locks the formula
+    in place against future drift.
+    """
+
+    def _build_bus_bus_route(
+        self,
+        walk1: float, transit1: float, walk2: float, transit2: float, walk3: float,
+    ) -> Route:
+        legs = [
+            _walk_leg("Your location", "Stop A", walk1),
+            _transit_leg("22", "Northbound", "Stop A", "Stop Sk", transit1),
+            _walk_leg("Stop Sk", "Stop T", walk2),
+            _transit_leg("36", "Eastbound", "Stop T", "Stop Exit", transit2),
+            _walk_leg("Stop Exit", "Your destination", walk3),
+        ]
+        return Route(
+            legs=legs,
+            transit_minutes=transit1 + transit2,
+            walk_minutes_total=walk1 + walk2 + walk3,
+            transfers=1,
+            first_transit_leg_index=1,
+        )
+
+    def test_displayed_total_matches_simple_formula_over_random_inputs(self):
+        import random
+        rng = random.Random(0xC1A60)
+        for _ in range(50):
+            walk1 = round(rng.uniform(0.5, 8.0), 1)
+            transit1 = round(rng.uniform(3.0, 40.0), 1)
+            walk2 = round(rng.uniform(0.0, 4.0), 1)
+            transit2 = round(rng.uniform(3.0, 40.0), 1)
+            walk3 = round(rng.uniform(0.5, 8.0), 1)
+            wait_a = rng.randint(0, 15)
+            live_transfer_wait = rng.randint(0, 15)
+
+            route = self._build_bus_bus_route(walk1, transit1, walk2, transit2, walk3)
+            # Annotate live wait on the second transit leg (the transfer board).
+            route.legs[3].transfer_wait_minutes = live_transfer_wait
+
+            # Step 1: _rank_routes-style baseline (find_bus_transfer_routes
+            # returns this shape via compute_route_total).
+            baseline_total = compute_route_total(route, float(wait_a))
+
+            # Step 2: live-wait adjustment.
+            out = _apply_transfer_wait_estimates([(baseline_total, wait_a, route)])
+            adjusted, _wait, _r = out[0]
+
+            expected = (
+                walk1 + walk2 + walk3
+                + transit1 + transit2
+                + wait_a
+                + live_transfer_wait
+            )
+            assert adjusted == pytest.approx(expected), (
+                f"Invariant violated for inputs "
+                f"walks=({walk1},{walk2},{walk3}) transits=({transit1},{transit2}) "
+                f"wait_a={wait_a} live_transfer={live_transfer_wait}: "
+                f"got {adjusted}, expected {expected}"
+            )
+
+    def test_invariant_catches_3min_asymmetry(self):
+        """Sanity: deliberately introducing the original BUG-008 asymmetry
+        (a baseline that omits the per-transfer fallback) must make the
+        invariant fail. This proves the test would catch the regression."""
+        route = self._build_bus_bus_route(2.0, 15.0, 1.0, 15.0, 3.0)
+        route.legs[3].transfer_wait_minutes = 5
+        wait_a = 4
+
+        # Pre-BUG-008-fix baseline: no_wait + wait_a (omits leg-2 penalty).
+        # Using compute_route_total with transfers=0 simulates the bug shape.
+        broken_baseline = (
+            route.transit_minutes + route.walk_minutes_total + wait_a
+        )  # NO transfer fallback added — this is the BUG-008 state
+        out = _apply_transfer_wait_estimates([(broken_baseline, wait_a, route)])
+        adjusted, _, _ = out[0]
+
+        expected_correct = (
+            route.walk_minutes_total + route.transit_minutes + wait_a + 5
+        )
+        # The invariant should NOT hold under the broken baseline.
+        assert adjusted != pytest.approx(expected_correct), (
+            "Test scaffolding bug: the broken baseline produced the correct "
+            "total, so this test cannot prove the invariant catches the "
+            "original BUG-008 asymmetry."
+        )
+
+
+# ---------------------------------------------------------------------------
+# _pick_wait — BUG-046 regression: bearing selection at near-orthogonal /
+# short-hop vectors must not be decided by floating-point noise.
+# ---------------------------------------------------------------------------
+
+class TestPickWaitDirectionRobustness:
+    """Regression tests for BUG-046. Approximate Red Line / Loop station
+    coordinates are patched in for `get_station_coords` and
+    `get_station_by_name`, since the real values come from GTFS and require
+    a built graph. These tests only need *relative* lat/lon geometry."""
+
+    # Approximate coords (lat, lon). Red Line runs roughly north-south.
+    BELMONT     = (41.940, -87.654)
+    FULLERTON   = (41.925, -87.652)
+    HOWARD      = (42.019, -87.673)
+    NINETYFIFTH = (41.722, -87.625)
+
+    # Loop stations — near-orthogonal one-stop case.
+    CLARK_LAKE  = (41.886, -87.631)
+    STATE_LAKE  = (41.886, -87.628)  # ~one block east, same latitude
+    # Plausible Red Line terminals' directional pull from the Loop:
+    LOOP_HOWARD     = (42.019, -87.673)
+    LOOP_95TH       = (41.722, -87.625)
+
+    @staticmethod
+    def _coords_lookup(by_mapid: dict, by_name: dict):
+        def _coords(mapid):
+            return by_mapid.get(mapid)
+        def _by_name(name):
+            return by_name.get(name)
+        return _coords, _by_name
+
+    def test_one_stop_south_picks_southbound_terminal(self):
+        """Belmont → Fullerton (Red Line, one stop south). Both Howard
+        (north) and 95th (south) appear on the board; with the BUG-046
+        guards in place, _pick_wait must pick the 95th-direction arrival."""
+        by_mapid = {"BEL": self.BELMONT, "FUL": self.FULLERTON,
+                    "95TH_END": self.NINETYFIFTH}
+        by_name = {"Howard": self.HOWARD, "95th/Dan Ryan": self.NINETYFIFTH}
+        _coords, _by_name = self._coords_lookup(by_mapid, by_name)
+        with patch("main.get_station_coords", side_effect=_coords), \
+             patch("main.get_station_by_name", side_effect=_by_name):
+            # With no fallback (single-leg route), the short hop is still
+            # geometrically aligned with 95th — cosine similarity should
+            # cleanly separate the two terminals.
+            dest_map = {"Howard": 9, "95th/Dan Ryan": 4}
+            wait = _pick_wait(dest_map, "BEL", "FUL")
+            assert wait == 4  # 95th-direction arrival, not Howard
+
+    def test_short_hop_uses_fallback_downstream_for_baseline(self):
+        """A one-stop hop has a small boarding→exit vector. When the route
+        continues further south to 95th, the fallback baseline lets us
+        recover a clean direction even if the per-hop vector is tiny."""
+        # Place from/to very close together so per-hop magnitude is below
+        # the short-hop threshold (~0.005 deg).
+        near_from = (41.940, -87.654)
+        near_to   = (41.939, -87.654)  # 0.001 deg south — below threshold
+        by_mapid = {"FROM": near_from, "TO": near_to,
+                    "FAR_SOUTH": self.NINETYFIFTH}
+        by_name = {"Howard": self.HOWARD, "95th/Dan Ryan": self.NINETYFIFTH}
+        _coords, _by_name = self._coords_lookup(by_mapid, by_name)
+        with patch("main.get_station_coords", side_effect=_coords), \
+             patch("main.get_station_by_name", side_effect=_by_name):
+            dest_map = {"Howard": 8, "95th/Dan Ryan": 3}
+            wait = _pick_wait(dest_map, "FROM", "TO",
+                              fallback_to_mapid="FAR_SOUTH")
+            assert wait == 3  # 95th wins via the long-baseline fallback
+
+    def test_near_orthogonal_loop_hop_falls_back_to_earliest(self):
+        """Clark/Lake → State/Lake is a one-stop Loop hop with a boarding
+        →exit vector roughly perpendicular to both Red Line terminals.
+        The bearing test is genuinely ambiguous — _pick_wait must fall
+        back to the earliest arrival across both directions."""
+        by_mapid = {"CLK": self.CLARK_LAKE, "STL": self.STATE_LAKE}
+        by_name = {"Howard": self.LOOP_HOWARD,
+                   "95th/Dan Ryan": self.LOOP_95TH}
+        _coords, _by_name = self._coords_lookup(by_mapid, by_name)
+        with patch("main.get_station_coords", side_effect=_coords), \
+             patch("main.get_station_by_name", side_effect=_by_name):
+            # Northbound train is closer; southbound is further out.
+            dest_map = {"Howard": 7, "95th/Dan Ryan": 3}
+            wait = _pick_wait(dest_map, "CLK", "STL")
+            # Ambiguous bearing → take the earliest arrival
+            assert wait == 3
+
+    def test_single_direction_returns_only_arrival(self):
+        """Single-direction lookup is a fast path — must still return that
+        wait without consulting coordinates."""
+        wait = _pick_wait({"Howard": 6}, "BEL", "FUL")
+        assert wait == 6
+
+    def test_empty_dest_map_returns_none(self):
+        wait = _pick_wait({}, "BEL", "FUL")
+        assert wait is None
+
+    def test_long_unambiguous_baseline_picks_aligned_terminal(self):
+        """Sanity: a long, clearly-southbound trip (Belmont → 95th) must
+        still cleanly pick the 95th-direction arrival, not Howard."""
+        by_mapid = {"BEL": self.BELMONT, "END": self.NINETYFIFTH}
+        by_name = {"Howard": self.HOWARD, "95th/Dan Ryan": self.NINETYFIFTH}
+        _coords, _by_name = self._coords_lookup(by_mapid, by_name)
+        with patch("main.get_station_coords", side_effect=_coords), \
+             patch("main.get_station_by_name", side_effect=_by_name):
+            wait = _pick_wait({"Howard": 9, "95th/Dan Ryan": 5}, "BEL", "END")
+            assert wait == 5
+
+    def test_all_negative_cosine_falls_back_to_earliest(self):
+        """BUG-060 regression: when every candidate direction points opposite
+        the boarding→exit vector, return the earliest arrival instead of the
+        'least wrong' direction. In practice routing wouldn't have selected
+        this train, but a stale arrival_lookup could expose the misbehavior."""
+        # Boarding BEL → exit FUL is southbound. Both candidate terminals are
+        # north of boarding, so both cosine similarities are negative.
+        NORTH_FAR = (42.050, -87.670)  # further north than Howard
+        by_mapid = {"BEL": self.BELMONT, "FUL": self.FULLERTON}
+        by_name = {"Howard": self.HOWARD, "NorthEnd": NORTH_FAR}
+        _coords, _by_name = self._coords_lookup(by_mapid, by_name)
+        with patch("main.get_station_coords", side_effect=_coords), \
+             patch("main.get_station_by_name", side_effect=_by_name):
+            dest_map = {"Howard": 9, "NorthEnd": 5}
+            wait = _pick_wait(dest_map, "BEL", "FUL")
+            assert wait == 5  # earliest, not the "least wrong" direction

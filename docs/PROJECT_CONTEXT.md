@@ -300,12 +300,21 @@ Location resolution uses a three-step fallback (implemented in `gtfs_loader.py`)
 - Free tier: ~40,000 calls/month. Production call cap defaults to 9,500/month (configurable via `GEOCODE_MONTHLY_LIMIT` env var; set to `0` to disable).
 - Requires `GOOGLE_MAPS_API_KEY` in `backend/.env` AND in Railway environment variables ✅
 
+**Local-first geocode corpus (in progress — see FEATURE_PLANS.md "Geocoding & Autocomplete — Local-First Cascade"):**
+
+- The `backend/static_data/chicago_geocode.db` SQLite/FTS5 store holds the address + intersection corpus that Chunks 4+ will read. First build completed 2026-05-12: 55 MB, 409,490 addresses + 24,573 intersections + the FTS5 mirrors.
+- Rebuild quarterly by running, in either order:
+  - `python backend/scripts/build_address_points.py` — ~5–10 min wall clock; 17 Overpass chunks
+  - `python backend/scripts/build_intersections.py` — ~1–3 min wall clock; 2 Overpass queries + Shapely STRtree
+- Both scripts are idempotent: they DELETE their target table and rewrite. Safe to rerun anytime.
+- DB is gitignored. Local builds only; production builds will pull a published artifact (mechanism TBD when Chunk 5 lands).
+
 ---
 
 ## Current File Structure
 
 ```text
-CTA-Transit-PWA/
+The-Chicago-Routefinder/
 ├── .gitignore
 ├── README.md
 ├── CLAUDE.md                           ← Claude Code project instructions
@@ -327,7 +336,7 @@ CTA-Transit-PWA/
 │   └── PYTHON_TERMINAL_TEST_STARTUP_INSTRUCTIONS.md  ← How to run backend + frontend locally
 ├── backend/
 │   ├── .env                            ← API keys (never commit)
-│   ├── main.py                         ← FastAPI app wiring + lifespan + /recommend, /health, /ping, /autocomplete, /alerts, /reverse-geocode, /stop-arrivals (admin/stats endpoints live in routes/)
+│   ├── main.py                         ← FastAPI app wiring + lifespan + /recommend, /health, /ping, /autocomplete, /alerts, /reverse-geocode, /stop-arrivals, /last-departure (admin/stats endpoints live in routes/; /schedule endpoints live in schedule.py)
 │   ├── rate_limit.py                   ← Per-IP /recommend RPM/RPH + rolling-24h + geocode-bucket sliding-window limiter; _client_ip extractor
 │   ├── middleware.py                   ← register_middlewares(): request-size cap, security headers, privacy-preserving analytics dispatcher
 │   ├── prompt_builder.py               ← build_prompt() + LANGUAGE_NAMES + crowdedness labels + route/weather/transfer formatting helpers
@@ -335,10 +344,11 @@ CTA-Transit-PWA/
 │   ├── routes/
 │   │   ├── admin.py                    ← /admin/{dau,geography,sessions,hourly,devices,referrers} APIRouter + DAU_ADMIN_TOKEN gate
 │   │   └── stats.py                    ← /stats, /stats/{dau,geography,sessions,hourly,devices,referrers}, /privacy APIRouter (geocode-bucket rate-limited)
-│   ├── config.py                       ← Central routing constants (16 named values, all env-var overridable)
+│   ├── config.py                       ← Central routing constants (17 named values, all env-var overridable)
 │   ├── utils.py                        ← haversine_miles(), SpatialGrid, Chicago bbox constants
-│   ├── gtfs_loader.py                  ← 3-step location resolver + Google Maps geocoding + persistent cache + monthly counter
-│   ├── transit_graph.py                ← Unified NetworkX graph; find_routes(); find_bus_transfer_routes(); shape/exit helpers
+│   ├── gtfs_loader.py                  ← 3-step location resolver (delegates fuzzy + street-abbr to geocode_text.py) + Google Maps geocoding + persistent JSON cache + monthly counter (cache + counter retire in Chunk 5 of the Geocoding & Autocomplete plan)
+│   ├── geocode_text.py                 ← Shared text normalization: normalize_street_name/normalize_address (corpus canonicalization), _normalize_street_abbr (query canonicalization), parameterized fuzzy_match_neighborhood. Used by both runtime resolution and ingest scripts. Single source of truth so ingest + query canonicalize identically.
+│   ├── transit_graph.py                ← Service-period-tagged NetworkX graph variants (weekday peak / midday / evening / weekend / owl, BUG-051); find_routes()/find_routes_with_status() with optional departure_time; find_bus_transfer_routes(); shape/exit helpers
 │   ├── walking.py                      ← igraph street routing; walk_minutes/path/directions; lru_cache; Haversine fallback
 │   ├── cta_client.py                   ← Async CTA Train + Bus Tracker clients; alerts feed; shared aiohttp session
 │   ├── weather_service.py              ← NWS two-step weather fetch; WeatherContext Pydantic model
@@ -357,17 +367,29 @@ CTA-Transit-PWA/
 │   ├── fetch_gtfs.py                   ← Script: download/update CTA GTFS data
 │   ├── fetch_street_graph.py           ← Script: build OSMnx street graph + emit igraph pickle
 │   ├── fetch_station_exits.py          ← Script: build station_exits.json from Overpass OSM data
+│   ├── scripts/                        ← Repo-root-importable utility scripts (ingest, migrations, ops). Run via `python backend/scripts/<name>.py`.
+│   │   ├── _geocode_db.py              ← SQLite schema for chicago_geocode.db (addresses, intersections, FTS5 mirrors, cached_forward, cached_reverse); connect() applies schema idempotently. `--init` creates an empty DB.
+│   │   ├── build_address_points.py     ← Ingest: Overpass → addresses + addresses_fts. 17 chunks across the main Chicago box + Purple Line corridor. Quarterly rebuild.
+│   │   └── build_intersections.py      ← Ingest: Overpass named highways → Shapely STRtree → intersections + intersections_fts. Quarterly rebuild.
+│   ├── schedule.py                     ← FEAT-018: /schedule/routes + /schedule/{route_id} endpoints + route-category classifier
+│   ├── schedule_data/                  ← FEAT-018 build artifacts: per-route schedule JSON + _manifest.json (gitignored payload, regenerated via scripts/build_schedule_index.py)
 │   ├── active_routes.py                ← Diagnostic: print all active CTA routes right now
 │   ├── railway.toml                    ← Railway deployment config
 │   ├── Dockerfile                      ← Railway build recipe; pulls street_graph from GitHub Release at build time
 │   ├── requirements.txt
 │   ├── station_exits.json              ← ~367 OSM subway entrances for 130 stations; loaded at startup
-│   ├── geocode_cache.json              ← Persistent geocoding cache snapshot (gitignored)
-│   ├── geocode_cache.journal           ← Append-only JSONL delta (gitignored)
-│   ├── geocode_counter.json            ← Monthly API call counter (gitignored)
+│   ├── geocode_cache.json              ← Persistent Google geocoding cache snapshot (gitignored; absorbed into cached_forward by the migrator in Chunk 10 of the Geocoding & Autocomplete plan, then deleted)
+│   ├── geocode_cache.journal           ← Append-only JSONL delta (gitignored; deleted with geocode_cache.json in Chunk 10)
+│   ├── geocode_counter.json            ← Monthly Google API call counter (gitignored; removed when Chunk 5 retires the counter in favor of negative-cache + 429 breaker + LOCATIONIQ_DAILY_CAP)
 │   ├── gtfs_data/                      ← Downloaded GTFS files (gitignored)
+│   ├── static_data/                    ← Committed/built fixtures that survive deploys (counterpart to data/ which Railway's persistent volume overlays).
+│   │   ├── neighborhoods.json          ← Curated neighborhood/landmark coordinates (NEIGHBORHOOD_COORDS source); human-edited, version-controlled.
+│   │   └── chicago_geocode.db          ← Local-first geocoder SQLite/FTS5 store (gitignored, ~55 MB at first build — 409k addresses + 24.5k intersections in the routing bbox; built quarterly by scripts/build_address_points.py + build_intersections.py).
 │   ├── street_graph.graphml            ← OSMnx graph source (gitignored, ~227 MB; Chicago + Evanston bbox; built locally by fetch_street_graph.py)
 │   └── street_graph_igraph.pkl         ← igraph runtime pickle (gitignored, ~47 MB; hosted on the "street-graph" GitHub Release, fetched at Docker build); preferred over graphml at runtime
+├── scripts/
+│   ├── build_schedule_index.py         ← FEAT-018: parses backend/gtfs_data/ → emits per-route schedule JSON + manifest into backend/schedule_data/. Re-run after every backend/fetch_gtfs.py refresh.
+│   └── translate-missing.mjs           ← Node script: fills in untranslated i18n keys across all non-English locales via Anthropic API (requires ANTHROPIC_API_KEY)
 └── frontend/
     ├── index.html                      ← PWA meta tags, theme color, apple-touch-icon
     ├── package.json
@@ -398,12 +420,14 @@ CTA-Transit-PWA/
     │   ├── components/
     │   │   ├── TransitPhoto.jsx        ← Photo carousel (PHOTOS manifest defined here)
     │   │   ├── RouteCard.jsx           ← Route card with walk legs, transit legs, pin button; React.memo wrapped
-    │   │   ├── PinnedStopsBoard.jsx    ← Live arrivals board for pinned stops; last-train countdown badge
+    │   │   ├── PinnedStopsBoard.jsx    ← Live arrivals board for pinned stops
     │   │   ├── WeatherStrip.jsx        ← Compact NWS weather bar; alert amber bar; returns null when weather is null
     │   │   ├── ServiceAlertsBar.jsx    ← CTA service alerts panel: collapsed by default, expand to show cards
     │   │   ├── SettingsPanel.jsx       ← BYOK / AI-toggle / walk-speed dialog
     │   │   ├── Masthead.jsx            ← Newspaper-style header: folio, wordmark, transit-mode/language pickers, machine-translated review badge for low-resource locales
     │   │   ├── LanguagePicker/         ← Continent-first language picker (feature-flagged via VITE_CONTINENT_PICKER_ENABLED) — 2-step flow with continent grid + scoped language list
+    │   │   ├── ToolsHub.jsx            ← FEAT-018: Tools tab body — renders the tool-card grid + delegates to a sub-view component when a card is tapped
+    │   │   ├── tools/                  ← FEAT-018 sub-views — SavedLocationsTool, SchedulesTool (with SchedulesPicker + SchedulesView), LastTrainTool (reuses SchedulesPicker via its titleKey prop; landing view fetches /last-departure on station-tap). Register new tools by adding an entry to ToolsHub's TOOLS array.
     │   │   └── LoadingSkeleton.jsx     ← Loading skeleton animation
     │   └── MapView.jsx                 ← MapLibre GL JS map; renderPolylines + stop/origin/dest markers; user position dot
     ├── public/
@@ -438,9 +462,10 @@ CTA-Transit-PWA/
 | --- | --- | --- |
 | **Pure utilities** | `test_utils.py`, `test_crowdedness.py`, `test_dau.py`, `test_route_scoring.py`, `test_weather_service.py` | Haversine, spatial grid, time-period classification, DAU counters, weather parsing, route scoring weights |
 | **GTFS parsing** | `test_gtfs_parsing.py`, `test_gtfs_loader.py` | All `_load_*` functions in `transit_graph.py` exercised against synthetic CSV fixtures; geocoding/neighborhood helpers in `gtfs_loader.py` |
-| **Graph routing** | `test_transit_graph.py`, `test_graph_construction.py` | Pure helpers (bearing, time parse, dedup) + `_path_to_route` and `find_routes` against hand-built fixture graphs |
+| **Graph routing** | `test_transit_graph.py`, `test_graph_construction.py`, `test_service_periods.py` | Pure helpers (bearing, time parse, dedup) + `_path_to_route` and `find_routes` against hand-built fixture graphs. `test_service_periods.py` covers the BUG-051 service-period machinery: `_select_period` window classification, `_periods_for_trip` post-midnight day-shift, `_select_representative_trips` filter-and-tiebreak, per-variant graph cache lifecycle, and the `find_routes_with_status` dispatch acceptance (Wed 12:00 → `weekday_midday`, Sat 03:00 → `owl`). |
+| **Routing accuracy** *(in progress)* | `routing_harness.py`, `test_routing_accuracy.py`, `known_stops.py`, `backend/scripts/probe_route.py` | Determinism harness (`frozen_chicago_now`, `stub_cta_arrivals`, `RoutingScenario` / `run_scenario`, `summarize_route`) covered by 7 smoke tests — complete. Layer-1 golden fixtures (Chicago O/D pairs with expected `primary_modes` / `lines` / `transfers`) are scaffolded but still require human authoring with Chicago rider knowledge; placeholders ship `@pytest.mark.skip`. `known_stops.KNOWN_STOPS` pre-loads CTA L parent stations as `(lat, lon)` constants; `probe_route.py` is a CLI that prints engine output for a candidate OD so an author can sanity-check before pinning an assertion. Open as BUG-052 / TD-BE-005. |
 | **CTA API client** | `test_cta_client.py` | Train/Bus/Alerts/Routes parsing with mocked `aiohttp.ClientSession`; CTA dict-vs-list quirks, error sentinels, dedup |
-| **FastAPI app** | `test_main_helpers.py`, `test_endpoints.py` | `_cache_key`, rate limiter, prompt builder, `RouteRequest` validators, `/recommend` + `/stop-arrivals` contract via `TestClient` |
+| **FastAPI app** | `test_main_helpers.py`, `test_endpoints.py` | `_cache_key`, rate limiter, prompt builder, `RouteRequest` validators, `/recommend` + `/stop-arrivals` + `/last-departure` contract via `TestClient` |
 | **Analytics** | `test_devices.py`, `test_events.py`, `test_funnel.py`, `test_geography.py`, `test_hourly.py`, `test_privacy_sync.py`, `test_public_stats.py`, `test_referrers.py`, `test_retention.py`, `test_sessions.py` | All FEAT-001 through FEAT-009 modules, the `/stats` projection layer, and the privacy-doc sync guard |
 
 ### Frontend coverage (`frontend/src/tests/`)
@@ -494,7 +519,7 @@ The app is live on Railway + Vercel. All phases through 6.5 are complete; Featur
 
 - **Never start coding without reading the relevant files first.** The codebase is large and has evolved significantly. Always read the file(s) you plan to edit before writing any changes.
 - **Routing accuracy is non-negotiable.** Every bug introduced into the routing engine is a real navigation failure for a real rider. Be conservative with routing changes.
-- **The unified NetworkX graph is the canonical routing surface.** `find_bus_routes()` was deprecated and removed by Feature J. All routing goes through `find_routes()` on the unified graph, plus `find_bus_transfer_routes()` for bus+bus transfers.
+- **The unified NetworkX graph is the canonical routing surface.** `find_bus_routes()` was deprecated and removed by Feature J. All routing goes through `find_routes()` on the unified graph, plus `find_bus_transfer_routes()` for bus+bus transfers. `find_routes_with_status()` (BUG-047) is the typed variant that distinguishes `ok` / `out_of_coverage` / `no_path`; `_run_routing` uses it and propagates a `routing_status` object into both the `/recommend` JSON response and the Claude prompt so out-of-coverage queries surface a clear explanation instead of an unexplained blank. Both routing entry points accept an `effective_speed` parameter (BUG-045) — `_run_routing` passes `walk_speed × _precip_walk_factor(weather)` so Dijkstra derates `edge_type == "walk"` weights via a per-request weight callback (no graph mutation) and selection reflects the rider's actual walking pace in rain, snow, or extreme cold; `_scale_walk_legs()` remains the single authority that scales `WalkLeg.minutes` for display, so the precip factor enters each leg exactly once.
 - **The street graph uses igraph, not NetworkX.** `walking.py` loads `street_graph_igraph.pkl` (igraph) not the graphml directly. The KDTree is built from LCC vertices only.
 - **BYOK and Rate Limiting are code-complete but OFF by default.** Do not activate them without explicit instruction.
 - **i18n is live in 27 languages** (Chicago-focused; retrenched 2026-05-11 from 76). The `LANGUAGES` array in `frontend/src/i18n.js` is the single source of truth — adding a language means adding a row there and dropping a `frontend/public/locales/<code>/translation.json` file. Any new user-facing string in React components must have keys added to all 27 active locale files; run `node scripts/translate-missing.mjs` (with `ANTHROPIC_API_KEY` set) to backfill new keys across every locale at once. The continent-first picker (`VITE_CONTINENT_PICKER_ENABLED`) is wired up but off by default — flip it on in Vercel after in-browser verification of glyph rendering for the non-Latin locales. Three locales (`aii`, `ksw`, `rhg`) are low-resource and surface the machine-translated review badge to riders via the `feedback_link_label` link.

@@ -55,6 +55,12 @@ WALKING_SPEED_MPS     = _cfg.WALKING_SPEED_MPS        # metres per second ≈ 1.
 _LONG_BLOCK_METERS    = _cfg.LONG_BLOCK_METERS         # 1/8 mile = 660 ft
 _SHORT_BLOCK_METERS   = _cfg.SHORT_BLOCK_METERS        # 1/16 mile = 330 ft
 _BLOCK_TYPE_THRESHOLD = _cfg.BLOCK_TYPE_THRESHOLD_METERS  # midpoint; ≥ → long block
+# Haversine pre-flight cap (BUG-049 chunk 2): bypass the street-graph Dijkstra
+# for cross-city / out-of-region distances and let the Haversine + detour
+# fallback handle them. igraph's get_shortest_paths has no native timeout, so
+# a cheap distance check at the cache boundary is a safer guard than running
+# routing to completion on a 150k-vertex graph for pathological queries.
+_MAX_STREET_WALK_MILES: float = _cfg.MAX_STREET_WALK_MILES
 
 _DIRECTION_FULL = {
     "N":  "North",     "NE": "Northeast", "E":  "East",      "SE": "Southeast",
@@ -81,6 +87,60 @@ def _touch_walk_time() -> None:
     """Record that a walk function was just called; resets the idle-eviction clock."""
     global _last_walk_time
     _last_walk_time = time.monotonic()
+
+
+# Telemetry for the Haversine fallback path (BUG-048).
+#
+# The three public walking functions catch any exception and fall back to a
+# straight-line Haversine estimate. That fallback is *legitimate* for points
+# outside the graph bbox (we explicitly raise RuntimeError("path unavailable"))
+# and *illegitimate* for everything else (corrupt pickle, missing vertex
+# attrs, igraph internal error, etc.). The counter below increments only on
+# the illegitimate path; the log line is throttled per (coord-cell, exc-class)
+# so a corrupted graph cannot flood stdout. Exposed via main.py's /health.
+_haversine_fallback_due_to_error: int = 0
+_fallback_log_throttle: "dict[tuple[float, float, str], float]" = {}
+_fallback_log_lock = threading.Lock()
+_FALLBACK_LOG_COOLDOWN_S: float = 60.0
+# 2 decimals ≈ 1.1 km — coarse enough that bursts from one corrupted region
+# collapse to a single log line per cooldown.
+_FALLBACK_LOG_CELL_DECIMALS: int = 2
+
+
+def _is_path_unavailable(exc: BaseException) -> bool:
+    """True for the explicit sentinel raise; False for any other exception type/message."""
+    return isinstance(exc, RuntimeError) and str(exc) == "path unavailable"
+
+
+def _record_fallback_error(origin_lat: float, origin_lon: float, exc: BaseException) -> None:
+    """Bump the error counter and emit a throttled warning. Call only on the
+    non-sentinel exception path — legitimate out-of-bbox fallbacks stay silent."""
+    global _haversine_fallback_due_to_error
+    cell = (
+        round(origin_lat, _FALLBACK_LOG_CELL_DECIMALS),
+        round(origin_lon, _FALLBACK_LOG_CELL_DECIMALS),
+        type(exc).__name__,
+    )
+    now = time.monotonic()
+    should_log = False
+    with _fallback_log_lock:
+        _haversine_fallback_due_to_error += 1
+        last = _fallback_log_throttle.get(cell, 0.0)
+        if now - last >= _FALLBACK_LOG_COOLDOWN_S:
+            _fallback_log_throttle[cell] = now
+            should_log = True
+    if should_log:
+        print(
+            f"[walking] Haversine fallback triggered by {type(exc).__name__}: {exc} "
+            f"near ({cell[0]:.2f},{cell[1]:.2f}); suppressing further "
+            f"({cell[2]}) logs from this cell for {_FALLBACK_LOG_COOLDOWN_S:.0f}s"
+        )
+
+
+def get_fallback_metrics() -> dict:
+    """Return a snapshot of Haversine-fallback telemetry. Surfaced via /health."""
+    with _fallback_log_lock:
+        return {"haversine_fallback_due_to_error": _haversine_fallback_due_to_error}
 
 
 def _graph_eviction_worker() -> None:
@@ -385,6 +445,14 @@ def _get_shortest_path(
     share this cache so the expensive Dijkstra run happens at most once per unique
     origin/destination pair per process lifetime.
     """
+    # BUG-049 chunk 2: pre-flight Haversine cap. igraph's get_shortest_paths has
+    # no native timeout; bypassing the Dijkstra call entirely for cross-city
+    # distances is the cheapest correctness-preserving guard. Callers already
+    # handle None as the "fall back to Haversine + detour" sentinel.
+    if _MAX_STREET_WALK_MILES > 0 and _haversine_miles(
+        origin_lat, origin_lon, dest_lat, dest_lon
+    ) > _MAX_STREET_WALK_MILES:
+        return None
     return _get_shortest_path_cached(
         _snap(origin_lat), _snap(origin_lon),
         _snap(dest_lat),   _snap(dest_lon),
@@ -408,20 +476,21 @@ def _get_shortest_path_cached(
     n = G.vcount()
     if orig_idx >= n or dest_idx >= n:
         return None
-    try:
-        result = G.get_shortest_paths(orig_idx, to=dest_idx, weights="length", output="epath")
-        if not result or not result[0]:
-            return None
-        epath = result[0]
-        # Reconstruct vpath from epath; handles both directed and undirected graphs.
-        vpath = [orig_idx]
-        for eid in epath:
-            e = G.es[eid]
-            nxt = e.target if e.source == vpath[-1] else e.source
-            vpath.append(nxt)
-        return (tuple(vpath), tuple(epath))
-    except Exception:
+    # Real errors from G.get_shortest_paths (e.g. corrupted graph attributes,
+    # internal igraph failure) propagate to the caller — they're observability
+    # signal for BUG-048's fallback counter. A clean "no path found" result is
+    # the only thing that returns None here.
+    result = G.get_shortest_paths(orig_idx, to=dest_idx, weights="length", output="epath")
+    if not result or not result[0]:
         return None
+    epath = result[0]
+    # Reconstruct vpath from epath; handles both directed and undirected graphs.
+    vpath = [orig_idx]
+    for eid in epath:
+        e = G.es[eid]
+        nxt = e.target if e.source == vpath[-1] else e.source
+        vpath.append(nxt)
+    return (tuple(vpath), tuple(epath))
 
 
 def walk_minutes(
@@ -451,7 +520,9 @@ def walk_minutes(
         length_m = float(_edge_lengths[list(epath)].sum())
         return max(0.1, round(length_m / WALKING_SPEED_MPS / 60, 1))
 
-    except Exception:
+    except Exception as e:
+        if not _is_path_unavailable(e):
+            _record_fallback_error(origin_lat, origin_lon, e)
         return _haversine_walk_minutes(origin_lat, origin_lon, dest_lat, dest_lon)
 
 
@@ -526,7 +597,9 @@ def _walk_directions_impl(
 
         return tuple(steps)
 
-    except Exception:
+    except Exception as e:
+        if not _is_path_unavailable(e):
+            _record_fallback_error(origin_lat, origin_lon, e)
         total_min = _haversine_walk_minutes(origin_lat, origin_lon, dest_lat, dest_lon)
         fallback_meters = total_min * 60 * WALKING_SPEED_MPS
         fallback_blocks = max(0.5, round(fallback_meters / _LONG_BLOCK_METERS * 2) / 2)
@@ -621,7 +694,8 @@ def _walk_path_impl(
         return tuple(result_coords)
 
     except Exception as e:
-        print(f"[walk_path] routing failed for ({origin_lat:.6f},{origin_lon:.6f})→({dest_lat:.6f},{dest_lon:.6f}): {type(e).__name__}: {e}")
+        if not _is_path_unavailable(e):
+            _record_fallback_error(origin_lat, origin_lon, e)
         return ((origin_lat, origin_lon), (dest_lat, dest_lon))
 
 

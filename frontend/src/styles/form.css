@@ -47,10 +47,19 @@
   padding-inline-start: calc(var(--form-label-width, 80px) + 10px);
 }
 
-/* Very-narrow viewports (320–400px): shrink the label column to give back at
- * least 24px of label-to-input horizontal space. */
+/* Very-narrow viewports (320–400px): stack the label above the input.
+ * Translated strings like "Destination:" don't fit the inline label column at
+ * this width and would otherwise overflow into the input field. */
 @media (max-width: 400px) {
-  .form { --form-label-width: 56px; }
+  .form label > span {
+    width: 100%;
+    margin-bottom: 2px;
+  }
+  .form label > .geo-btn-row,
+  .form label > .geo-denied-banner,
+  .form label > .label-save-panel {
+    padding-inline-start: 0;
+  }
 }
 
 .form input {

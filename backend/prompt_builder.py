@@ -306,6 +306,7 @@ def build_prompt(
     transfer_arrivals: list[dict] | None = None,
     language: str | None = None,
     weather: "WeatherContext | None" = None,
+    routing_status: dict | None = None,
 ) -> str:
     mode_constraints = {
         "Train": "The rider wants TRAIN options only. Do not mention buses.",
@@ -314,6 +315,27 @@ def build_prompt(
         "Walk":  "The rider wants to WALK. Provide a brief summary of the walking route and estimated time. Do not mention transit.",
     }
     mode_note = mode_constraints.get(transit_mode, mode_constraints["All"])
+
+    # BUG-047: surface out-of-coverage explicitly so Claude tells the rider
+    # WHY there are no routes, instead of guessing "no live arrivals".
+    if routing_status and routing_status.get("status") == "out_of_coverage":
+        side = routing_status.get("side") or "origin or destination"
+        radius = routing_status.get("max_radius_searched") or 2.0
+        side_phrase = {
+            "origin":      f"the origin '{origin}'",
+            "destination": f"the destination '{destination}'",
+            "both":        f"both '{origin}' and '{destination}'",
+        }.get(side, f"{origin} or {destination}")
+        return (
+            f"A Chicago CTA rider wants to get from {origin} to {destination}, "
+            f"but {side_phrase} is more than {radius:g} miles from the nearest "
+            f"CTA train station, so the routing engine has no coverage there. "
+            "Explain in 2-3 sentences that the location is outside the area we "
+            "currently serve (Howard St south to 50th St, lakefront west to "
+            "Pulaski Rd), suggest they pick a nearby CTA stop as their start or "
+            "end point, and point them at the Ventra app or transitchicago.com "
+            "for trip planning beyond that area."
+        )
 
     has_data = ranked_routes or train_arrivals or bus_arrivals
     if not has_data:

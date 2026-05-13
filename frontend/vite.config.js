@@ -57,6 +57,44 @@ export default defineConfig({
         ],
         runtimeCaching: [
           {
+            // Map style document + sprite/glyph metadata from OpenFreemap.
+            // Small, changes rarely — SWR keeps the cold open instant while
+            // still picking up upstream style edits within a session.
+            urlPattern: ({ url }) =>
+              url.origin === "https://tiles.openfreemap.org" &&
+              (url.pathname.startsWith("/styles/") ||
+               url.pathname.includes("/sprites/") ||
+               url.pathname.includes("/fonts/")),
+            handler: "StaleWhileRevalidate",
+            options: {
+              cacheName: "map-style",
+              expiration: {
+                maxEntries: 60,
+                maxAgeSeconds: 60 * 60 * 24 * 30, // 30 days
+              },
+            },
+          },
+          {
+            // Vector tile PBFs — bounded cache for the area the user pans.
+            // CacheFirst: tile bytes are content-addressed by z/x/y and
+            // effectively immutable, so SWR would waste battery on
+            // background refetches. Responses are opaque cross-origin (no
+            // CORS), so Workbox sees status 0 — allow it explicitly.
+            urlPattern: ({ url }) =>
+              url.origin === "https://tiles.openfreemap.org" &&
+              /\.pbf$/i.test(url.pathname),
+            handler: "CacheFirst",
+            options: {
+              cacheName: "map-tiles",
+              expiration: {
+                maxEntries: 400,                  // ~25 MB ceiling
+                maxAgeSeconds: 60 * 60 * 24 * 14, // 14 days
+                purgeOnQuotaError: true,
+              },
+              cacheableResponse: { statuses: [0, 200] },
+            },
+          },
+          {
             // Never cache /recommend: responses contain user origin/destination
             // and (when BYOK is enabled) reflect a request body containing the
             // user's Anthropic API key. Caching that data — especially across

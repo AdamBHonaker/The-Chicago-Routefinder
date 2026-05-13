@@ -32,3 +32,7 @@
 @import "./styles/bottom-sheet.css";
 @import "./styles/bottom-sheet-host.css";
 @import "./styles/sheet-segmented.css";
+@import "./styles/install-prompt.css";
+
+/* FEAT-018: Tools hub + Schedules tool */
+@import "./styles/tools.css";

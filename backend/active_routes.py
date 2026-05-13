@@ -218,12 +218,12 @@ def _route_sort_key(rt: str) -> tuple:
     if rt.isdigit():
         return (0, int(rt), "")
     # Routes like "J14" or "X9"
-    digits: list[str] = []
-    letters: list[str] = []
+    digit_chars: list[str] = []
+    letter_chars: list[str] = []
     for c in rt:
-        (digits if c.isdigit() else letters).append(c)
-    digits = "".join(digits)
-    letters = "".join(letters)
+        (digit_chars if c.isdigit() else letter_chars).append(c)
+    digits = "".join(digit_chars)
+    letters = "".join(letter_chars)
     if digits:
         return (1, int(digits), letters)
     return (2, 0, rt)

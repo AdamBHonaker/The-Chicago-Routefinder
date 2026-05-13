@@ -23,6 +23,18 @@ Implemented in [backend/dau.py](../backend/dau.py).
 
 Implemented in [backend/geography.py](../backend/geography.py).
 
+> **Status (temporarily disabled):** MaxMind GeoLite2-City lookups are
+> currently turned off in production to reduce Railway memory footprint
+> (~60–80 MB saved by not loading the `.mmdb` reader). The
+> `MAXMIND_LICENSE_KEY` build arg is unset, so the Dockerfile skips the
+> DB download and `backend/geography.py` silently no-ops at runtime — no
+> IPs are resolved, no city names are derived, and no new rows are
+> written to `geography.json`. Historical per-day per-city counters
+> already on disk are retained but no longer updated. The behaviour
+> described below applies once geography counting is re-enabled (by
+> restoring the MaxMind key and redeploying); the privacy posture is
+> unchanged when it returns.
+
 - The visitor's IP is fed to MaxMind GeoLite2-City **in memory only** to
   derive a coarse city name. The IP is never written alongside the city.
 - Only a per-day, per-city integer counter is persisted. There is no per-IP

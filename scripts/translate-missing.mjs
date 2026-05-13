@@ -42,18 +42,19 @@ if (!API_KEY) {
   process.exit(1);
 }
 
+// Canonical 26 non-English locales currently shipped. Source of truth:
+// frontend/src/i18n.js → LANGUAGES. Retrenched 2026-05-11 from 76 → 27
+// (26 non-English + en). When adding/removing a locale, update both this
+// map and LANGUAGES in i18n.js. Archived locale files live under
+// frontend/locales-archive/ and are not retranslated by this script.
 const LOCALE_NAMES = {
-  // Originally shipped (21 non-English; en is the source).
   ar:  'Arabic',
   es:  'Spanish',
   fr:  'French',
   gu:  'Gujarati',
   hi:  'Hindi',
-  it:  'Italian',
-  ja:  'Japanese',
   ko:  'Korean',
   ne:  'Nepali',
-  pa:  'Punjabi',
   pl:  'Polish',
   ps:  'Pashto',
   ro:  'Romanian',
@@ -65,80 +66,25 @@ const LOCALE_NAMES = {
   yo:  'Yoruba',
   yue: 'Cantonese',
   zh:  'Mandarin Chinese',
-  // LocaleExpansion — 54 new (Chunks 2–12 of Feature LocaleExpansion).
   ht:  'Haitian Creole',
-  my:  "Burmese",
   ksw: "S'gaw Karen",
-  eky: 'Karenni / Red Karen',
   am:  'Amharic',
-  ti:  'Tigrinya',
   prs: 'Dari (Afghan Persian)',
-  fa:  'Persian (Farsi)',
   bs:  'Bosnian',
-  sr:  'Serbian',
-  hr:  'Croatian',
-  lt:  'Lithuanian',
-  bn:  'Bengali',
   aii: 'Assyrian Neo-Aramaic',
-  el:  'Greek',
-  sw:  'Swahili',
-  th:  'Thai',
-  sv:  'Swedish',
-  so:  'Somali',
-  he:  'Hebrew',
-  tr:  'Turkish',
-  arz: 'Egyptian Arabic',
-  mr:  'Marathi',
-  te:  'Telugu',
-  ta:  'Tamil',
-  id:  'Indonesian',
-  de:  'German',
-  ha:  'Hausa',
   pt:  'Portuguese',
-  bho: 'Bhojpuri',
-  kg:  'Kongo (Kikongo)',
-  lol: 'Mongo (Lomongo)',
-  mey: 'Hassaniya Arabic',
-  af:  'Afrikaans',
-  xh:  'Xhosa',
-  om:  'Oromo',
-  nl:  'Dutch',
-  mn:  'Mongolian',
-  lo:  'Lao',
-  km:  'Khmer',
-  kn:  'Kannada',
-  uz:  'Uzbek',
-  sd:  'Sindhi',
-  ml:  'Malayalam',
-  or:  'Odia',
-  mai: 'Maithili',
-  kmr: 'Kurmanji Kurdish',
-  ckb: 'Sorani Kurdish (Central Kurdish)',
-  ms:  'Malay',
-  ceb: 'Cebuano',
-  nan: 'Hokkien (Min Nan)',
-  kk:  'Kazakh',
-  si:  'Sinhala',
   rhg: 'Rohingya',
 };
 
 // Per-locale variant-sensitive instructions. Each entry is appended to the
 // translation prompt for that locale to keep Claude on the correct script,
-// dialect, or written variant. Source: Feature LocaleExpansion → Scoping
-// decision 3 in docs/FEATURE_PLANS.md.
+// dialect, or written variant. Only locales in LOCALE_NAMES above are
+// eligible — entries for archived locales were removed in the 2026-05-11
+// retrenchment.
 const LOCALE_INSTRUCTIONS = {
-  arz: 'Translate into Egyptian Arabic colloquial (Masri). NOT Modern Standard Arabic.',
   ksw: 'Translate into S\'gaw Karen specifically (variant written in Burmese-derived Karen script). NOT Karenni / Red Karen.',
-  eky: 'Translate into Karenni / Red Karen, Kayah Li script. NOT S\'gaw Karen.',
-  kmr: 'Translate into Kurmanji Kurdish using the Latin (Hawar) alphabet. NOT Sorani.',
-  ckb: 'Translate into Sorani / Central Kurdish using Arabic script. NOT Kurmanji.',
-  lol: 'Translate into Mongo / Lomongo, the Bantu language of the Democratic Republic of the Congo. NOT Mongolian (mn).',
-  mey: 'Translate into Hassaniya Arabic dialect (Mauritania / Western Sahara). NOT Modern Standard Arabic.',
-  nan: 'Translate into Hokkien (Min Nan) using traditional Han characters as used in Taiwan/Fujian. NOT Cantonese (yue) or Mandarin (zh).',
   rhg: 'Translate into Rohingya using Hanifi Rohingya script.',
   aii: 'Translate into Modern Assyrian Neo-Aramaic (Sureth) using Syriac script.',
-  bho: 'Translate into Bhojpuri using Devanagari script. NOT Hindi.',
-  mai: 'Translate into Maithili using Devanagari script. NOT Hindi.',
 };
 
 // CLI: optional `--only=<csv>` flag restricts the run to specific locales.
@@ -191,7 +137,7 @@ async function callAnthropic(prompt) {
       // token-heavy in this script — 8K truncated mid-dictionary on a
       // ~180-key payload). 8K was sufficient for Greek/Devanagari/Tamil/etc.
       // Haiku 4.5 supports up to 64K output tokens; 16K is the safe
-      // ceiling for the 76-locale set without burning unnecessary budget.
+      // ceiling for the current 26-locale set without burning unnecessary budget.
       max_tokens: 16384,
       messages: [{ role: 'user', content: prompt }],
     }),
@@ -206,10 +152,36 @@ async function callAnthropic(prompt) {
   return data.content[0].text;
 }
 
+// Heuristic repair for the single most common failure mode: the model emits
+// unescaped ASCII " inside translated string values when quoting a UI label
+// (e.g. ...choose "Add to Home Screen".). Per-line pattern is reliable because
+// each translation is a single-line `"key": "value",` entry. We escape any
+// unescaped " between the value-opening and value-closing quote with \" so
+// JSON.parse accepts it. Already-escaped \" are left alone.
+function repairUnescapedInnerQuotes(jsonStr) {
+  const lines = jsonStr.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    // <indent>"key": "<inner>"<optional comma><trailing ws>
+    const m = lines[i].match(/^(\s*"\w+"\s*:\s*")(.*)("\s*,?\s*)$/);
+    if (!m) continue;
+    const inner = m[2];
+    if (!inner.includes('"')) continue;
+    const escaped = inner.replace(/(^|[^\\])"/g, '$1\\"');
+    lines[i] = m[1] + escaped + m[3];
+  }
+  return lines.join('\n');
+}
+
 function extractJSON(text) {
   const match = text.match(/\{[\s\S]*\}/);
   if (!match) throw new Error('No JSON object found in model response:\n' + text);
-  return JSON.parse(match[0]);
+  try {
+    return JSON.parse(match[0]);
+  } catch (err) {
+    // Try repairing unescaped inner ASCII quotes and reparsing.
+    const repaired = repairUnescapedInnerQuotes(match[0]);
+    return JSON.parse(repaired);
+  }
 }
 
 async function translateLocale(locale, enData, localeData) {
@@ -249,6 +221,7 @@ Translation rules:
 3. Preserve all emoji and Unicode symbols exactly: 🔓 ☆ ★ ■ ▶ ⟶ — ·
 4. For aria_* keys: write natural screen-reader text in ${langName}.
 5. For RTL languages (Arabic, Urdu, Pashto, Hebrew, Persian/Dari, Egyptian Arabic, Hassaniya Arabic, Sindhi, Sorani Kurdish, Assyrian, Rohingya): write right-to-left text naturally; do not add bidi markers.
+6. CRITICAL — JSON validity: when a translated string contains an inner quotation (e.g. quoting a button label like "Add to Home Screen"), you MUST use locale-appropriate curly/guillemet quotation marks ("…", „…", «…», 「…」, ‘…’, etc.) — NEVER use ASCII double quotes " inside the string value, since that breaks JSON parsing. Pick the marks conventional for ${langName}. If unsure, use the typographic “ and ”. Do NOT wrap the response in markdown code fences.
 ${localeNote ? `\nLocale-specific instruction:\n${localeNote}\n` : ''}${specials ? `\nPer-key special rules:\n${specials}` : ''}
 
 Keys to translate:
@@ -260,8 +233,24 @@ ${JSON.stringify(untranslated, null, 2)}`;
   try {
     translated = extractJSON(raw);
   } catch (err) {
-    console.error(`  ${locale}: failed to parse response — skipping. Raw output:\n`, raw);
-    return null;
+    // Most common failure: model emitted unescaped ASCII " inside string values
+    // when quoting UI labels (e.g. "...choose "Add to Home Screen""). Ask the
+    // model to repair its own output before giving up.
+    console.warn(`  ${locale}: initial response was invalid JSON — requesting repair…`);
+    const repairPrompt = `The following output was supposed to be a valid JSON object but failed to parse. Most likely cause: unescaped ASCII double-quote characters (") appear INSIDE string values where they should have been replaced with locale-appropriate curly/guillemet quotation marks (e.g. " " „ " « » 「 」).
+
+Return ONLY the corrected JSON object — no markdown fences, no explanation. Keep every key and the meaning of every value identical; only fix the quotation marks (and any other syntactic errors) so that JSON.parse succeeds. Preserve all interpolation variables ({{var}}), emoji, and Unicode symbols exactly.
+
+Broken output:
+${raw}`;
+    try {
+      const repaired = await callAnthropic(repairPrompt);
+      translated = extractJSON(repaired);
+      console.log(`  ${locale}: repair succeeded`);
+    } catch (err2) {
+      console.error(`  ${locale}: repair also failed — skipping. Original output:\n`, raw);
+      return null;
+    }
   }
 
   // Apply KEEP_ENGLISH: these always get the English value.

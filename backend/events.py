@@ -45,6 +45,10 @@ EVENT_ALLOWLIST: frozenset[str] = frozenset({
     "trip_off_route",
     "trip_rerouted",
     "off_route_dismissed",
+    "install_prompt_shown",
+    "install_prompt_accepted",
+    "install_prompt_dismissed",
+    "install_completed",
 })
 
 _lock = asyncio.Lock()

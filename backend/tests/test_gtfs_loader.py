@@ -10,8 +10,8 @@ Covered:
 
 import pytest
 
+from geocode_text import _normalize_street_abbr
 from gtfs_loader import (
-    _normalize_street_abbr,
     fuzzy_match_neighborhood,
     NEIGHBORHOOD_COORDS,
 )

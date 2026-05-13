@@ -50,12 +50,14 @@ export default function LocationInput({ value, onChange, onGeoCoords, placeholde
           `${BACKEND_URL}/autocomplete?q=${encodeURIComponent(query.trim())}`,
           { signal: ctrl.signal }
         );
+        if (acAbortRef.current !== ctrl) return;
         if (!res.ok) return;
         const data = await res.json();
+        if (acAbortRef.current !== ctrl) return;
         setAcSuggestions(data.suggestions || []);
         setAcActiveIndex(-1);
       } catch (err) {
-        if (err.name !== "AbortError") setAcSuggestions([]);
+        if (err.name !== "AbortError" && acAbortRef.current === ctrl) setAcSuggestions([]);
       }
     }, AC_DEBOUNCE_MS);
   }

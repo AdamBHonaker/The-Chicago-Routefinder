@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 const TABS = [
   { id: "home",   code: "H" },
   { id: "alerts", code: "A" },
-  { id: "saved",  code: "S" },
+  { id: "tools",  code: "T" },  // FEAT-018: was "saved" (S)
 ];
 
 export default function SideRail({ activeTab, onTabChange }) {

@@ -310,8 +310,8 @@ export default memo(function RouteCard({
           <span className="route-meta">{xferNote}{waitNote}</span>
           {transitLines.length > 0 && (
             <div className="route-pills-row" aria-hidden="true">
-              {transitLines.map((tl, i) => (
-                <LinePill key={i} line={tl.line} isBus={tl.isBus} lineCode={tl.lineCode} size="sm" />
+              {transitLines.map((tl) => (
+                <LinePill key={`${tl.lineCode}|${tl.isBus ? "bus" : "rail"}`} line={tl.line} isBus={tl.isBus} lineCode={tl.lineCode} size="sm" />
               ))}
             </div>
           )}
