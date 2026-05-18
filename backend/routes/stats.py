@@ -10,6 +10,8 @@ Rate-limited via the geocode bucket because these are bursty page loads.
 
 from __future__ import annotations
 
+import secrets
+
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
@@ -141,7 +143,16 @@ async def public_privacy(request: Request):
 @router.get("/stats")
 async def public_stats_page(request: Request):
     """Public dashboard. Today's headline numbers are server-rendered so the
-    noscript fallback shows the same values JS would surface on hydration."""
+    noscript fallback shows the same values JS would surface on hydration.
+
+    CSP: nonce-based for script/style (SEC-007). A fresh nonce is generated
+    per request, embedded in the inline ``<script>`` and ``<style>`` tags,
+    and echoed in the ``Content-Security-Policy`` header. The 5-minute
+    Cache-Control is downgraded to ``no-store`` for this response so the
+    one-shot nonce is never reused — the per-panel ``/stats/*`` JSON
+    responses (which the inline script hydrates from) keep the 5-minute
+    cache, so the bandwidth tradeoff is negligible.
+    """
     _gate(request)
     dau_payload       = public_stats.project_dau(await dau.get_counts())
     metro_payload     = public_stats.project_geography(await geography.get_metro_summary())
@@ -152,6 +163,7 @@ async def public_stats_page(request: Request):
     events_payload    = public_stats.project_events(await events.get_counts())
     funnel_payload    = public_stats.project_funnel(await funnel.get_counts())
     retention_payload = public_stats.project_retention(await retention.get_counts())
+    csp_nonce = secrets.token_urlsafe(16)
     return HTMLResponse(content=public_stats.render_html(
         dau_today=dau_payload.get("today"),
         metro_today=metro_payload.get("today"),
@@ -162,12 +174,13 @@ async def public_stats_page(request: Request):
         events_today=events_payload.get("today"),
         funnel_today=funnel_payload.get("today"),
         retention_today=retention_payload.get("today"),
+        csp_nonce=csp_nonce,
     ), headers={
-        **_PUBLIC_STATS_CACHE_HEADERS,
+        "Cache-Control": "no-store",
         "Content-Security-Policy": (
             "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline'; "
-            "style-src 'self' 'unsafe-inline'; "
+            f"script-src 'self' 'nonce-{csp_nonce}'; "
+            f"style-src 'self' 'nonce-{csp_nonce}'; "
             "connect-src 'self'; "
             "img-src 'self' data:; "
             "frame-ancestors 'none'"

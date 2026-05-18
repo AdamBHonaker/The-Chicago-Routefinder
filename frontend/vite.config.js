@@ -45,11 +45,12 @@ export default defineConfig({
         ],
       },
       workbox: {
-        // Cache app shell assets. Restrict PNGs to icons only so high-res
-        // transit photos are NOT pre-cached (they would add 20–50 MB to the
-        // service worker manifest and risk hitting the ~50 MB storage quota
-        // on older Android WebViews). Transit photos are fetched lazily at
-        // runtime via StaleWhileRevalidate instead.
+        // Cache app shell assets. PNG glob restricted to PWA icons only so
+        // any future bitmap content added under public/ (transit photos,
+        // illustrations, etc.) is not pre-cached into the service worker
+        // manifest — that risks hitting the ~50 MB storage quota on older
+        // Android WebViews. Lazy assets should be loaded at runtime under
+        // a StaleWhileRevalidate handler instead.
         globPatterns: [
           "**/*.{js,css,html,ico,svg,woff2}",
           "icon-*.png",
@@ -145,6 +146,9 @@ export default defineConfig({
     },
   },
   server: {
+    // host: true binds to 0.0.0.0 so a phone on the same Wi-Fi can hit
+    // http://<dev-machine-LAN-IP>:5173. Vite prints the LAN URL on startup.
+    host: true,
     port: 5173,
   },
   test: {

@@ -27,7 +27,16 @@ from fastapi import Request
 # Tune the caps with RATE_LIMIT_RPM (per minute) and RATE_LIMIT_RPH (per hour).
 # Both limits must pass on every request — the stricter one wins.
 # BYOK requests count against per-IP limits just like shared-quota requests.
+# Production fail-closed: if APP_ENV=production and this flag isn't explicitly
+# "true", refuse to start. Without rate limiting /recommend has no per-IP caps
+# and a single attacker can drain the Anthropic budget in minutes — same
+# reasoning as DAILY_SALT's fail-closed guard in dau.py / sessions.py.
 _RATE_LIMIT_ENABLED = os.getenv("RATE_LIMIT_ENABLED", "false").lower() == "true"
+if os.getenv("APP_ENV") == "production" and not _RATE_LIMIT_ENABLED:
+    raise RuntimeError(
+        "RATE_LIMIT_ENABLED must be 'true' in production. Without it /recommend "
+        "has no per-IP caps and the Anthropic budget is exposed to cost-DoS."
+    )
 _RATE_LIMIT_RPM     = int(os.getenv("RATE_LIMIT_RPM", "10"))   # max /recommend per minute per IP
 _RATE_LIMIT_RPH     = int(os.getenv("RATE_LIMIT_RPH", "50"))   # max /recommend per hour per IP
 # Per-IP rolling-24h cap on /recommend so a single attacker can't drain the

@@ -29,12 +29,23 @@ so tests can exercise it without importing the build script.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
+
+from rate_limit import _check_geocode_rate_limit, _client_ip
+
+logger = logging.getLogger(__name__)
 
 SCHEDULE_DIR = Path(__file__).resolve().parent / "schedule_data"
 _MANIFEST_PATH = SCHEDULE_DIR / "_manifest.json"
+
+# Schedule artifacts are rebuilt offline by scripts/build_schedule_index.py and
+# don't change between runs — a 24h browser/CDN cache absorbs the bandwidth
+# tail and keeps Railway egress bounded under repeated requests (SEC-009).
+_SCHEDULE_CACHE_HEADERS = {"Cache-Control": "public, max-age=86400"}
 
 # Route-color taxonomy — mirrors scripts/build_schedule_index.py. Duplicated
 # (not imported) so the build script and the runtime server can be edited
@@ -67,23 +78,38 @@ router = APIRouter()
 
 
 @router.get("/schedule/routes")
-async def schedule_routes() -> dict:
+async def schedule_routes(request: Request):
     """Picker manifest: ordered route list + stop→routes reverse index."""
+    # SEC-009: rate-limit through the shared geocode bucket (60 RPM / 600 RPH)
+    # so an attacker can't drive the per-request manifest read into a Railway
+    # egress / event-loop DoS.
+    if not _check_geocode_rate_limit(_client_ip(request)):
+        raise HTTPException(status_code=429, detail="Too many requests")
     if not _MANIFEST_PATH.exists():
         # Build script never run; serve a graceful empty response so the
         # frontend renders an empty picker rather than erroring out.
-        return {"routes": [], "stop_routes": {}}
+        return JSONResponse(
+            content={"routes": [], "stop_routes": {}},
+            headers=_SCHEDULE_CACHE_HEADERS,
+        )
     try:
         with open(_MANIFEST_PATH, encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, ValueError) as e:
-        raise HTTPException(status_code=500,
-                            detail=f"Schedule manifest unreadable: {e}")
+            data = json.load(f)
+    except (OSError, ValueError):
+        # SEC-010: never echo raw exception text — OSError repr would leak
+        # the absolute container path of the manifest.
+        logger.exception("[schedule] manifest unreadable")
+        raise HTTPException(status_code=500, detail="Schedule data unavailable")
+    return JSONResponse(content=data, headers=_SCHEDULE_CACHE_HEADERS)
 
 
 @router.get("/schedule/{route_id}")
-async def schedule_for_route(route_id: str) -> dict:
+async def schedule_for_route(route_id: str, request: Request):
     """Full schedule JSON for one route."""
+    # SEC-009: same rate-limit gate as the manifest endpoint. Each per-route
+    # file is ~2 MB; without this an attacker could saturate Railway egress.
+    if not _check_geocode_rate_limit(_client_ip(request)):
+        raise HTTPException(status_code=429, detail="Too many requests")
     safe = _safe_route_id(route_id)
     path = SCHEDULE_DIR / f"{safe}.json"
     if not path.exists():
@@ -92,7 +118,10 @@ async def schedule_for_route(route_id: str) -> dict:
                                    f"Re-run scripts/build_schedule_index.py?")
     try:
         with open(path, encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, ValueError) as e:
-        raise HTTPException(status_code=500,
-                            detail=f"Schedule for {route_id!r} unreadable: {e}")
+            data = json.load(f)
+    except (OSError, ValueError):
+        # SEC-010: scrub exception details — the route_id is safe to echo
+        # (caller supplied it) but the OSError path leaks /app/backend/...
+        logger.exception("[schedule] route %r unreadable", route_id)
+        raise HTTPException(status_code=500, detail="Schedule data unavailable")
+    return JSONResponse(content=data, headers=_SCHEDULE_CACHE_HEADERS)

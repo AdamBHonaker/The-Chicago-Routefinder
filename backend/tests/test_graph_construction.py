@@ -413,27 +413,36 @@ class TestFindRoutes:
 
     def _patch_routing(self, G, stations, origin_mapid: str, dest_mapid: str,
                        origin_walk: float = 5.0, dest_walk: float = 3.0):
-        """Patch context for find_routes: graph + nearest-station lookups."""
+        """Patch context for find_routes: graph + nearest-station lookups.
+
+        Patches both the basic ``find_nearest_train_stations`` (kept for
+        direct callers in other tests) and the progressive variant that
+        ``find_routes_with_status`` actually invokes post-OPT-004.
+        """
+        origin_hit = [{"mapid": origin_mapid, "name": stations[origin_mapid]["name"],
+                       "lat": stations[origin_mapid]["lat"],
+                       "lon": stations[origin_mapid]["lon"],
+                       "walk_minutes": origin_walk}]
+        dest_hit = [{"mapid": dest_mapid, "name": stations[dest_mapid]["name"],
+                     "lat": stations[dest_mapid]["lat"],
+                     "lon": stations[dest_mapid]["lon"],
+                     "walk_minutes": dest_walk}]
         return (
             patch.object(transit_graph, "_build_graph", return_value=(G, stations)),
             patch.object(transit_graph, "find_nearest_train_stations", side_effect=[
                 # First call (origin), second call (destination)
-                [{"mapid": origin_mapid, "name": stations[origin_mapid]["name"],
-                  "lat": stations[origin_mapid]["lat"],
-                  "lon": stations[origin_mapid]["lon"],
-                  "walk_minutes": origin_walk}],
-                [{"mapid": dest_mapid, "name": stations[dest_mapid]["name"],
-                  "lat": stations[dest_mapid]["lat"],
-                  "lon": stations[dest_mapid]["lon"],
-                  "walk_minutes": dest_walk}],
+                origin_hit,
+                dest_hit,
             ]),
             patch.object(transit_graph, "find_nearest_bus_stops", return_value=[]),
+            patch.object(transit_graph, "find_nearest_train_stations_progressive",
+                         side_effect=[(origin_hit, 0.5), (dest_hit, 0.5)]),
         )
 
     def test_single_line_trip_returns_one_transit_leg(self):
         G, stations = self._fixture_graph()
-        p1, p2, p3 = self._patch_routing(G, stations, "40100", "40300")
-        with p1, p2, p3:
+        p1, p2, p3, p4 = self._patch_routing(G, stations, "40100", "40300")
+        with p1, p2, p3, p4:
             routes = find_routes(42.019, -87.672, 41.885, -87.628)
 
         assert len(routes) >= 1
@@ -449,8 +458,8 @@ class TestFindRoutes:
 
     def test_transfer_trip_returns_two_transit_legs(self):
         G, stations = self._fixture_graph()
-        p1, p2, p3 = self._patch_routing(G, stations, "40100", "40500")
-        with p1, p2, p3:
+        p1, p2, p3, p4 = self._patch_routing(G, stations, "40100", "40500")
+        with p1, p2, p3, p4:
             routes = find_routes(42.019, -87.672, 41.886, -87.631)
 
         assert len(routes) >= 1
@@ -480,8 +489,8 @@ class TestFindRoutes:
             "40103": {"name": "B3", "lat": 0, "lon": 0},
             "40200": {"name": "C", "lat": 0, "lon": 0},
         }
-        p1, p2, p3 = self._patch_routing(G, stations, "40100", "40200")
-        with p1, p2, p3:
+        p1, p2, p3, p4 = self._patch_routing(G, stations, "40100", "40200")
+        with p1, p2, p3, p4:
             routes = find_routes(0, 0, 0, 0, n_routes=2)
 
         assert len(routes) == 2
@@ -500,8 +509,8 @@ class TestFindRoutes:
             "40400": {"name": "D", "lat": 0, "lon": 0},
         }
         # Origin in component 1, dest in component 2 — no path
-        p1, p2, p3 = self._patch_routing(G, stations, "40100", "40400")
-        with p1, p2, p3:
+        p1, p2, p3, p4 = self._patch_routing(G, stations, "40100", "40400")
+        with p1, p2, p3, p4:
             routes = find_routes(0, 0, 0, 0)
 
         assert routes == []
@@ -519,8 +528,8 @@ class TestFindRoutes:
 
     def test_routing_result_ok_carries_routes(self):
         G, stations = self._fixture_graph()
-        p1, p2, p3 = self._patch_routing(G, stations, "40100", "40300")
-        with p1, p2, p3:
+        p1, p2, p3, p4 = self._patch_routing(G, stations, "40100", "40300")
+        with p1, p2, p3, p4:
             result = find_routes_with_status(42.019, -87.672, 41.885, -87.628)
 
         assert isinstance(result, RoutingResult)
@@ -542,8 +551,8 @@ class TestFindRoutes:
             "40300": {"name": "C", "lat": 0, "lon": 0},
             "40400": {"name": "D", "lat": 0, "lon": 0},
         }
-        p1, p2, p3 = self._patch_routing(G, stations, "40100", "40400")
-        with p1, p2, p3:
+        p1, p2, p3, p4 = self._patch_routing(G, stations, "40100", "40400")
+        with p1, p2, p3, p4:
             result = find_routes_with_status(0, 0, 0, 0)
 
         assert result.status == "no_path"
@@ -551,20 +560,22 @@ class TestFindRoutes:
         assert result.routes == []
 
     def test_routing_result_out_of_coverage_origin(self):
-        # find_nearest_train_stations() returns [] for every expansion ring on
-        # the origin side; the destination side returns a hit on the first
-        # ring. find_routes_with_status() should report side="origin" without
-        # invoking _build_graph() or attempting Yen's.
+        # find_nearest_train_stations_progressive() returns no hits within the
+        # max ring on the origin side; the destination side resolves. Production
+        # post-OPT-004 calls the progressive variant exactly once per side.
         G, stations = self._fixture_graph()
         dest_hit = [{"mapid": "40300", "name": "Loop", "lat": 0, "lon": 0,
                      "walk_minutes": 3.0}]
-        # 8 empty origin rings, then 1 dest hit (loop short-circuits).
-        side_effect = [[]] * len(transit_graph._RADIUS_RINGS) + [dest_hit]
         with (
             patch.object(transit_graph, "_build_graph", return_value=(G, stations)),
             patch.object(transit_graph, "find_nearest_train_stations",
-                         side_effect=side_effect),
+                         side_effect=[[], dest_hit]),
             patch.object(transit_graph, "find_nearest_bus_stops", return_value=[]),
+            patch.object(transit_graph, "find_nearest_train_stations_progressive",
+                         side_effect=[
+                             ([], transit_graph._MAX_RADIUS_MILES),
+                             (dest_hit, 0.5),
+                         ]),
         ):
             result = find_routes_with_status(0, 0, 0, 0)
 
@@ -574,17 +585,20 @@ class TestFindRoutes:
         assert result.routes == []
 
     def test_routing_result_out_of_coverage_destination(self):
-        # Origin resolves on the first ring; destination side returns [] for
-        # every ring.
+        # Origin resolves; destination has no hit within the max ring.
         G, stations = self._fixture_graph()
         origin_hit = [{"mapid": "40100", "name": "Howard", "lat": 0, "lon": 0,
                        "walk_minutes": 5.0}]
-        side_effect = [origin_hit] + [[]] * len(transit_graph._RADIUS_RINGS)
         with (
             patch.object(transit_graph, "_build_graph", return_value=(G, stations)),
             patch.object(transit_graph, "find_nearest_train_stations",
-                         side_effect=side_effect),
+                         side_effect=[origin_hit, []]),
             patch.object(transit_graph, "find_nearest_bus_stops", return_value=[]),
+            patch.object(transit_graph, "find_nearest_train_stations_progressive",
+                         side_effect=[
+                             (origin_hit, 0.5),
+                             ([], transit_graph._MAX_RADIUS_MILES),
+                         ]),
         ):
             result = find_routes_with_status(0, 0, 0, 0)
 
@@ -595,12 +609,16 @@ class TestFindRoutes:
     def test_routing_result_out_of_coverage_both(self):
         G, stations = self._fixture_graph()
         # Origin side and destination side both fail every ring.
-        side_effect = [[]] * (2 * len(transit_graph._RADIUS_RINGS))
         with (
             patch.object(transit_graph, "_build_graph", return_value=(G, stations)),
             patch.object(transit_graph, "find_nearest_train_stations",
-                         side_effect=side_effect),
+                         side_effect=[[], []]),
             patch.object(transit_graph, "find_nearest_bus_stops", return_value=[]),
+            patch.object(transit_graph, "find_nearest_train_stations_progressive",
+                         side_effect=[
+                             ([], transit_graph._MAX_RADIUS_MILES),
+                             ([], transit_graph._MAX_RADIUS_MILES),
+                         ]),
         ):
             result = find_routes_with_status(0, 0, 0, 0)
 
@@ -613,12 +631,16 @@ class TestFindRoutes:
         # out-of-coverage still surfaces as the empty list (callers that need
         # the typed signal should migrate to find_routes_with_status()).
         G, stations = self._fixture_graph()
-        side_effect = [[]] * (2 * len(transit_graph._RADIUS_RINGS))
         with (
             patch.object(transit_graph, "_build_graph", return_value=(G, stations)),
             patch.object(transit_graph, "find_nearest_train_stations",
-                         side_effect=side_effect),
+                         side_effect=[[], []]),
             patch.object(transit_graph, "find_nearest_bus_stops", return_value=[]),
+            patch.object(transit_graph, "find_nearest_train_stations_progressive",
+                         side_effect=[
+                             ([], transit_graph._MAX_RADIUS_MILES),
+                             ([], transit_graph._MAX_RADIUS_MILES),
+                         ]),
         ):
             routes = find_routes(0, 0, 0, 0)
         assert routes == []
@@ -640,21 +662,21 @@ class TestFindRoutes:
         }
         # Both origin stations available with the same walk time —
         # Dijkstra chooses based on transit weight.
+        origin_hits = [
+            {"mapid": "40100", "name": "Slow Start", "lat": 0, "lon": 0,
+             "walk_minutes": 5.0},
+            {"mapid": "40300", "name": "Fast Start", "lat": 0, "lon": 0,
+             "walk_minutes": 5.0},
+        ]
+        dest_hits = [{"mapid": "40200", "name": "End", "lat": 0, "lon": 0,
+                      "walk_minutes": 3.0}]
         with (
             patch.object(transit_graph, "_build_graph", return_value=(G, stations)),
-            patch.object(transit_graph, "find_nearest_train_stations", side_effect=[
-                # Origin: both stations are equally close
-                [
-                    {"mapid": "40100", "name": "Slow Start", "lat": 0, "lon": 0,
-                     "walk_minutes": 5.0},
-                    {"mapid": "40300", "name": "Fast Start", "lat": 0, "lon": 0,
-                     "walk_minutes": 5.0},
-                ],
-                # Destination
-                [{"mapid": "40200", "name": "End", "lat": 0, "lon": 0,
-                  "walk_minutes": 3.0}],
-            ]),
+            patch.object(transit_graph, "find_nearest_train_stations",
+                         side_effect=[origin_hits, dest_hits]),
             patch.object(transit_graph, "find_nearest_bus_stops", return_value=[]),
+            patch.object(transit_graph, "find_nearest_train_stations_progressive",
+                         side_effect=[(origin_hits, 0.5), (dest_hits, 0.5)]),
         ):
             routes = find_routes(0, 0, 0, 0, n_routes=1)
 
@@ -700,15 +722,17 @@ class TestMaxTransfersCap:
         return G, stations
 
     def _patch(self, G, stations, origin_mapid, dest_mapid):
+        origin_hit = [{"mapid": origin_mapid, "name": stations[origin_mapid]["name"],
+                       "lat": 0, "lon": 0, "walk_minutes": 1.0}]
+        dest_hit = [{"mapid": dest_mapid, "name": stations[dest_mapid]["name"],
+                     "lat": 0, "lon": 0, "walk_minutes": 1.0}]
         return (
             patch.object(transit_graph, "_build_graph", return_value=(G, stations)),
-            patch.object(transit_graph, "find_nearest_train_stations", side_effect=[
-                [{"mapid": origin_mapid, "name": stations[origin_mapid]["name"],
-                  "lat": 0, "lon": 0, "walk_minutes": 1.0}],
-                [{"mapid": dest_mapid, "name": stations[dest_mapid]["name"],
-                  "lat": 0, "lon": 0, "walk_minutes": 1.0}],
-            ]),
+            patch.object(transit_graph, "find_nearest_train_stations",
+                         side_effect=[origin_hit, dest_hit]),
             patch.object(transit_graph, "find_nearest_bus_stops", return_value=[]),
+            patch.object(transit_graph, "find_nearest_train_stations_progressive",
+                         side_effect=[(origin_hit, 0.5), (dest_hit, 0.5)]),
         )
 
     def test_cap_is_two_transfers(self):
@@ -718,8 +742,8 @@ class TestMaxTransfersCap:
     def test_three_transit_legs_allowed(self):
         """A 3-transit-leg / 2-transfer route is at the cap and must be returned."""
         G, stations = self._chain_graph(3)   # 3 lines → 2 transfers
-        p1, p2, p3 = self._patch(G, stations, "40100", "40105")
-        with p1, p2, p3:
+        p1, p2, p3, p4 = self._patch(G, stations, "40100", "40105")
+        with p1, p2, p3, p4:
             routes = find_routes(0, 0, 0, 0, n_routes=3)
         assert len(routes) >= 1
         # The shortest path traverses all 3 lines.
@@ -731,8 +755,8 @@ class TestMaxTransfersCap:
     def test_four_transit_legs_dropped(self):
         """A 4-transit-leg / 3-transfer chain exceeds the cap → no routes returned."""
         G, stations = self._chain_graph(4)   # 4 lines → 3 transfers (over cap)
-        p1, p2, p3 = self._patch(G, stations, "40100", "40107")
-        with p1, p2, p3:
+        p1, p2, p3, p4 = self._patch(G, stations, "40100", "40107")
+        with p1, p2, p3, p4:
             routes = find_routes(0, 0, 0, 0, n_routes=3)
         # The only path through the chain has 3 transfers — above the cap, so
         # find_routes must drop it and return nothing.
@@ -749,8 +773,8 @@ class TestMaxTransfersCap:
         # Direct shortcut, but slower so Yen's still considers the chain second.
         G.add_edge("40100", "40107", weight=100.0, edge_type="transit",
                    route_id="Express", direction_id="0", line="Express")
-        p1, p2, p3 = self._patch(G, stations, "40100", "40107")
-        with p1, p2, p3:
+        p1, p2, p3, p4 = self._patch(G, stations, "40100", "40107")
+        with p1, p2, p3, p4:
             routes = find_routes(0, 0, 0, 0, n_routes=3)
         assert len(routes) == 1
         assert routes[0].transfers == 0

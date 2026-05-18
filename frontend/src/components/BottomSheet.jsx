@@ -198,21 +198,20 @@ export function BottomSheet({
     if (ds.samples.length > 6) ds.samples.shift();
   }, [maxHeightPx]);
 
-  const onPointerUp = useCallback((e) => {
-    const ds = dragStateRef.current;
-    if (!ds || ds.pointerId !== e.pointerId) return;
-    e.currentTarget.releasePointerCapture?.(e.pointerId);
-
+  // Shared settle path used by both the handle's pointerup and the body's
+  // pointerup-while-dragging branch (TD-FE-022). Runs decideSnap, fires the
+  // haptic pulse if the snap actually changed, clears the supplied drag-state
+  // ref, and commits the settle. Keeps the two release sites in lock-step.
+  const commitDragRelease = useCallback((samples, stateRef) => {
     const finalTranslate = dragTranslate ?? restingTranslate;
     const targetIdx = decideSnap({
-      samples: ds.samples,
+      samples,
       currentSnap,
       finalTranslate,
       snapPx,
       maxHeightPx,
       reducedMotion: reducedMotionRef.current,
     });
-
     if (
       targetIdx !== currentSnap
       && !reducedMotionRef.current
@@ -221,12 +220,18 @@ export function BottomSheet({
     ) {
       try { navigator.vibrate(10); } catch { /* not supported */ }
     }
-
-    dragStateRef.current = null;
+    stateRef.current = null;
     setIsDragging(false);
     setDragTranslate(null);
     settleToSnap(targetIdx);
   }, [dragTranslate, restingTranslate, snapPx, maxHeightPx, settleToSnap, currentSnap]);
+
+  const onPointerUp = useCallback((e) => {
+    const ds = dragStateRef.current;
+    if (!ds || ds.pointerId !== e.pointerId) return;
+    e.currentTarget.releasePointerCapture?.(e.pointerId);
+    commitDragRelease(ds.samples, dragStateRef);
+  }, [commitDragRelease]);
 
   // Body-drag with scroll handoff (see "Body-scroll handoff" in header).
   const onBodyPointerDown = useCallback((e) => {
@@ -273,34 +278,13 @@ export function BottomSheet({
   const onBodyPointerUp = useCallback((e) => {
     const bs = bodyDragRef.current;
     if (!bs || bs.pointerId !== e.pointerId) return;
-
     if (bs.phase === "dragging") {
       e.currentTarget.releasePointerCapture?.(e.pointerId);
-      const finalTranslate = dragTranslate ?? restingTranslate;
-      const targetIdx = decideSnap({
-        samples: bs.samples,
-        currentSnap,
-        finalTranslate,
-        snapPx,
-        maxHeightPx,
-        reducedMotion: reducedMotionRef.current,
-      });
-      if (
-        targetIdx !== currentSnap
-        && !reducedMotionRef.current
-        && typeof navigator !== "undefined"
-        && typeof navigator.vibrate === "function"
-      ) {
-        try { navigator.vibrate(10); } catch { /* not supported */ }
-      }
-      bodyDragRef.current = null;
-      setIsDragging(false);
-      setDragTranslate(null);
-      settleToSnap(targetIdx);
+      commitDragRelease(bs.samples, bodyDragRef);
       return;
     }
     bodyDragRef.current = null;
-  }, [dragTranslate, restingTranslate, snapPx, maxHeightPx, settleToSnap, currentSnap]);
+  }, [commitDragRelease]);
 
   if (!open) return null;
 

@@ -240,6 +240,17 @@
   letter-spacing: 1px;
 }
 
+/* Subtle per-type accents so a screen of mixed suggestions parses by tier
+   at a glance. Color contrast is the only differentiator — type, size, and
+   weight stay constant so the badges sit quietly to the right of the label.
+   Order is rendered tier order from the backend: train → neighborhood →
+   intersection → bus → address. */
+.ac-type-badge--train          { color: var(--rust); }
+.ac-type-badge--neighborhood   { color: var(--ink-soft); }
+.ac-type-badge--intersection   { color: var(--ink-soft); }
+.ac-type-badge--bus            { color: var(--mute-fog); }
+.ac-type-badge--address        { color: var(--mute-fog); }
+
 /* ── Favorites — Routes section header ───────────────────────────────────── */
 
 .routes-section-header {

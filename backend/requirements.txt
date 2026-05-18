@@ -13,3 +13,4 @@ holidays>=0.46,<1
 cachetools>=5.3,<6
 geoip2>=4.8,<5
 ua-parser>=0.18,<2
+defusedxml>=0.7,<1

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import {
   getSavedLocations,
   getSavedRoutes,
@@ -42,23 +42,28 @@ export function useFavorites({ origin, destination }) {
     if (routeLimitTimerRef.current) clearTimeout(routeLimitTimerRef.current);
   }, []);
 
-  function handleUnpin(id) {
-    setPinnedStops(unpinStop(id, pinnedStops));
-  }
+  // Stable handler identities (OPT-FE-209): consumers in App.jsx forward these
+  // to memoized children, so an unstable reference would defeat memoization
+  // every render. Use the functional setState form so we don't need the
+  // current array in the dep list.
+  const handleUnpin = useCallback((id) => {
+    setPinnedStops((prev) => unpinStop(id, prev));
+  }, []);
 
-  function handlePinToggle(stopType, stopId, label, routeHint, currentlyPinned) {
-    if (currentlyPinned) {
-      const existing = pinnedStops.find((s) => s.type === stopType && s.stop_id === stopId);
-      if (existing) setPinnedStops(unpinStop(existing.id, pinnedStops));
-    } else {
-      const next = pinStop(stopType, stopId, label, routeHint, pinnedStops);
-      if (next !== null) setPinnedStops(next);
-    }
-  }
+  const handlePinToggle = useCallback((stopType, stopId, label, routeHint, currentlyPinned) => {
+    setPinnedStops((prev) => {
+      if (currentlyPinned) {
+        const existing = prev.find((s) => s.type === stopType && s.stop_id === stopId);
+        return existing ? unpinStop(existing.id, prev) : prev;
+      }
+      const next = pinStop(stopType, stopId, label, routeHint, prev);
+      return next ?? prev;
+    });
+  }, []);
 
-  function handleDeleteRoute(id) {
-    setSavedRoutes(deleteRoute(id, savedRoutes));
-  }
+  const handleDeleteRoute = useCallback((id) => {
+    setSavedRoutes((prev) => deleteRoute(id, prev));
+  }, []);
 
   function handleToggleSaveRoute() {
     if (currentRouteSaved) {

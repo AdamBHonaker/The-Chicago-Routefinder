@@ -21,10 +21,11 @@ def reset_state(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_allowlist_contains_documented_events():
-    """Every event name documented in docs/FEATURE_PLANS.md FEAT-006 (plus the
-    off-route flow's three diagnostic signals) must be in the allowlist; a
-    future contributor reading the scope should not find a name listed there
-    that the code rejects."""
+    """Every event name documented in docs/PRIVACY.md FEAT-006 (plus the
+    off-route flow's three diagnostic signals and the PWA install-prompt
+    flow's four events fired by InstallPrompt.jsx) must be in the
+    allowlist; a future contributor reading the scope should not find a
+    name listed there that the code rejects."""
     expected = {
         "app_loaded",
         "recommend_submitted",
@@ -37,6 +38,10 @@ def test_allowlist_contains_documented_events():
         "trip_off_route",
         "trip_rerouted",
         "off_route_dismissed",
+        "install_prompt_shown",
+        "install_prompt_accepted",
+        "install_prompt_dismissed",
+        "install_completed",
     }
     assert events.EVENT_ALLOWLIST == frozenset(expected)
 

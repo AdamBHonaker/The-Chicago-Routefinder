@@ -297,6 +297,11 @@ This app collects the minimum information needed to operate the service and
 to publish coarse, aggregate usage numbers. It uses no third-party analytics
 scripts, no fingerprinting, and no persistent cross-day user identifiers.
 
+The only third-party processor in the request path is LocationIQ, used as a
+narrow Tier-5 fallback when the local-first geocoder cascade can't resolve an
+address. See "Geocoding & autocomplete (LocationIQ)" below for what is sent,
+when, and how to opt out as a self-hoster.
+
 What is collected
 -----------------
 
@@ -353,6 +358,44 @@ Public dashboard
   by an automated test that fails the build if any field outside the
   whitelist appears in a public response.
 
+Geocoding & autocomplete (LocationIQ)
+  Free-text location resolution runs a five-tier cascade. Tiers 1–4 are
+  local-only: coord-pair regex, curated NEIGHBORHOOD_COORDS exact match,
+  fuzzy match (≥0.95 similarity), and a local SQLite/FTS5 search over a
+  Chicago-only OSM address + intersection corpus. Only when all four
+  miss does the cascade fall through to LocationIQ /search (forward) or
+  /reverse (reverse) — the single network call in this app's request
+  path. The /autocomplete endpoint never calls LocationIQ on its own;
+  only submit-time forward resolution and the geolocate-button reverse
+  resolution do.
+
+  What is sent: the typed text (forward) or lat/lon (reverse), biased
+  to a Chicago viewbox. The deployment's outbound IP (Railway egress)
+  is the network identifier — no rider identifier, no session cookie,
+  no Referer is sent.
+
+  Logs: the typed query is replaced with a 10-character SHA-256 tag
+  before any log line is written. Resolved coordinates are quantized
+  to ~1 km precision before logging.
+
+  Local cache: positive and negative responses are stored in
+  cached_forward / cached_reverse inside backend/static_data/
+  chicago_geocode.db, so a repeated bad query never re-leaks.
+  Rows older than LOCATIONIQ_CACHE_TTL_DAYS (default 90 days) are
+  swept at FastAPI startup; operators can opt out by setting the
+  env var to 0.
+
+  Rate ceiling: a UTC-day call counter (LOCATIONIQ_DAILY_CAP, default
+  4 900) bounds maximum LocationIQ traffic. When the cap is hit, the
+  cascade silently degrades to local-only for the rest of that UTC day.
+  A separate 60→120→240→300 s circuit breaker trips on HTTP 429
+  responses and keeps Tier 5 closed until the cool-off elapses.
+
+  Opt-out: setting LOCATIONIQ_ENABLED=false disables Tier 5 entirely;
+  with it disabled, any query that misses tiers 1–4 returns "not
+  found" rather than escaping to a third party. LocationIQ's own
+  retention is governed by LocationIQ's privacy policy.
+
 What is NOT collected
 ---------------------
 
@@ -366,8 +409,11 @@ What is NOT collected
 Where the data lives
 --------------------
 
-All data is stored on the same Railway-hosted backend as the application
-itself. No data is sent to a third-party processor.
+All analytics data is stored on the same Railway-hosted backend as the
+application itself. The only outbound user-derived data leaving Railway
+goes to LocationIQ for the geocoder's Tier-5 fallback (see the dedicated
+section above for scope and frequency). No data leaves Railway for
+analytics purposes — the analytics surface is fully self-hosted.
 
 If you'd like the data deleted, contact the maintainer.
 """
@@ -383,6 +429,7 @@ def render_html(
     events_today: dict | None = None,
     funnel_today: dict | None = None,
     retention_today: dict | None = None,
+    csp_nonce: str = "",
 ) -> str:
     """Render the /stats page with today's headline numbers server-injected.
 
@@ -541,4 +588,8 @@ def render_html(
         retention_rate=retention_rate,
         retention_new=retention_new_str,
         retention_returning=retention_returning_str,
+        # SEC-007: CSP nonce echoed into <script>/<style> tags. The nonce is
+        # cryptographically random per request (secrets.token_urlsafe in
+        # routes/stats.py), so it is safe to interpolate into the markup.
+        csp_nonce=csp_nonce,
     )

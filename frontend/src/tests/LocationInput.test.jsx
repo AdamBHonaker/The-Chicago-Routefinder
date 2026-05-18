@@ -1,19 +1,49 @@
 /**
  * LocationInput component tests.
- * Covers: rendering, geo button, save flow, autocomplete keyboard navigation.
+ *
+ * After Chunk 7 of the Geocoding & Autocomplete plan, LocationInput is a
+ * thin shell around the generic AddressAutocomplete (combobox + listbox).
+ * It still owns the save-star, save panel, geo button, and the
+ * saved-locations dropdown (which is mutually exclusive with autocomplete
+ * results — autocomplete fires only at ≥2 chars, saved-list shows only
+ * with an empty value).
+ *
+ * Covers: rendering, geo button visibility, save flow, autocomplete
+ * forwarding through the new `fetchAutocomplete` client, suggestion
+ * selection via the underlying AddressAutocomplete.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { useState } from "react";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import LocationInput from "../components/LocationInput.jsx";
 
+// LocationInput is controlled; tests that simulate typing need a stateful
+// shell so the `value` prop actually changes after a `fireEvent.change`.
+function Harness({ initialValue = "", onChange: onChangeProp, ...rest }) {
+  const [value, setValue] = useState(initialValue);
+  function handleChange(next) {
+    setValue(next);
+    onChangeProp?.(next);
+  }
+  return <LocationInput {...rest} value={value} onChange={handleChange} />;
+}
+
 vi.mock("react-i18next", () => ({
-  useTranslation: () => ({ t: (key) => key }),
+  useTranslation: () => ({
+    t: (key, opts) => (opts?.count ? `${key}:${opts.count}` : key),
+  }),
 }));
 
 vi.mock("../favorites.js", () => ({
   saveLocation: vi.fn(),
   deleteLocation: vi.fn(),
 }));
+
+vi.mock("../lib/autocompleteApi.js", () => ({
+  fetchAutocomplete: vi.fn(),
+}));
+
+import { fetchAutocomplete } from "../lib/autocompleteApi.js";
 
 const BASE_PROPS = {
   value: "",
@@ -27,7 +57,7 @@ const BASE_PROPS = {
 describe("LocationInput", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("renders a text input", () => {
+  it("renders a combobox input", () => {
     render(<LocationInput {...BASE_PROPS} />);
     expect(screen.getByRole("combobox")).toBeInTheDocument();
   });
@@ -51,12 +81,16 @@ describe("LocationInput", () => {
 
   it("hides the save star when value is empty", () => {
     render(<LocationInput {...BASE_PROPS} value="" />);
-    expect(screen.queryByRole("button", { name: /fav_save_location/ })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /fav_save_location/ }),
+    ).not.toBeInTheDocument();
   });
 
   it("shows the save star when value is non-empty", () => {
     render(<LocationInput {...BASE_PROPS} value="Howard" />);
-    expect(screen.getByRole("button", { name: "fav_save_location" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "fav_save_location" }),
+    ).toBeInTheDocument();
   });
 
   it("shows saved star when value matches a saved location", () => {
@@ -65,9 +99,11 @@ describe("LocationInput", () => {
         {...BASE_PROPS}
         value="Howard"
         savedLocations={[{ value: "Howard", label: "Howard" }]}
-      />
+      />,
     );
-    expect(screen.getByRole("button", { name: "fav_unsave_location" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "fav_unsave_location" }),
+    ).toBeInTheDocument();
   });
 
   it("opens the save panel when the unsaved star is clicked", () => {
@@ -76,45 +112,47 @@ describe("LocationInput", () => {
     expect(screen.getByText("fav_save")).toBeInTheDocument();
   });
 
-  it("renders autocomplete suggestions when provided via fetch mock", async () => {
-    const suggestions = [
+  it("forwards typed queries through fetchAutocomplete", async () => {
+    fetchAutocomplete.mockResolvedValue([
       { value: "Howard", label: "Howard", type: "train" },
-      { value: "Jarvis", label: "Jarvis", type: "train" },
-    ];
-    global.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ suggestions }),
-    });
-
-    render(<LocationInput {...BASE_PROPS} value="ho" />);
+    ]);
+    render(<Harness {...BASE_PROPS} />);
     const input = screen.getByRole("combobox");
-
-    // Simulate typing a third character to clear the <2-char guard
     fireEvent.change(input, { target: { value: "how" } });
-
-    await waitFor(() => expect(global.fetch).toHaveBeenCalled(), { timeout: 500 });
+    await waitFor(
+      () => expect(fetchAutocomplete).toHaveBeenCalled(),
+      { timeout: 1000 },
+    );
+    expect(fetchAutocomplete.mock.calls[0][0]).toBe("how");
   });
 
-  it("calls onChange with selected suggestion value", async () => {
-    const suggestions = [{ value: "Howard", label: "Howard", type: "train" }];
-    global.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ suggestions }),
-    });
-
-    render(<LocationInput {...BASE_PROPS} value="" />);
+  it("commits onChange with the selected suggestion's value", async () => {
+    fetchAutocomplete.mockResolvedValue([
+      { value: "Howard", label: "Howard", type: "train" },
+    ]);
+    const onChange = vi.fn();
+    render(<Harness {...BASE_PROPS} onChange={onChange} />);
     const input = screen.getByRole("combobox");
-
-    // Trigger the debounced fetch by typing — onChange handler is what actually
-    // calls fetchAcSuggestions. Rendering with `value="how"` alone does NOT
-    // fire fetch (the value prop bypasses the onChange path).
     fireEvent.change(input, { target: { value: "how" } });
-
-    await waitFor(() => expect(global.fetch).toHaveBeenCalled(), { timeout: 1000 });
-
-    // Suggestion <li role="option"> appears once setAcSuggestions resolves.
-    const option = await screen.findByRole("option", { name: /Howard/ }, { timeout: 1000 });
+    const option = await screen.findByRole(
+      "option",
+      { name: /Howard/ },
+      { timeout: 1000 },
+    );
     fireEvent.mouseDown(option);
-    expect(BASE_PROPS.onChange).toHaveBeenCalledWith("Howard");
+    expect(onChange).toHaveBeenCalledWith("Howard");
+  });
+
+  it("renders the saved-locations dropdown when focused with empty value", () => {
+    render(
+      <LocationInput
+        {...BASE_PROPS}
+        value=""
+        savedLocations={[{ id: "1", value: "Howard", label: "Home" }]}
+      />,
+    );
+    fireEvent.focus(screen.getByRole("combobox"));
+    expect(screen.getByRole("listbox", { name: /aria_saved_locations/ })).toBeInTheDocument();
+    expect(screen.getByText("Home")).toBeInTheDocument();
   });
 });

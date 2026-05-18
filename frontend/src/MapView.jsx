@@ -5,6 +5,7 @@ import { useMapMarker, mountMarker, removeMarker } from "./hooks/useMapMarker.js
 import { useRouteLayers } from "./hooks/useRouteLayers.js";
 import { useTransferConnectors } from "./hooks/useTransferConnectors.js";
 import { BUS_DIRECTION_COLORS, PANEL_MAP_RESIZE_DELAY_MS } from "./constants.js";
+import { stripLineSuffix } from "./lineColors.js";
 import { haversineMeters } from "./utils/tripGeometry.js";
 import LinePill from "./components/LinePill.jsx";
 import OriginMarker from "./components/markers/OriginMarker.jsx";
@@ -398,11 +399,16 @@ export default function MapView({
   }, [map, onSelectTransfer]);
 
   // Feature RouteProgress — mute completed legs on the map.
-  // Iterates legs 0..activeLegIndex-1 and dims their polyline/circle layers.
-  // useRouteLayers clears all layers when the route changes so no reset needed.
+  // Idempotent via a watermark ref (OPT-FE-213): only legs above the highest
+  // previously-muted index get their paint properties touched on each advance.
+  // useRouteLayers clears all layers when the route changes, so on route swap
+  // we reset the watermark to -1.
+  const mutedWatermarkRef = useRef(-1);
+  useEffect(() => { mutedWatermarkRef.current = -1; }, [route]);
   useEffect(() => {
     if (!map || !route?.legs || activeLegIndex == null || activeLegIndex <= 0) return;
-    for (let i = 0; i < activeLegIndex; i++) {
+    const start = Math.max(0, mutedWatermarkRef.current + 1);
+    for (let i = start; i < activeLegIndex; i++) {
       const leg = route.legs[i];
       const lineId = leg.type === "walk"
         ? `route-walk-line-${i}`
@@ -416,6 +422,7 @@ export default function MapView({
         map.setPaintProperty(circleId, "circle-opacity", 0.3);
       }
     }
+    mutedWatermarkRef.current = Math.max(mutedWatermarkRef.current, activeLegIndex - 1);
   }, [map, activeLegIndex, route]);
 
   // ── Trip live position — split into focused effects (TD-FE-008) ──
@@ -621,7 +628,7 @@ export default function MapView({
             <span className="map-train-card__line-text">
               {primaryTransitLeg.line in BUS_DIRECTION_COLORS
                 ? t("map_bus_label", { code: primaryTransitLeg.line_code })
-                : t("map_train_label", { color: primaryTransitLeg.line?.replace(" Line", "") })}
+                : t("map_train_label", { color: stripLineSuffix(primaryTransitLeg.line) })}
             </span>
           </div>
           <div className="map-train-card__desc">

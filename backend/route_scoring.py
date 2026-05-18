@@ -12,13 +12,28 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from weather_service import WeatherContext
 
-from weather_service import PrecipitationType
+from weather_service import PrecipitationType, CurrentWeather
+
+# Gust threshold above which trains/buses may run with delays or reduced speed.
+# 35 mph aligns with NWS Wind Advisory criteria for sustained or gust impacts
+# and matches CTA's observed operational threshold for service impacts on
+# elevated lines. Tune via env var if seasonal calibration becomes useful.
+_HIGH_WIND_GUST_MPH: float = 35.0
 
 
-def _active_hints(c) -> list[str]:
+def _active_hints(c: CurrentWeather) -> list[str]:
     """Return prompt-hint strings for every weather condition that fires.
 
-    Temperature checks are coldest-first (< 0 before < 15); only one fires.
+    Parameters
+    ----------
+    c : CurrentWeather
+        The now-cast portion of a ``WeatherContext`` (i.e. ``weather.current``).
+
+    Notes
+    -----
+    Temperature checks are coldest-first (< 0 °F before < 15 °F); only one
+    fires per call. "Fires" = the condition matched a threshold and a hint
+    string was appended for inclusion in the Claude prompt.
     """
     hints: list[str] = []
 
@@ -33,7 +48,7 @@ def _active_hints(c) -> list[str]:
     ):
         hints.append(f"outdoor exposure prioritized due to heavy {c.precipitation.type.value}")
 
-    if c.wind.gust_mph is not None and c.wind.gust_mph > 35:
+    if c.wind.gust_mph is not None and c.wind.gust_mph > _HIGH_WIND_GUST_MPH:
         hints.append(f"reliability weighted for high wind gusts ({c.wind.gust_mph:.0f} mph)")
 
     return hints

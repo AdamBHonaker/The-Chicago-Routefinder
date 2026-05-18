@@ -33,6 +33,12 @@ EXPECTED_FILES = [
 
 
 def download_gtfs() -> None:
+    """Stream the CTA GTFS zip to backend/gtfs_data/google_transit.zip.
+
+    Creates the target directory if absent. Raises RuntimeError on any
+    network failure — callers should let the script exit non-zero so the
+    deploy/CI step is treated as failed rather than serving stale data.
+    """
     GTFS_DIR.mkdir(exist_ok=True)
 
     print(f"Downloading CTA GTFS data from {GTFS_URL} ...")
@@ -69,6 +75,11 @@ def download_gtfs() -> None:
 
 
 def extract_gtfs() -> None:
+    """Extract only the files in ``EXPECTED_FILES`` from the downloaded zip.
+
+    Skips any extra files CTA may bundle (license docs, etc.). Assumes
+    ``download_gtfs()`` has run and the zip is present at ``GTFS_ZIP``.
+    """
     print(f"Extracting to {GTFS_DIR} ...")
     with zipfile.ZipFile(GTFS_ZIP, "r") as zf:
         zip_names = set(zf.namelist())
@@ -79,6 +90,12 @@ def extract_gtfs() -> None:
 
 
 def validate_and_report() -> None:
+    """Print a checklist of expected GTFS files and their sizes.
+
+    Does not raise on missing files — prints a warning so the operator can
+    decide whether to proceed. The backend's own startup loaders will fail
+    loudly if a required file is truly absent.
+    """
     print("\nGTFS files:")
     stats = {e.name: e.stat() for e in os.scandir(GTFS_DIR) if e.is_file()}
     all_present = True
@@ -97,6 +114,7 @@ def validate_and_report() -> None:
 
 
 def cleanup_zip() -> None:
+    """Delete the downloaded zip after a successful extract to save disk space."""
     if GTFS_ZIP.exists():
         GTFS_ZIP.unlink()
         print(f"Removed zip file: {GTFS_ZIP}")

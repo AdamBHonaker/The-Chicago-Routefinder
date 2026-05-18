@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import {
   TRIP_GEO_OPTIONS,
   OFF_ROUTE_THRESHOLD_METERS,
@@ -139,7 +139,10 @@ export function useTripTracker({ result, selectedRouteIndex }) {
     };
   }, [tripActive]);
 
-  function startTrip() {
+  // Stable handler identities (OPT-FE-209) so consumers that pass these into
+  // memoized children (RouteCard, MapView) don't re-render on every GPS tick.
+  // All deps are setState dispatchers (stable) or module-scope constants.
+  const startTrip = useCallback(() => {
     if (!navigator.geolocation) {
       setTripGeoError(true);
       return;
@@ -152,9 +155,9 @@ export function useTripTracker({ result, selectedRouteIndex }) {
     setOnVehicle(false);
     onVehicleRef.current = false;
     setTripActive(true); // watch effect attaches on next commit
-  }
+  }, []);
 
-  function stopTrip() {
+  const stopTrip = useCallback(() => {
     setTripActive(false); // watch effect cleanup detaches + persist effect clears storage
     setUserPosition(null);
     activeLegIndexRef.current = null;
@@ -164,31 +167,31 @@ export function useTripTracker({ result, selectedRouteIndex }) {
     setTripGeoError(false);
     setOnVehicle(false);
     onVehicleRef.current = false;
-  }
+  }, []);
 
-  function toggleOnVehicle() {
+  const toggleOnVehicle = useCallback(() => {
     setOnVehicle(v => {
       onVehicleRef.current = !v;
       return !v;
     });
-  }
+  }, []);
 
-  function dismissOffRoute() {
+  const dismissOffRoute = useCallback(() => {
     setIsOffRoute(false);
     suppressRerouteUntil.current = Date.now() + REROUTE_SUPPRESSION_MS;
-  }
+  }, []);
 
-  function dismissTripGeoError() {
+  const dismissTripGeoError = useCallback(() => {
     setTripGeoError(false);
-  }
+  }, []);
 
-  function resetForReroute() {
+  const resetForReroute = useCallback(() => {
     activeLegIndexRef.current = 0;
     setActiveLegIndex(0);
     setCompletedSteps(new Set());
     setIsOffRoute(false);
     suppressRerouteUntil.current = 0;
-  }
+  }, []);
 
   // Clear "on vehicle" whenever the active leg changes.
   // setOnVehicle and onVehicleRef are stable — omitting them is correct.

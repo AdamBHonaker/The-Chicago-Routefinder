@@ -346,3 +346,101 @@ class TestLastDepartureEndpoint:
 
         assert resp.status_code == 200
         glast.assert_called_once_with("Red", "1", "40100")
+
+
+# ---------------------------------------------------------------------------
+# /autocomplete tests (Chunk 6 of the Geocoding & Autocomplete plan)
+# ---------------------------------------------------------------------------
+
+class TestAutocompleteEndpoint:
+    """Integration tests for the rewritten /autocomplete handler.
+
+    Backend now delegates to `local_search.autocomplete`. The response shape
+    is unchanged ({label, value, type}); two new `type` values appear:
+    `address` and `intersection`.
+    """
+
+    def _Suggestion(self, label: str, source: str, lat: float = 41.88, lon: float = -87.63):
+        from local_search import Suggestion
+        return Suggestion(label=label, lat=lat, lon=lon, source=source, score=0.0)
+
+    def test_empty_query_returns_empty_suggestions(self, client):
+        resp = client.get("/autocomplete", params={"q": ""})
+        assert resp.status_code == 200
+        assert resp.json() == {"suggestions": []}
+
+    def test_short_query_returns_empty_suggestions(self, client):
+        # Minimum prefix length is 2 chars; one-char queries short-circuit.
+        resp = client.get("/autocomplete", params={"q": "a"})
+        assert resp.status_code == 200
+        assert resp.json() == {"suggestions": []}
+
+    def test_response_shape_unchanged(self, client):
+        # Each suggestion is {label, value, type}. No internal indexing
+        # fields (_nl, _words) leak through.
+        with patch("local_search.autocomplete", return_value=[
+            self._Suggestion("Wrigleyville", "neighborhood"),
+        ]):
+            resp = client.get("/autocomplete", params={"q": "wrig"})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert list(body.keys()) == ["suggestions"]
+        for s in body["suggestions"]:
+            assert set(s.keys()) == {"label", "value", "type"}
+
+    def test_legacy_source_names_map_to_legacy_types(self, client):
+        # The frontend has not changed yet (Chunk 7). The three legacy `type`
+        # values (train / neighborhood / bus) must continue to ship with
+        # their pre-Chunk-6 names.
+        with patch("local_search.autocomplete", return_value=[
+            self._Suggestion("Belmont",      "train_station"),
+            self._Suggestion("Wrigleyville", "neighborhood"),
+            self._Suggestion("Clark/Belmont", "bus_stop"),
+        ]):
+            resp = client.get("/autocomplete", params={"q": "be"})
+
+        types = [s["type"] for s in resp.json()["suggestions"]]
+        assert types == ["train", "neighborhood", "bus"]
+
+    def test_address_suggestion_path(self, client):
+        # New `address` type ships for the first time in Chunk 6. Typing a
+        # leading house number should produce address suggestions.
+        with patch("local_search.autocomplete", return_value=[
+            self._Suggestion("1060 W Addison St", "address"),
+        ]):
+            resp = client.get("/autocomplete", params={"q": "1060 W Addi"})
+
+        body = resp.json()
+        assert body["suggestions"]
+        first = body["suggestions"][0]
+        assert first["type"] == "address"
+        assert first["label"] == "1060 W Addison St"
+        assert first["value"] == "1060 W Addison St"
+
+    def test_intersection_suggestion_path(self, client):
+        # New `intersection` type. A cross-street query parses to an
+        # intersection lookup.
+        with patch("local_search.autocomplete", return_value=[
+            self._Suggestion("N Clark St & W Belmont Ave", "intersection"),
+        ]):
+            resp = client.get("/autocomplete", params={"q": "Clark and Belmont"})
+
+        body = resp.json()
+        assert body["suggestions"]
+        first = body["suggestions"][0]
+        assert first["type"] == "intersection"
+        assert "Clark" in first["label"]
+        assert "Belmont" in first["label"]
+
+    def test_passes_query_to_local_search(self, client):
+        # Handler must pass the trimmed query verbatim — not lowercased — so
+        # local_search's own normalization paths see the raw user input.
+        with patch("local_search.autocomplete", return_value=[]) as m:
+            client.get("/autocomplete", params={"q": "  Wrigleyville  "})
+        m.assert_called_once_with("Wrigleyville")
+
+    def test_rate_limit_returns_429(self, client):
+        with patch("main._check_geocode_rate_limit", return_value=False):
+            resp = client.get("/autocomplete", params={"q": "wrig"})
+        assert resp.status_code == 429

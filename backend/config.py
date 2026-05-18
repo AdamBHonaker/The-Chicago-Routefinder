@@ -18,6 +18,11 @@ import os
 # as data noise and dropped during graph construction.  Range: 30–90 min.
 MAX_LEG_MINUTES: float = float(os.getenv("MAX_LEG_MINUTES", "45"))
 
+# Maximum line changes per route (3 transit legs = 2 transfers).
+# find_routes() drops any Yen's candidate exceeding this so the engine never
+# surfaces absurd 4+ transfer itineraries. Range: 1–3.
+MAX_TRANSFERS_PER_ROUTE: int = int(os.getenv("MAX_TRANSFERS_PER_ROUTE", "2"))
+
 # Deadline applied to NetworkX Yen's k-shortest-paths iteration inside
 # find_routes().  Yen's is a generator that can take arbitrarily long on
 # pathological graphs; without a deadline a stuck request would hold the
@@ -53,6 +58,40 @@ TRANSFER_WALK_CAP_MIN: float = float(os.getenv("TRANSFER_WALK_CAP_MIN", "5.0"))
 # 1.29 is the rounded mean and sits inside the CI. Re-run the script after any
 # street-graph rebuild and update if the new mean falls outside the prior CI.
 DETOUR_FACTOR: float = float(os.getenv("DETOUR_FACTOR", "1.29"))
+
+# ISO date of the last DETOUR_FACTOR calibration run. Compared at startup
+# against the street-graph artifact mtime; if the artifact is newer, a warning
+# is logged so the operator knows to re-run scripts/calibrate_detour_factor.py.
+DETOUR_FACTOR_CALIBRATED_ON: str = "2026-05-12"
+
+
+def _check_detour_factor_staleness() -> None:
+    """Warn at import time if the street graph has been rebuilt since the last
+    DETOUR_FACTOR calibration run. No-op when the artifact is absent (dev env)
+    or when its mtime predates the calibration date (still fresh)."""
+    import datetime as _dt
+    from pathlib import Path as _Path
+
+    artifact = _Path(__file__).parent / "street_graph_igraph.pkl"
+    if not artifact.exists():
+        return
+    try:
+        calibrated = _dt.datetime.fromisoformat(DETOUR_FACTOR_CALIBRATED_ON)
+        artifact_mtime = _dt.datetime.fromtimestamp(artifact.stat().st_mtime)
+    except (ValueError, OSError):
+        return
+    if artifact_mtime.date() > calibrated.date():
+        print(
+            f"[config] WARNING: street_graph_igraph.pkl was rebuilt on "
+            f"{artifact_mtime.date()} but DETOUR_FACTOR ({DETOUR_FACTOR}) was "
+            f"last calibrated on {DETOUR_FACTOR_CALIBRATED_ON}. "
+            f"Re-run scripts/calibrate_detour_factor.py and update both "
+            f"DETOUR_FACTOR and DETOUR_FACTOR_CALIBRATED_ON if the new mean "
+            f"falls outside the prior CI."
+        )
+
+
+_check_detour_factor_staleness()
 
 # ---------------------------------------------------------------------------
 # Bus-to-bus transfer candidate scoring (Feature C)
@@ -132,13 +171,33 @@ MAX_STREET_WALK_MILES: float = float(os.getenv("MAX_STREET_WALK_MILES", "5.0"))
 WALK_GRAPH_EVICT_TTL_S: int = int(os.getenv("WALK_GRAPH_EVICT_TTL_S", "600"))
 
 # ---------------------------------------------------------------------------
-# Geocoding cache maintenance (see gtfs_loader.py)
+# Geocoding (Tier-5 LocationIQ fallback — see backend/geocoding.py)
 # ---------------------------------------------------------------------------
+#
+# Tiers 1–4 of the resolution cascade (coord-regex, NEIGHBORHOOD_COORDS exact,
+# fuzzy, local SQLite/FTS5) are free and live entirely in-process. Tier 5
+# (LocationIQ) is the only path that makes a network call and the only one
+# governed by the knobs below.
 
-# Geocode entries older than this are evicted during weekly maintenance sweeps.
-# ZERO_RESULTS entries (permanent misses) are also subject to eviction.  Range: 30–365 days.
-GEOCODE_CACHE_MAX_AGE_DAYS: int = int(os.getenv("GEOCODE_MAX_AGE_DAYS", "90"))
+# LocationIQ API key. Missing key silently disables Tier 5 (the cascade
+# degrades to local-only). Read directly inside backend/geocoding.py via
+# os.getenv so a key swap during a process doesn't require a config reload.
 
-# How often the background thread runs the age-based eviction sweep (seconds).
-# Weekly keeps the cache from growing without being expensive.
-GEOCODE_EVICT_INTERVAL_SECONDS: int = int(os.getenv("GEOCODE_EVICT_INTERVAL_SECONDS", str(7 * 24 * 3600)))
+# Hard ceiling on LocationIQ calls per UTC day. The free tier is 5,000/day;
+# 4,900 leaves a ~100-call headroom so we never accidentally overrun. When
+# the cap is hit, the cascade silently degrades to local-only and a warning
+# fires once per day. Range: 0 (disable Tier 5) to 5000.
+LOCATIONIQ_DAILY_CAP: int = int(os.getenv("LOCATIONIQ_DAILY_CAP", "4900"))
+
+# Master enable flag for Tier 5. Set false to disable LocationIQ entirely
+# (kill switch / privacy mode) without removing the API key. Truthy values:
+# anything other than "0", "false", "no" (case-insensitive).
+LOCATIONIQ_ENABLED: bool = os.getenv("LOCATIONIQ_ENABLED", "1").strip().lower() not in ("0", "false", "no", "")
+
+# Maximum age (in days) of rows in the `cached_forward` / `cached_reverse`
+# SQLite caches before they are swept at FastAPI startup. The eviction is a
+# single `DELETE WHERE fetched_at < cutoff` per table — O(rows_evicted) and
+# runs once per process; a background timer is overkill for a write rate
+# bounded by `LOCATIONIQ_DAILY_CAP` per UTC day. Set to 0 to disable
+# eviction entirely (keep cache rows forever). Range: 0 (disabled) to 365.
+LOCATIONIQ_CACHE_TTL_DAYS: int = int(os.getenv("LOCATIONIQ_CACHE_TTL_DAYS", "90"))

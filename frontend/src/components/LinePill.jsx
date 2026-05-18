@@ -1,6 +1,7 @@
+import { memo } from "react";
 import { useTranslation } from "react-i18next";
 import { getRouteColor, BUS_DIRECTION_COLORS } from "../constants.js";
-import { lineTextColor } from "../lineColors.js";
+import { lineTextColor, stripLineSuffix } from "../lineColors.js";
 
 const LINE_ABBREVS = {
   "Red Line":    "RD",
@@ -13,7 +14,7 @@ const LINE_ABBREVS = {
   "Yellow Line": "YL",
 };
 
-export default function LinePill({ line, isBus, lineCode, size = "sm" }) {
+function LinePill({ line, isBus, lineCode, size = "sm" }) {
   const { t } = useTranslation();
   const bg = getRouteColor(line);
   const isBusRoute = isBus || (line in BUS_DIRECTION_COLORS);
@@ -27,7 +28,7 @@ export default function LinePill({ line, isBus, lineCode, size = "sm" }) {
   } else if (size === "lg") {
     label = line;
   } else {
-    label = LINE_ABBREVS[line] ?? (line ?? "").replace(" Line", "").slice(0, 2).toUpperCase();
+    label = LINE_ABBREVS[line] ?? (stripLineSuffix(line) ?? "").slice(0, 2).toUpperCase();
   }
 
   const len = (label ?? "").length;
@@ -45,3 +46,5 @@ export default function LinePill({ line, isBus, lineCode, size = "sm" }) {
     </span>
   );
 }
+
+export default memo(LinePill);

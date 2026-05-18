@@ -234,6 +234,14 @@ def _route_sort_key(rt: str) -> tuple:
 # ---------------------------------------------------------------------------
 
 async def main() -> None:
+    """CLI entry: print active CTA bus routes and train lines for the current moment.
+
+    Requires ``CTA_TRAIN_API_KEY`` and ``CTA_BUS_API_KEY`` in backend/.env.
+    Exits non-zero if either is missing.
+
+    Output goes to stdout in two sections (trains, then buses), with the bus
+    list enriched from GTFS routes.txt for human-readable names and colors.
+    """
     train_key = os.getenv("CTA_TRAIN_API_KEY", "")
     bus_key   = os.getenv("CTA_BUS_API_KEY", "")
 

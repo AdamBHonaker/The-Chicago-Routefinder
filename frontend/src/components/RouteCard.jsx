@@ -1,6 +1,7 @@
 import { useState, memo, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { LINE_COLORS, BUS_DIRECTION_COLORS, getRouteColor, SHARE_STATE_RESET_MS } from "../constants.js";
+import { stripLineSuffix } from "../lineColors.js";
 import LinePill from "./LinePill.jsx";
 import { extractTransitLines } from "../utils/routeUtils.js";
 // extractTransitLines is kept as a fallback for the rare case a caller mounts
@@ -140,7 +141,7 @@ function RouteLegs({ legs, initialWait, activeLegIndex, completedSteps, pinnedSt
         const color = getRouteColor(leg.line);
         const pillLabel = isBus
           ? leg.line_code
-          : leg.line?.replace(" Line", "");
+          : stripLineSuffix(leg.line);
         const isTransferLeg = seenTransit;
         seenTransit = true;
         const xferWait = isTransferLeg ? leg.transfer_wait_minutes : initialWait;
@@ -246,26 +247,16 @@ export default memo(function RouteCard({
       return;
     }
 
-    let copied = false;
+    // navigator.clipboard works in all secure contexts, including `localhost`
+    // over plain HTTP — so the previous deprecated `document.execCommand("copy")`
+    // fallback (TD-FE-025) was removed. If clipboard access fails (e.g. an
+    // unusual permissions-policy block), the share button silently stays in
+    // its idle state rather than mis-affirming a copy.
     try {
       await navigator.clipboard.writeText(shareUrl);
-      copied = true;
-    } catch {
-      // Fallback for non-secure contexts (navigator.clipboard requires HTTPS).
-      // execCommand is deprecated but kept for local http://localhost dev sessions.
-      const ta = document.createElement("textarea");
-      ta.value = shareUrl;
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      try { copied = document.execCommand("copy"); } catch { copied = false; }
-      document.body.removeChild(ta);
-    }
-    if (copied) {
       setShareState("copied");
       setTimeout(() => setShareState("idle"), SHARE_STATE_RESET_MS);
-    }
+    } catch { /* leave shareState idle */ }
   }
   const activeLeg = (tripActive && activeLegIndex !== null) ? route.legs[activeLegIndex] : null;
   const isTransitLeg = activeLeg?.type === 'transit';
@@ -297,7 +288,7 @@ export default memo(function RouteCard({
     <div className={`route-card${isFirst ? " route-card--best paper-grain-bright" : ""}${isSelected ? " route-card--selected" : ""}`}>
       <button
         className="route-card-header"
-        onClick={() => { onSelect(); setExpanded((v) => !v); }}
+        onClick={() => { onSelect(index); setExpanded((v) => !v); }}
         aria-expanded={expanded}
         aria-label={`${route.total_minutes} minutes total, ${xferNote}${waitNote}`}
       >

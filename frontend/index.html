@@ -6,11 +6,13 @@
     <title>The Chicago Routefinder</title>
 
     <!--
-      Content-Security-Policy — currently in REPORT-ONLY mode so any third-party
-      asset (tile vendor, font CDN) we missed shows up as a console violation
-      without breaking the page. Once a clean run through the main flows shows
-      zero violations, swap "Content-Security-Policy-Report-Only" for
-      "Content-Security-Policy" to enforce.
+      Content-Security-Policy — enforcing (SEC-001 resolved 2026-05-13).
+      Was previously report-only as a soft-launch posture; flipping to enforce
+      now that the allowlisted origins below are known-complete and a clean
+      run through main flows shows zero violations. If a future feature needs
+      a new origin, add it here (or move CSP to a Vercel response header so
+      it can be tuned without an HTML rebuild) — do NOT regress to
+      Content-Security-Policy-Report-Only.
 
       Origins allowlisted:
         - tiles.openfreemap.org    → MapLibre style + tiles
@@ -18,8 +20,15 @@
         - fonts.gstatic.com        → woff2 font files
         - *.up.railway.app         → backend API (production)
         - http://localhost:8000    → backend API (dev)
+
+      `'unsafe-inline'` remains in style-src because LinePill, MapView
+      markers, BottomSheet, etc. emit dynamic `style="..."` attributes
+      (rotate angles, GTFS bus route colors, resizable column widths) that
+      can't be enumerated as classes or hashes. See [[SEC-003]] in
+      docs/SECURITY.md — removing it requires nonce-injection at the edge,
+      which is a Vercel-config change, not an index.html change.
     -->
-    <meta http-equiv="Content-Security-Policy-Report-Only" content="
+    <meta http-equiv="Content-Security-Policy" content="
       default-src 'self';
       script-src 'self';
       style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
@@ -28,6 +37,7 @@
       connect-src 'self' https://*.up.railway.app http://localhost:8000 https://tiles.openfreemap.org;
       worker-src 'self' blob:;
       manifest-src 'self';
+      object-src 'none';
       frame-ancestors 'none';
       base-uri 'self';
       form-action 'self';

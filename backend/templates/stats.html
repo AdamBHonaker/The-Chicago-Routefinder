@@ -5,7 +5,7 @@
 <title>The Chicago Routefinder — Public Stats</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<style>
+<style nonce="$csp_nonce">
   :root {
     --bg: #faf6ef; --fg: #2a2622; --muted: #756e63; --accent: #b86b3a;
     --card: #ffffff; --border: #e6dfd2; --grid: #f0e9da;
@@ -135,7 +135,7 @@
     session-end is detected via server-side idle timeout.
   </footer>
 </main>
-<script>
+<script nonce="$csp_nonce">
 (function() {
   function fmt(n) { return new Intl.NumberFormat("en-US").format(n); }
   function setText(id, t) { var el = document.getElementById(id); if (el) el.textContent = t; }

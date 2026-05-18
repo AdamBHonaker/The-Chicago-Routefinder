@@ -194,6 +194,23 @@ def _make_canonical_data(
 
 class TestSelectRepresentativeTrips:
 
+    @pytest.fixture(autouse=True)
+    def _reset_canonical_midday_reps(self):
+        # OPT-002 stashes the canonical midday rep selection in a process-wide
+        # cache (transit_graph._canonical_midday_reps). When an earlier test
+        # in the suite triggers warm_up() against the real CTA feed, the cache
+        # holds production data and _select_representative_trips short-circuits
+        # to it for the default (weekday_midday) period — overriding the
+        # synthetic fixtures these tests construct. Clear before and after
+        # each test so the class behaves identically regardless of collection
+        # order.
+        previous = transit_graph._canonical_midday_reps
+        transit_graph._canonical_midday_reps = None
+        try:
+            yield
+        finally:
+            transit_graph._canonical_midday_reps = previous
+
     def _seed_weekday_only(self, monkeypatch):
         """Patch _load_service_ids_by_day to a fixed weekday-only mapping."""
         sids = {

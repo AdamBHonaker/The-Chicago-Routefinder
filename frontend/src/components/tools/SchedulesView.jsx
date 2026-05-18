@@ -71,15 +71,32 @@ export default function SchedulesView({
   onResetToRouteStep,
 }) {
   const { t } = useTranslation();
-  const now = useMemo(() => new Date(), []);
+  // `now` ticks once a minute while the today bucket is visible so the
+  // past-time grey-out and the "↑ Now" target stay aligned with the wall
+  // clock — leaving the view open across an hour boundary used to leave
+  // already-departed times rendered as future. Off-day buckets don't need
+  // the ticker so we gate the interval on (activeBucket === todayBucket).
+  const [now, setNow] = useState(() => new Date());
   const todayBucket = useMemo(() => todaysBucket(now), [now]);
   const [activeBucket, setActiveBucket] = useState(todayBucket);
   const hourRefs = useRef({});
 
-  const times = stop.times?.[activeBucket] || [];
-  const grouped = useMemo(() => groupByHour(times), [times]);
+  useEffect(() => {
+    if (activeBucket !== todayBucket) return undefined;
+    const id = setInterval(() => setNow(new Date()), 60_000);
+    return () => clearInterval(id);
+  }, [activeBucket, todayBucket]);
 
-  const currentHourStr = String(now.getHours()).padStart(2, "0");
+  // Memoize directly on the stable inputs (OPT-FE-212). `times` is otherwise a
+  // fresh array reference on every render when `stop.times?.[activeBucket]` is
+  // falsy, defeating the memo on a per-render basis.
+  const grouped = useMemo(
+    () => groupByHour(stop.times?.[activeBucket] ?? []),
+    [stop, activeBucket],
+  );
+
+  const currentHourStr   = String(now.getHours()).padStart(2, "0");
+  const currentMinuteStr = String(now.getMinutes()).padStart(2, "0");
   const showNowPill = activeBucket === todayBucket && grouped.length > 0;
 
   function jumpToNow() {
@@ -168,7 +185,7 @@ export default function SchedulesView({
                 {minutes.map((m) => {
                   const past = activeBucket === todayBucket && (
                     hour < currentHourStr ||
-                    (hour === currentHourStr && m < String(now.getMinutes()).padStart(2, "0"))
+                    (hour === currentHourStr && m < currentMinuteStr)
                   );
                   return (
                     <span

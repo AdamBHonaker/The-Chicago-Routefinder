@@ -60,7 +60,7 @@ Accuracy is essential. The routing engine must:
 - `igraph` — C-backed graph library used by `walking.py` for the street routing graph; ~10× lower RAM than NetworkX
 - `scipy` — `cKDTree` used by `walking.py` for nearest-node lookup; index is built from the largest connected component only
 - `scikit-learn` — transitive dep of osmnx; retained in `requirements.txt` for compatibility
-- `requests` — CTA API HTTP calls + Google Maps geocoding
+- `requests` — CTA API HTTP calls + LocationIQ (Tier-5 geocoding fallback)
 - `aiohttp` — simultaneous async API calls for speed
 
 > Note: CTA GTFS data is parsed directly with Python's built-in `csv` module (streaming). `gtfs_kit`, `pandas`, and `shapely` were considered during planning but are not used.
@@ -105,7 +105,7 @@ No database required. User accounts are not planned; saved locations, routes, an
 - CTA Train Tracker API key — transitchicago.com ✅
 - CTA Bus Tracker API key — transitchicago.com ✅
 - Anthropic API key — console.anthropic.com ✅
-- Google Maps API key — required for geocoding (addresses, landmarks) ✅
+- LocationIQ API key — Tier-5 geocoding fallback (free tier, 5,000 calls/day; cap defaults to 4,900) ✅
 
 ---
 
@@ -226,7 +226,7 @@ Content strategy: contextual, local, utility-focused items that solve real Chica
 
 ---
 
-See [`Implementation Plans/User_Acquisition_Plan.md`](Implementation%20Plans/User_Acquisition_Plan.md) for the full user acquisition strategy.
+See [`docs/USER_ACQUISITION.md`](USER_ACQUISITION.md) for the full user acquisition strategy.
 
 ---
 
@@ -259,18 +259,20 @@ Open bugs: [`docs/BUGS.md`](BUGS.md) · Technical debt: [`docs/TECH_DEBT.md`](TE
 | `CTA_TRAIN_API_KEY` | Railway | ✅ Set |
 | `CTA_BUS_API_KEY` | Railway | ✅ Set |
 | `ANTHROPIC_API_KEY` | Railway | ✅ Set |
-| `GOOGLE_MAPS_API_KEY` | Railway | ✅ Set |
+| `LOCATIONIQ_API_KEY` | Railway | ✅ Set (Tier-5 geocoder; missing key silently disables Tier 5) |
 | `ALLOWED_ORIGINS` | Railway | ✅ Set (Vercel URL) |
 | `VITE_BACKEND_URL` | Vercel | ✅ Set (Railway URL with `https://`) |
 | `RATE_LIMIT_ENABLED` | Railway | `true` to activate rate limiting |
 | `BYOK_ENABLED` | Railway | `true` to activate BYOK |
 | `VITE_BYOK_ENABLED` | Vercel | `true` to activate BYOK on frontend |
-| `GEOCODE_MONTHLY_LIMIT` | Railway | Default 9,500; set `0` to disable |
+| `LOCATIONIQ_DAILY_CAP` | Railway | UTC-day call ceiling; default 4,900 (free-tier headroom) |
+| `LOCATIONIQ_ENABLED` | Railway | Set `false` to disable Tier 5 entirely (kill switch) |
+| `LOCATIONIQ_CACHE_TTL_DAYS` | Railway | Age in days after which `cached_forward` / `cached_reverse` rows are swept at FastAPI startup; default 90, `0` disables eviction (TD-051) |
 | `CLAUDE_COMPLEX_MODEL` | Railway | Default `claude-sonnet-4-6` |
 | `CLAUDE_SIMPLE_MODEL` | Railway | Default `claude-haiku-4-5-20251001` |
 | `APP_ENV` | Railway | `production` for DAU tracking |
 | `DAILY_SALT` | Railway | Random secret for DAU HMAC hashing |
-| `DAU_ADMIN_TOKEN` | Railway | Protects `GET /admin/dau` and `GET /admin/geography` |
+| `DAU_ADMIN_TOKEN` | Railway | Bearer token protecting all `GET /admin/*` analytics endpoints (dau, geography, sessions, hourly, devices, referrers, events, funnel, retention) |
 | `GITHUB_TOKEN` | Railway build arg | PAT with Contents:Read — needed for Dockerfile to pull street graph from GitHub Release street-graph-v1 |
 | `MAXMIND_LICENSE_KEY` | Railway build arg | Free MaxMind key — Dockerfile downloads GeoLite2-City.mmdb for FEAT-003 (geography). If unset, geography counting silently no-ops at runtime. **Currently unset** to save ~60–80 MB of Railway memory; re-add when traffic warrants restoring city-level analytics. |
 | `RESPONSE_CACHE_ENABLED` | Railway | Default `true`. Set `false` to bypass the `/recommend` TTL response cache (~5–25 MB RAM savings). Currently set to `false` to reduce memory while traffic is low; flip back to `true` when caching becomes worth the footprint. |
@@ -280,34 +282,44 @@ Open bugs: [`docs/BUGS.md`](BUGS.md) · Technical debt: [`docs/TECH_DEBT.md`](TE
 | `VITE_HOUSE_AD_URL` | Vercel | Affiliate URL for the house ad. Read at build time (Vite). Leave blank to suppress the slot even when the flag is on. |
 | `VITE_HOUSE_AD_TEXT` | Vercel | Editorial-voice copy shown in the house ad slot. Intentionally not translated (affiliate links are typically en-US). |
 
-**Analytics persistent volume:** Add a Railway persistent volume mounted at `/app/data` so the analytics counters (`dau.json`, `geography.json`, `sessions.json`, `hourly.json`, `devices.json`, `referrers.json`) survive container restarts.
+**Analytics persistent volume:** Add a Railway persistent volume mounted at `/app/data` so the analytics counters (`dau.json`, `geography.json`, `sessions.json`, `hourly.json`, `devices.json`, `referrers.json`, `events.json`, `funnel.json`, `retention.json`) survive container restarts.
 
 ---
 
 ## Geocoding Strategy
 
-Location resolution uses a three-step fallback (implemented in `gtfs_loader.py`):
+Free-text location resolution lives in `backend/geocoding.py` (Chunk 5, built 2026-05-14) as a five-tier cascade. Each tier returns coords on hit; the caller never sees which tier won.
 
-1. **Exact match** against `NEIGHBORHOOD_COORDS` dict (instant, no network)
-2. **Fuzzy match** against `NEIGHBORHOOD_COORDS` (instant, no network)
-3. **Google Maps Geocoding API** — ~100ms, biased to Chicago bounding box (`bounds=41.64,-87.94|42.02,-87.52`) with `components=country:US`
+1. **Coord-pair regex** — `"41.88, -87.63"` bypasses all geocoding
+2. **`NEIGHBORHOOD_COORDS` exact match** — curated landmarks dict from `backend/static_data/neighborhoods.json`
+3. **Fuzzy `NEIGHBORHOOD_COORDS` match** — ≥0.95 SequenceMatcher similarity + meaningful-word guard
+4. **`local_search.forward()`** — FTS5 over the 409k Chicago OSM addresses + 24.5k intersections in `chicago_geocode.db`
+5. **LocationIQ `/search`** — hosted fallback, biased to Chicago viewbox with `bounded=1`; results cached durably (positive + negative) in `cached_forward`
+
+Reverse geocoding (`reverse_geocode_point`, also in `geocoding.py`): cached_reverse hit → nearest neighborhood within 200 m (KDTree) → nearest OSM address within 50 m (`local_search.nearest_address`) → LocationIQ `/reverse` → `"lat,lon"` string fallback.
 
 **Implementation notes:**
 
-- `geocode_google(query)` in `gtfs_loader.py` — signature `(query: str) -> tuple[float, float] | None`
-- Results persisted to `geocode_cache.json` (disk cache survives restarts; cache hits are free)
-- API call counter persisted to `geocode_counter.json` — resets each calendar month
-- Free tier: ~40,000 calls/month. Production call cap defaults to 9,500/month (configurable via `GEOCODE_MONTHLY_LIMIT` env var; set to `0` to disable).
-- Requires `GOOGLE_MAPS_API_KEY` in `backend/.env` AND in Railway environment variables ✅
+- `resolve_location(query)` returns `tuple[float, float] | None`. Raises `LocationOutsideChicagoError` (out-of-bbox) or `GeocoderDegradedError` (Tier-5 breaker open) when applicable; `main.py` translates these to 400 / 503 respectively.
+- Shared 60→120→240→300s circuit breaker around Tier 5; trips on HTTP 429, probes on first call after cool-off.
+- UTC-day cap (`LOCATIONIQ_DAILY_CAP=4900`, configurable) — silent degrade-to-local-only on cap hit; one warning per day. `LOCATIONIQ_ENABLED=false` disables Tier 5 entirely (kill switch).
+- PII redaction in logs: typed query text is hashed (`q#abcd1234ef`); coords are quantized to ~1 km.
+- Tier-1/2/3 results land in-bbox by construction. Tier-4 (`local_search`) is gated by the in_bbox_only filter; Tier-5 results are bbox-checked at response parse time.
+- Cache lives in the same `chicago_geocode.db` SQLite file `local_search` reads — separate read-only + WAL-write connections so concurrent reads never block cache inserts.
+- Cache TTL eviction (TD-051, 2026-05-15): `geocoding.evict_cache_older_than(days)` runs once at FastAPI startup via the lifespan hook in `main.py`, deleting `cached_forward` / `cached_reverse` rows whose `fetched_at` is older than `LOCATIONIQ_CACHE_TTL_DAYS` (default 90). Set the env var to `0` to disable eviction. Cheap one-shot `DELETE` per table; the design choice of startup-time (vs background timer) is documented inline since the write rate is bounded by `LOCATIONIQ_DAILY_CAP`.
 
-**Local-first geocode corpus (in progress — see FEATURE_PLANS.md "Geocoding & Autocomplete — Local-First Cascade"):**
+**Migrating from the old Google flow:** `gtfs_loader.geocode_google`, `reverse_geocode_google`, the monthly call counter, the JSON cache (`geocode_cache.json` + journal + ages sidecar), the daily flush thread, and `_restrict_perms` were all deleted in Chunk 5 (2026-05-14) — pure deletion, no shims. Legacy on-disk cache files (`geocode_cache.json` + journal + ages sidecar + counter) are absorbed into `cached_forward` by `backend/scripts/migrate_geocode_cache.py` (Chunk 10, 2026-05-14); after the maintainer spot-checks the result, `--cleanup` deletes the legacy files. The whole Geocoding & Autocomplete chunked plan **fully shipped 2026-05-15** — see [docs/archive/FEATURE_HISTORY.md](archive/FEATURE_HISTORY.md) for the complete history.
 
-- The `backend/static_data/chicago_geocode.db` SQLite/FTS5 store holds the address + intersection corpus that Chunks 4+ will read. First build completed 2026-05-12: 55 MB, 409,490 addresses + 24,573 intersections + the FTS5 mirrors.
+**Local-first geocode corpus (see [FEATURE_HISTORY.md](archive/FEATURE_HISTORY.md) for the full implementation history):**
+
+- The `backend/static_data/chicago_geocode.db` SQLite/FTS5 store holds the address + intersection corpus + the `cached_forward` / `cached_reverse` LocationIQ-hit cache. First build completed 2026-05-12: 55 MB, 409,490 addresses + 24,573 intersections + the FTS5 mirrors.
 - Rebuild quarterly by running, in either order:
   - `python backend/scripts/build_address_points.py` — ~5–10 min wall clock; 17 Overpass chunks
   - `python backend/scripts/build_intersections.py` — ~1–3 min wall clock; 2 Overpass queries + Shapely STRtree
 - Both scripts are idempotent: they DELETE their target table and rewrite. Safe to rerun anytime.
-- DB is gitignored. Local builds only; production builds will pull a published artifact (mechanism TBD when Chunk 5 lands).
+- DB is gitignored. Local builds only; production builds will pull a published artifact (mechanism TBD).
+- `backend/local_search.py` (Chunk 4, built 2026-05-14) is the read-only query layer over the DB plus the in-memory neighborhood + train + bus indexes. Exposes `autocomplete()`, `forward()`, `nearest_address()`, and a cross-street parser. Tier order is `train_station > neighborhood > intersection > bus_stop > address` with a Decision-8 per-tier soft cap (default 3) and cross-tier dedupe. Wired into `geocoding.resolve_location` (Tier 4) since Chunk 5 and into the `/autocomplete` endpoint since Chunk 6. The endpoint response shape is unchanged (`{label, value, type}`) with two new type values that ship for the first time: `address` and `intersection`.
+- Frontend (Chunk 7, built 2026-05-14): `frontend/src/components/AddressAutocomplete.jsx` is the generic typeahead (portal-rendered listbox, visualViewport-aware positioning, ARIA combobox 1.1 inline pattern, abort-on-keystroke, out-of-order-response guard, debounce). `frontend/src/lib/autocompleteApi.js` is the thin `fetchAutocomplete(query, { signal })` client over `GET /autocomplete`. `LocationInput.jsx` composes the generic combobox and adds the save-star, save-favorite panel, geo button, and saved-locations dropdown (mutually exclusive with autocomplete results). i18n keys (Chunk 7 shipped English, Chunk 8 shipped 26 non-English translations 2026-05-14, all 27 locales now have parity): `ac_type_address`, `ac_type_intersection`, `ac_type_neighborhood`, `ac_status_searching`, `ac_status_results` / `ac_status_results_plural`, `aria_saved_locations`. The 3 `RESEARCH_LOCALES` (`aii`, `ksw`, `rhg`) get best-effort translations; the runtime `mt_review_notice` banner in Masthead.jsx is shown automatically when any of those locales is active.
 
 ---
 
@@ -324,9 +336,13 @@ The-Chicago-Routefinder/
 │   ├── TECH_DEBT.md                    ← Open technical debt only; delete entry here when resolved
 │   ├── EFFICIENCY.md                   ← Open efficiency improvements only; delete entry here when implemented
 │   ├── FEATURE_PLANS.md                ← Pending features only; delete entry here when shipped
+│   ├── SECURITY.md                     ← Open security/dependency findings only (SEC-XXX, DEP-XXX); delete entry here when remediated
 │   ├── TODO.md                         ← Tasks requiring human action (accounts, API keys, deploy steps)
+│   ├── SMOKE_TESTS.md                  ← One-shot browser-smoke checklist for everything in TODO.md that needs a real browser; delete matching TODO items as boxes go green
 │   ├── PRIVACY.md                      ← Privacy notes (mirrored to backend/public_stats.py PRIVACY_TEXT; sync enforced by test_privacy_sync.py)
 │   ├── ANALYTICS_MAINTENANCE.md        ← Per-feature analytics-suite maintenance notes (FEAT-001 … FEAT-009)
+│   ├── USER_ACQUISITION.md             ← Marketing / growth playbook for getting people to know the app exists and install it
+│   ├── design_system.md                ← Standalone design-system reference (Six Principles, voice rules, composition patterns) for new-feature work
 │   └── archive/                        ← Frozen historical records (do not append)
 │       ├── RESOLVED_HISTORY.md         ← Combined log: Bugs Fixed + Technical Debt Paid Off + Efficiency Improvements Implemented
 │       ├── FEATURE_HISTORY.md            ← All implemented features with full chunk-by-chunk detail
@@ -345,8 +361,10 @@ The-Chicago-Routefinder/
 │   │   ├── admin.py                    ← /admin/{dau,geography,sessions,hourly,devices,referrers} APIRouter + DAU_ADMIN_TOKEN gate
 │   │   └── stats.py                    ← /stats, /stats/{dau,geography,sessions,hourly,devices,referrers}, /privacy APIRouter (geocode-bucket rate-limited)
 │   ├── config.py                       ← Central routing constants (17 named values, all env-var overridable)
-│   ├── utils.py                        ← haversine_miles(), SpatialGrid, Chicago bbox constants
-│   ├── gtfs_loader.py                  ← 3-step location resolver (delegates fuzzy + street-abbr to geocode_text.py) + Google Maps geocoding + persistent JSON cache + monthly counter (cache + counter retire in Chunk 5 of the Geocoding & Autocomplete plan)
+│   ├── utils.py                        ← haversine_miles(), SpatialGrid, Chicago bbox constants, chicago_bbox_contains(), METERS_PER_MILE
+│   ├── gtfs_loader.py                  ← GTFS stop loader + nearest-station/stop spatial queries + NEIGHBORHOOD_COORDS landmark dict + fuzzy_match_neighborhood lru_cache wrapper. All free-text geocoding now lives in geocoding.py (Chunk 5).
+│   ├── geocoding.py                    ← Forward + reverse geocoder cascade (coord→neighborhood→fuzzy→local_search→LocationIQ); shared 60→300s circuit breaker; UTC-day cap; SQLite cached_forward / cached_reverse with NEG_HIT sentinel; LocationOutsideChicagoError + GeocoderDegradedError; PII-redacted logs.
+│   ├── local_search.py                 ← Read-only query layer over chicago_geocode.db (FTS5 addresses + intersections) plus in-memory neighborhood + GTFS train/bus indexes. Tier-greedy fill (Decision 8) with per-tier soft cap + cross-tier dedupe; cross-street parser; nearest_address(radius_m).
 │   ├── geocode_text.py                 ← Shared text normalization: normalize_street_name/normalize_address (corpus canonicalization), _normalize_street_abbr (query canonicalization), parameterized fuzzy_match_neighborhood. Used by both runtime resolution and ingest scripts. Single source of truth so ingest + query canonicalize identically.
 │   ├── transit_graph.py                ← Service-period-tagged NetworkX graph variants (weekday peak / midday / evening / weekend / owl, BUG-051); find_routes()/find_routes_with_status() with optional departure_time; find_bus_transfer_routes(); shape/exit helpers
 │   ├── walking.py                      ← igraph street routing; walk_minutes/path/directions; lru_cache; Haversine fallback
@@ -370,7 +388,8 @@ The-Chicago-Routefinder/
 │   ├── scripts/                        ← Repo-root-importable utility scripts (ingest, migrations, ops). Run via `python backend/scripts/<name>.py`.
 │   │   ├── _geocode_db.py              ← SQLite schema for chicago_geocode.db (addresses, intersections, FTS5 mirrors, cached_forward, cached_reverse); connect() applies schema idempotently. `--init` creates an empty DB.
 │   │   ├── build_address_points.py     ← Ingest: Overpass → addresses + addresses_fts. 17 chunks across the main Chicago box + Purple Line corridor. Quarterly rebuild.
-│   │   └── build_intersections.py      ← Ingest: Overpass named highways → Shapely STRtree → intersections + intersections_fts. Quarterly rebuild.
+│   │   ├── build_intersections.py      ← Ingest: Overpass named highways → Shapely STRtree → intersections + intersections_fts. Quarterly rebuild.
+│   │   └── migrate_geocode_cache.py    ← One-shot migrator (Chunk 10 of the Geocoding & Autocomplete plan): legacy geocode_cache.json + journal + ages sidecar → cached_forward rows with bounded synthetic timestamps. Run-once marker, `--force`, `--cleanup`, `--dry-run`.
 │   ├── schedule.py                     ← FEAT-018: /schedule/routes + /schedule/{route_id} endpoints + route-category classifier
 │   ├── schedule_data/                  ← FEAT-018 build artifacts: per-route schedule JSON + _manifest.json (gitignored payload, regenerated via scripts/build_schedule_index.py)
 │   ├── active_routes.py                ← Diagnostic: print all active CTA routes right now
@@ -378,9 +397,11 @@ The-Chicago-Routefinder/
 │   ├── Dockerfile                      ← Railway build recipe; pulls street_graph from GitHub Release at build time
 │   ├── requirements.txt
 │   ├── station_exits.json              ← ~367 OSM subway entrances for 130 stations; loaded at startup
-│   ├── geocode_cache.json              ← Persistent Google geocoding cache snapshot (gitignored; absorbed into cached_forward by the migrator in Chunk 10 of the Geocoding & Autocomplete plan, then deleted)
-│   ├── geocode_cache.journal           ← Append-only JSONL delta (gitignored; deleted with geocode_cache.json in Chunk 10)
-│   ├── geocode_counter.json            ← Monthly Google API call counter (gitignored; removed when Chunk 5 retires the counter in favor of negative-cache + 429 breaker + LOCATIONIQ_DAILY_CAP)
+│   ├── geocode_cache.json              ← Legacy Google geocode cache (gitignored, code reading it removed in Chunk 5 of the Geocoding & Autocomplete plan; on-disk file absorbed into `cached_forward` by `scripts/migrate_geocode_cache.py` 2026-05-14; awaiting maintainer's `--cleanup` invocation to delete)
+│   ├── geocode_cache.journal           ← Legacy append-only JSONL delta (gitignored; absorbed by the migrator; deleted via `--cleanup`)
+│   ├── geocode_cache_ages.json         ← Legacy per-entry insertion-time sidecar (gitignored; was used as the `fetched_at` source during migration; deleted via `--cleanup`)
+│   ├── geocode_counter.json            ← Legacy monthly Google API call counter (gitignored; the counter was retired in Chunk 5 in favor of negative-cache + 429 breaker + `LOCATIONIQ_DAILY_CAP`; on-disk file deleted via `--cleanup`)
+│   ├── .geocode_cache_migrated         ← Run-once marker written by `scripts/migrate_geocode_cache.py` (gitignored); blocks re-run without `--force`
 │   ├── gtfs_data/                      ← Downloaded GTFS files (gitignored)
 │   ├── static_data/                    ← Committed/built fixtures that survive deploys (counterpart to data/ which Railway's persistent volume overlays).
 │   │   ├── neighborhoods.json          ← Curated neighborhood/landmark coordinates (NEIGHBORHOOD_COORDS source); human-edited, version-controlled.
@@ -411,14 +432,17 @@ The-Chicago-Routefinder/
     │   ├── utils/
     │   │   ├── fetchWithRetry.js       ← Exponential back-off fetch wrapper (1s/2s/4s for 5xx/network errors)
     │   │   └── tripGeometry.js         ← haversineMeters, pointToSegmentMeters, legEndCoord, distanceToPath
-    │   ├── tests/                      ← Vitest + jsdom frontend test suite (28 files, 285 tests)
-    │   │   ├── *.test.jsx              ← Component tests for all 16 non-map components
-    │   │   ├── *.test.js               ← Util tests (5) + hook tests (4)
+    │   ├── tests/                      ← Vitest + jsdom frontend test suite (45 files, 423 tests)
+    │   │   ├── *.test.jsx              ← 27 component tests (covers all non-map top-level + LanguagePicker + SchedulesTool + App.mobile) + 6 JSX-mounted hook tests
+    │   │   ├── *.test.js               ← 9 util tests (7 from utils/ + src/ analytics + src/ favorites) + 3 JS-style hook tests
     │   │   └── setup.js                ← jest-dom matcher registration
     │   ├── assets/
     │   │   └── continents/             ← 6 outline SVG silhouettes for the continent-first language picker (Feature LocaleExpansion). stroke=currentColor so they recolor in light/dark/high-contrast modes.
+    │   ├── lib/
+    │   │   └── autocompleteApi.js      ← fetchAutocomplete(query, { signal }) client over GET /autocomplete (Chunk 7 of the Geocoding & Autocomplete plan); 5s timeout backstop, caller-signal forwarding for abort-on-keystroke
     │   ├── components/
-    │   │   ├── TransitPhoto.jsx        ← Photo carousel (PHOTOS manifest defined here)
+    │   │   ├── AddressAutocomplete.jsx ← Generic typeahead combobox (Chunk 7): portal-rendered listbox, visualViewport-aware positioning for iOS soft-keyboard + bottom-sheet drag, ARIA combobox 1.1 inline pattern, abort-on-keystroke + out-of-order-response guard, debounce, host onOpen/onClose/onInputFocus/onInputBlur callbacks, inputAdornment slot
+    │   │   ├── LocationInput.jsx       ← Composes AddressAutocomplete; layers on save-star, save-favorite panel, geo button (with reverse-geocode), saved-locations dropdown (mutually exclusive with autocomplete — autocomplete fires only at ≥2 chars, saved list shows only with empty value)
     │   │   ├── RouteCard.jsx           ← Route card with walk legs, transit legs, pin button; React.memo wrapped
     │   │   ├── PinnedStopsBoard.jsx    ← Live arrivals board for pinned stops
     │   │   ├── WeatherStrip.jsx        ← Compact NWS weather bar; alert amber bar; returns null when weather is null
@@ -435,8 +459,7 @@ The-Chicago-Routefinder/
     │   ├── icon-512.png
     │   ├── icon-512-maskable.png       ← PWA maskable icon (purpose: maskable)
     │   ├── apple-touch-icon.png
-    │   ├── locales/                    ← 27 active Chicago-focused language JSON files (retrenched 2026-05-11 from 76)
-    │   └── transit-photos/             ← PENDING: place ≥10 transit photos here (see HUMAN_TODO.md)
+    │   └── locales/                    ← 27 active Chicago-focused language JSON files (retrenched 2026-05-11 from 76)
     └── locales-archive/                ← 49 inactive locale JSON files preserved outside the Vite public/ root so they do not ship to production. Re-enable a locale by moving its folder back into public/locales/ and appending a row to LANGUAGES in src/i18n.js.
 ```
 
@@ -444,7 +467,7 @@ The-Chicago-Routefinder/
 
 ## Automated Test Suite
 
-**Combined: 811 tests** — backend 466 (pytest, 22 files) + frontend 345 (Vitest + jsdom, 35 files). All passing as of 2026-05-06.
+**Combined: 1,099 tests** — backend 676 (pytest, 31 files) + frontend 423 (Vitest + jsdom, 45 files). Count verified 2026-05-18; the suite was last fully green 2026-05-06, with the failures since then catalogued as BUG-059 / BUG-060 / BUG-061 in [`docs/BUGS.md`](BUGS.md).
 
 ### Run commands
 
@@ -472,9 +495,9 @@ The-Chicago-Routefinder/
 
 | Layer | What's covered |
 | --- | --- |
-| **Components (18 of 18 non-map)** | All non-map components tested, including the LanguagePicker root: ErrorBoundary, LabelSavePanel, LanguagePicker, LinePill, LoadingSkeleton, LocationInput, Masthead, PinnedStopsBoard, RouteCard, SavedRoutesPanel, ServiceAlertsBar, SettingsPanel, SharedRouteBanner, SideRail, SignalLamp, TwoToneHeading, WeatherStrip, Wordmark. Not covered: `markers/*` (3 files — maplibre-dependent). |
-| **Utils (6 of 6)** | analytics, deriveTransferPoints, fetchWithRetry, renderMarkdown, routeUtils, tripGeometry, validateShareInput |
-| **Hooks (8 of 11)** | useApiQuery, useByokIdleClear, useDocumentLanguage, useFavorites, useLocalStorage, useServiceAlerts, useShareLink, useTripTracker. Not covered: useMapMarker, useRouteLayers, useTransferConnectors (all maplibre-dependent) |
+| **Components (top-level: 24 of 28; plus 2 subdirectory components)** | Covered top-level: AddressAutocomplete, AlertsFilterBar, BottomSheet, ErrorBoundary, LabelSavePanel, LinePill, LoadingSkeleton, LocationInput, Masthead, MobileLayout, PanelSplitter, PinnedStopsBoard, RouteAlertsBanner, RouteCard, SavedRoutesPanel, ServiceAlertsBar, SettingsPanel, SharedRouteBanner, SheetSegmentedControl, SideRail, SignalLamp, TwoToneHeading, WeatherStrip, Wordmark. Subdirectories also covered: `LanguagePicker/LanguagePicker` and `tools/SchedulesTool`. Not covered: AdSlot, ArrivedToast, InstallPrompt, ToolsHub; plus the other four `tools/*` (LastTrainTool, SavedLocationsTool, SchedulesPicker, SchedulesView) and all `markers/*` (5 files — maplibre-dependent). |
+| **Utils (7 of 10, plus 2 root-level src/ utilities)** | Covered in `utils/`: deriveTransferPoints, fetchWithRetry, renderMarkdown, routeUtils, sheetSnap, tripGeometry, validateShareInput. Also covered (live in `src/` not `utils/`): analytics, favorites. Not covered: mapLayerLifecycle, mastheadInfo, tripPersistence. |
+| **Hooks (9 of 14)** | Covered: useApiQuery, useByokIdleClear, useDocumentLanguage, useFavorites, useLocalStorage, useMediaQuery, useServiceAlerts, useShareLink, useTripTracker. Not covered: useAlertsTabFilter, useCardsColumnWidth, useMapMarker, useRouteLayers, useTransferConnectors (last three maplibre-dependent). |
 | **Persistence** | favorites.js — save/load round-trip, MAX_ITEMS, dedup |
 
 ### Design principles
@@ -493,7 +516,7 @@ The-Chicago-Routefinder/
 
 ### Known coverage gaps (intentional)
 
-- **maplibre-gl-dependent code** — `MapView.jsx`, `markers/*`, `useMapMarker`, `useRouteLayers`, `useTripTracker`. Each would need ~100 lines of brittle WebGL mocks. The right tool is Playwright with a real browser; see [FEATURE_PLANS.md → Consideration — Playwright E2E suite for maplibre + geolocation paths](FEATURE_PLANS.md).
+- **maplibre-gl-dependent code** — `MapView.jsx`, `markers/*`, `useMapMarker`, `useRouteLayers`, `useTransferConnectors`. Each would need ~100 lines of brittle WebGL mocks. The right tool is Playwright with a real browser; see [FEATURE_PLANS.md → Consideration — Playwright E2E suite for maplibre + geolocation paths](FEATURE_PLANS.md). (`useTripTracker` is *covered* — its maplibre touches are narrow enough to mock; the genuine map-lifecycle hooks are the three listed.)
 - **`App.jsx`** — top-level orchestration. Better tested as E2E than unit.
 - **`warm_up()` / live `_build_graph()`** — exercised indirectly via the GTFS-parsing tests of every loader it calls.
 - **`find_bus_transfer_routes`** — large, real-graph-dependent. Defer until the bus-to-bus path becomes a reliability concern.
@@ -510,8 +533,8 @@ The app is live on Railway + Vercel. All phases through 6.5 are complete; Featur
 2. (Optional) Flip `VITE_CONTINENT_PICKER_ENABLED=true` in a Vercel preview to verify the LocaleExpansion font rendering and continent picker UX before promoting to production. See `docs/TODO.md` for the verification checklist.
 3. **Phase 7 — Monetization:** Chunk 1 (`AdSlot`) shipped 2026-05-05 behind `VITE_HOUSE_AD_ENABLED` (default `false`). Outstanding: Vercel-preview QA before flipping the flag in production, plus the Phase 2/2b/3 work documented in `docs/FEATURE_PLANS.md` → Feature Monetization. See "Monetization Strategy — Full Decision Record" below for the canonical decision record.
 
-**Bug status:** 0 🔴 high + 5 🟡 medium + 1 🟢 low — see [`docs/BUGS.md`](BUGS.md).
-**Technical debt status:** 2 items open (1 🟡 medium, 1 🟢 low) plus 1 deferred low-priority item (TD-BE-004) — see [`docs/TECH_DEBT.md`](TECH_DEBT.md).
+**Bug status:** 0 🔴 high + 3 🟡 medium + 1 🟢 low — see [`docs/BUGS.md`](BUGS.md).
+**Technical debt status:** 1 item open (🟢 low) plus 1 deferred low-priority item (TD-BE-004) — see [`docs/TECH_DEBT.md`](TECH_DEBT.md).
 
 ---
 

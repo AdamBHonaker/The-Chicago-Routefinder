@@ -2,7 +2,9 @@
 GTFS-based stop resolver for the CTA Transit app.
 
 Loads stops.txt from the downloaded GTFS feed and provides functions
-to find the nearest train stations and bus stops to any location.
+to find the nearest train stations and bus stops to any location, plus the
+curated NEIGHBORHOOD_COORDS landmark lookup + fuzzy-match helper used by the
+forward-geocoding cascade in `geocoding.py`.
 
 Stop ID ranges (per CTA GTFS / Train Tracker docs):
   0     – 29999  →  Bus stops
@@ -10,362 +12,39 @@ Stop ID ranges (per CTA GTFS / Train Tracker docs):
   40000 – 49999  →  Train parent stations (used by Train Tracker API as mapid)
 
 Stops are parsed from stops.txt once per process and also persisted to a
-binary pickle cache (stops_cache.pkl) in the same directory. On subsequent
-starts the pickle is loaded instead of re-parsing CSV, provided the mtime of
-stops.txt has not changed. The pickle is written atomically so a crash during
-the write never leaves a corrupt cache file.
+JSON cache (stops_cache.json) in the same directory. On subsequent starts
+the cache is loaded instead of re-parsing CSV, provided the mtime of
+stops.txt has not changed. The cache is written atomically so a crash during
+the write never leaves a corrupt cache file. JSON (not pickle) is used so
+the deserialization surface is plain data — a tampered cache file cannot
+execute arbitrary code at startup (SEC-005).
 
-Geocoding strategy:
-  1. Exact match against NEIGHBORHOOD_COORDS (instant, no network)
-  2. Fuzzy match against NEIGHBORHOOD_COORDS (instant, no network)
-  3. Google Maps Geocoding API (~100ms, biased to Chicago bounding box)
+This module no longer geocodes free text. The full resolution cascade lives
+in `backend/geocoding.py` (Chunk 5 of the Geocoding & Autocomplete plan).
+NEIGHBORHOOD_COORDS + `fuzzy_match_neighborhood` are retained here because
+they are the curated-landmark layer the cascade consumes — keeping them
+adjacent to the stop loader avoids a circular import with geocoding.py.
 
 Geographic scope: Howard St (north) to 50th St (south), lakefront (east) to
 Pulaski Rd (west). Walk times outside this rectangle fall back to Haversine
 estimates and no CTA stops will be found beyond the boundary.
 """
 
-import atexit
 import csv
-import datetime
 import heapq
 import json
-import math
-import os
-import pickle
-import re
-import threading
-import time
 from functools import lru_cache
 from pathlib import Path
 
-import requests
-
-# Persistent HTTP session — reuses keep-alive connections across geocode calls.
-_http_session = requests.Session()
-
 from walking import walk_minutes
-from utils import haversine_miles as _haversine_miles, CHICAGO_BBOX_GOOGLE, SpatialGrid
+from utils import haversine_miles as _haversine_miles, SpatialGrid
 from geocode_text import (
-    _normalize_street_abbr,
     fuzzy_match_neighborhood as _fuzzy_match_neighborhood,
 )
-import config as _cfg
 
 GTFS_DIR = Path(__file__).parent / "gtfs_data"
-_STOPS_CACHE_PATH = GTFS_DIR / "stops_cache.pkl"
+_STOPS_CACHE_PATH = GTFS_DIR / "stops_cache.json"
 
-# Google Maps Geocoding API
-_GOOGLE_MAPS_GEOCODE_URL = "https://maps.googleapis.com/maps/api/geocode/json"
-_GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
-# Chicago bounding box for geocoding bias (SW lat,lon | NE lat,lon)
-_CHICAGO_BOUNDS = CHICAGO_BBOX_GOOGLE
-
-# Persistent geocode cache — survives server restarts.
-# Writes use a snapshot file + append-only journal so frequent flushes are O(delta),
-# not O(cache size). The journal is replayed over the snapshot on load and compacted
-# back into the snapshot periodically (see _GEOCODE_COMPACT_* below).
-_GEOCODE_CACHE_PATH = Path(__file__).parent / "geocode_cache.json"
-_GEOCODE_JOURNAL_PATH = Path(__file__).parent / "geocode_cache.journal"
-# Sidecar: maps each cached address key to the Unix timestamp it was first stored.
-# Used for age-based eviction — entries older than GEOCODE_CACHE_MAX_AGE_DAYS are removed.
-_GEOCODE_AGES_PATH = Path(__file__).parent / "geocode_cache_ages.json"
-
-
-def _restrict_perms(path: Path) -> None:
-    """Restrict file mode to 0600 (owner-only). Geocode caches contain user
-    search history; even on a single-tenant host this keeps the data out of
-    other-user reach if the host is later shared. No-op on Windows where
-    os.chmod only toggles the read-only flag."""
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        # Best-effort: a chmod failure shouldn't crash the whole save path.
-        pass
-
-# Monthly geocode call cap — prevents runaway API costs.
-# Override with env var GEOCODE_MONTHLY_LIMIT (e.g. set to 0 to disable).
-# Google's free tier is ~40,000 calls/month; default leaves a 30,500-call buffer.
-_GEOCODE_CALL_LIMIT = int(os.getenv("GEOCODE_MONTHLY_LIMIT", "9500"))
-_GEOCODE_COUNTER_PATH = Path(__file__).parent / "geocode_counter.json"
-
-
-def _load_geocode_counter() -> dict:
-    """Load the monthly geocode call counter from disk, keeping only the current month."""
-    month_key = datetime.date.today().strftime("%Y-%m")
-    if _GEOCODE_COUNTER_PATH.exists():
-        try:
-            raw = json.loads(_GEOCODE_COUNTER_PATH.read_text(encoding="utf-8"))
-            # Prune stale month entries; only current month is relevant
-            return {month_key: raw[month_key]} if month_key in raw else {}
-        except Exception as exc:
-            print(f"[gtfs_loader] Could not load geocode counter: {exc}")
-    return {}
-
-
-def _save_geocode_counter(counter: dict) -> None:
-    """Persist the monthly geocode call counter to disk using atomic rename."""
-    tmp = _GEOCODE_COUNTER_PATH.with_suffix(".counter.tmp")
-    try:
-        tmp.write_text(json.dumps(counter, indent=2), encoding="utf-8")
-        tmp.replace(_GEOCODE_COUNTER_PATH)
-        _restrict_perms(_GEOCODE_COUNTER_PATH)
-    except Exception as exc:
-        print(f"[gtfs_loader] Could not save geocode counter: {exc}")
-        try:
-            tmp.unlink(missing_ok=True)
-        except Exception:
-            pass
-
-
-def _geocode_call_count() -> int:
-    """Return the number of Google geocoding API calls made this calendar month."""
-    month_key = datetime.date.today().strftime("%Y-%m")
-    return _geocode_call_counter.get(month_key, 0)
-
-
-def _increment_geocode_call_count() -> int:
-    """Record one Google geocoding API call for the current calendar month. Returns the new count.
-
-    Must be called under _geocode_lock. Marks the counter dirty for the next
-    background flush rather than writing to disk immediately.
-    """
-    global _geocode_counter_dirty
-    month_key = datetime.date.today().strftime("%Y-%m")
-    _geocode_call_counter[month_key] = _geocode_call_counter.get(month_key, 0) + 1
-    _geocode_counter_dirty = True
-    return _geocode_call_counter[month_key]
-
-
-# Loaded once at import time; dirty flag is flushed by the background thread.
-_geocode_call_counter: dict = _load_geocode_counter()
-_geocode_counter_dirty: bool = False
-
-# Protects _geocode_cache writes, _geocode_pending, _geocode_ages, and the
-# monthly call counter.  Held only for the pre-flight quota check and the
-# post-flight result store — released during the actual HTTP call so that
-# concurrent requests for *different* queries can proceed in parallel.
-_geocode_lock = threading.Lock()
-
-
-def _load_geocode_cache() -> dict[str, tuple[float, float] | None]:
-    """Load the geocode cache from disk: snapshot JSON + any appended journal lines."""
-    cache: dict[str, tuple[float, float] | None] = {}
-    if _GEOCODE_CACHE_PATH.exists():
-        try:
-            raw = json.loads(_GEOCODE_CACHE_PATH.read_text(encoding="utf-8"))
-            # JSON stores lists; convert [lat, lon] back to tuples (or None)
-            cache = {k: tuple(v) if v is not None else None for k, v in raw.items()}
-        except Exception as exc:
-            print(f"[gtfs_loader] Could not load geocode cache snapshot: {exc}")
-    if _GEOCODE_JOURNAL_PATH.exists():
-        try:
-            with _GEOCODE_JOURNAL_PATH.open("r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        k, v = json.loads(line)
-                    except Exception:
-                        # Skip torn/corrupt trailing lines rather than failing startup
-                        continue
-                    cache[k] = tuple(v) if v is not None else None
-        except Exception as exc:
-            print(f"[gtfs_loader] Could not replay geocode journal: {exc}")
-    return cache
-
-
-def _save_geocode_cache(cache: dict) -> bool:
-    """Write the full snapshot atomically and drop the journal it subsumes.
-
-    Returns True on success, False on failure.
-    """
-    tmp = _GEOCODE_CACHE_PATH.with_suffix(".tmp")
-    try:
-        tmp.write_text(
-            json.dumps(cache, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
-        tmp.replace(_GEOCODE_CACHE_PATH)
-        _restrict_perms(_GEOCODE_CACHE_PATH)
-        # Snapshot now contains every key the journal replayed — drop it.
-        try:
-            _GEOCODE_JOURNAL_PATH.unlink(missing_ok=True)
-        except Exception:
-            pass
-        return True
-    except Exception as exc:
-        print(f"[gtfs_loader] Could not save geocode cache: {exc}")
-        try:
-            tmp.unlink(missing_ok=True)
-        except Exception:
-            pass
-        return False
-
-
-def _load_geocode_ages() -> dict[str, float]:
-    """Load the per-entry insertion timestamps from the sidecar ages file."""
-    if _GEOCODE_AGES_PATH.exists():
-        try:
-            return json.loads(_GEOCODE_AGES_PATH.read_text(encoding="utf-8"))
-        except Exception as exc:
-            print(f"[gtfs_loader] Could not load geocode ages: {exc}")
-    return {}
-
-
-def _save_geocode_ages(ages: dict[str, float]) -> None:
-    """Atomically persist the ages dict to disk."""
-    tmp = _GEOCODE_AGES_PATH.with_suffix(".ages.tmp")
-    try:
-        tmp.write_text(json.dumps(ages, indent=2), encoding="utf-8")
-        tmp.replace(_GEOCODE_AGES_PATH)
-        _restrict_perms(_GEOCODE_AGES_PATH)
-    except Exception as exc:
-        print(f"[gtfs_loader] Could not save geocode ages: {exc}")
-        try:
-            tmp.unlink(missing_ok=True)
-        except Exception:
-            pass
-
-
-def _evict_old_geocode_entries() -> int:
-    """Remove geocode entries whose recorded age exceeds _GEOCODE_MAX_AGE_SECONDS.
-
-    Must be called under _geocode_lock.  Mutates _geocode_cache and _geocode_ages
-    in-place, then persists the trimmed ages file.  Returns the number of entries
-    removed.
-    """
-    now = time.time()
-    cutoff = now - _GEOCODE_MAX_AGE_SECONDS
-    stale = [k for k, ts in _geocode_ages.items() if ts < cutoff]
-    for k in stale:
-        _geocode_cache.pop(k, None)
-        _geocode_ages.pop(k, None)
-    if stale:
-        print(
-            f"[gtfs_loader] Age-based eviction removed {len(stale)} geocode "
-            f"entries older than {_cfg.GEOCODE_CACHE_MAX_AGE_DAYS} days"
-        )
-        _save_geocode_ages(_geocode_ages)
-    return len(stale)
-
-
-# Loaded once at import time; dirty entries are flushed by background thread.
-_geocode_cache: dict[str, tuple[float, float] | None] = _load_geocode_cache()
-
-# {address_key: Unix timestamp of first insertion} — persisted to _GEOCODE_AGES_PATH.
-# Entries without a recorded age are treated as immortal (survive any eviction sweep)
-# so that pre-existing cache files are never silently cleared on first upgrade.
-_geocode_ages: dict[str, float] = _load_geocode_ages()
-
-# Age-based eviction settings.
-_GEOCODE_MAX_AGE_SECONDS: float = _cfg.GEOCODE_CACHE_MAX_AGE_DAYS * 24 * 3600
-
-# Apply age-based eviction at startup so stale entries never survive a restart.
-# Safe to call without _geocode_lock here — no other threads exist at import time.
-_evict_old_geocode_entries()
-
-# Entries added since the last journal append. Always mutated under _geocode_lock.
-_geocode_pending: dict[str, tuple[float, float] | None] = {}
-_GEOCODE_FLUSH_INTERVAL = 30        # seconds between background flushes
-_GEOCODE_COMPACT_INTERVAL = 3600    # seconds between full snapshot rewrites
-_GEOCODE_COMPACT_THRESHOLD = 500    # journal entries that force an early compaction
-_GEOCODE_JOURNAL_LINE_LIMIT = 1000  # journal lines that force compaction regardless of entry count
-_geocode_last_compact: float = time.monotonic()
-_geocode_journal_entries: int = 0   # lines appended since last full snapshot
-
-# Age-based eviction schedule.
-_GEOCODE_EVICT_INTERVAL: int = _cfg.GEOCODE_EVICT_INTERVAL_SECONDS
-_geocode_last_eviction: float   = time.monotonic()
-
-
-def _append_geocode_journal(entries: dict[str, tuple[float, float] | None]) -> None:
-    """Append new cache entries to the journal as JSONL — O(delta) per flush."""
-    try:
-        new_file = not _GEOCODE_JOURNAL_PATH.exists()
-        with _GEOCODE_JOURNAL_PATH.open("a", encoding="utf-8") as f:
-            for k, v in entries.items():
-                f.write(json.dumps([k, list(v) if v is not None else None], ensure_ascii=False) + "\n")
-            f.flush()
-        if new_file:
-            _restrict_perms(_GEOCODE_JOURNAL_PATH)
-            try:
-                os.fsync(f.fileno())
-            except OSError:
-                # fsync not supported on this fd (e.g. some network FS); tolerable.
-                pass
-    except Exception as exc:
-        print(f"[gtfs_loader] Could not append to geocode journal: {exc}")
-
-
-def _flush_geocode_cache_if_dirty() -> None:
-    """Append pending entries to the journal; compact to a full snapshot periodically.
-
-    Also flushes the monthly API call counter and runs age-based eviction once per
-    _GEOCODE_EVICT_INTERVAL (weekly by default) so the cache does not grow unbounded
-    even when compaction thresholds are never hit.
-    """
-    global _geocode_pending, _geocode_last_compact, _geocode_journal_entries
-    global _geocode_last_eviction, _geocode_counter_dirty
-    with _geocode_lock:
-        # Weekly age-based sweep — independent of compaction thresholds.
-        now_mono = time.monotonic()
-        if now_mono - _geocode_last_eviction >= _GEOCODE_EVICT_INTERVAL:
-            _evict_old_geocode_entries()
-            _geocode_last_eviction = now_mono
-
-        # Persist the monthly call counter if it has been incremented since the last flush.
-        if _geocode_counter_dirty:
-            _save_geocode_counter(_geocode_call_counter)
-            _geocode_counter_dirty = False
-
-        if not _geocode_pending:
-            # Even with no new entries, honor a time-based compaction so any prior
-            # journal growth gets folded back into the snapshot eventually.
-            if (
-                _geocode_journal_entries > 0
-                and now_mono - _geocode_last_compact >= _GEOCODE_COMPACT_INTERVAL
-            ):
-                _save_geocode_cache(_geocode_cache)
-                _geocode_journal_entries = 0
-                _geocode_last_compact = now_mono
-            return
-        pending = _geocode_pending
-        _geocode_pending = {}
-        now = time.monotonic()
-        should_compact = (
-            _geocode_journal_entries + len(pending) >= _GEOCODE_COMPACT_THRESHOLD
-            or _geocode_journal_entries >= _GEOCODE_JOURNAL_LINE_LIMIT
-            or now - _geocode_last_compact >= _GEOCODE_COMPACT_INTERVAL
-        )
-        if should_compact:
-            if _save_geocode_cache(_geocode_cache):
-                _geocode_journal_entries = 0
-                _geocode_last_compact = now
-            else:
-                # Save failed — restore pending so entries aren't lost on next flush
-                _geocode_pending.update(pending)
-        else:
-            _append_geocode_journal(pending)
-            _geocode_journal_entries += len(pending)
-
-
-def _start_geocode_flush_thread() -> None:
-    """Start a background daemon thread that flushes the cache every 30 s."""
-    stop_event = threading.Event()
-
-    def _flush_loop() -> None:
-        while not stop_event.wait(timeout=_GEOCODE_FLUSH_INTERVAL):
-            _flush_geocode_cache_if_dirty()
-
-    t = threading.Thread(target=_flush_loop, name="geocode-cache-flusher", daemon=True)
-    t.start()
-    # Guarantee a final flush even if the process exits before the next tick.
-    atexit.register(_flush_geocode_cache_if_dirty)
-
-
-_start_geocode_flush_thread()
 
 
 # ---------------------------------------------------------------------------
@@ -391,151 +70,6 @@ def _load_neighborhood_coords() -> dict[str, tuple[float, float]]:
 NEIGHBORHOOD_COORDS: dict[str, tuple[float, float]] = _load_neighborhood_coords()
 
 
-# ---------------------------------------------------------------------------
-# Google Maps geocoding
-# ---------------------------------------------------------------------------
-
-def geocode_google(query: str) -> tuple[float, float] | None:
-    """
-    Geocode a free-text address, building name, or intersection to (lat, lon)
-    using the Google Maps Geocoding API. Results are biased to Chicago.
-
-    Returns None on any failure (network error, no result, missing key).
-    Requires GOOGLE_MAPS_API_KEY in the environment.
-    """
-    # Fast path: already cached (no lock needed — dict reads are thread-safe)
-    if query in _geocode_cache:
-        return _geocode_cache[query]
-
-    # Pre-flight check: validate API key and quota under the lock, then release
-    # before the network call so concurrent requests for *different* queries can
-    # proceed in parallel.  Two concurrent requests for the *same* uncached query
-    # may both pass this gate; the inner lock below handles that race at store time.
-    with _geocode_lock:
-        if query in _geocode_cache:
-            return _geocode_cache[query]
-
-        if not _GOOGLE_MAPS_API_KEY:
-            print("[gtfs_loader] GOOGLE_MAPS_API_KEY not set — geocoding unavailable")
-            return None
-
-        # Monthly call cap (configurable via GEOCODE_MONTHLY_LIMIT; 0 = unlimited)
-        current_count = _geocode_call_count()
-        if _GEOCODE_CALL_LIMIT > 0 and current_count >= _GEOCODE_CALL_LIMIT:
-            print(
-                f"[gtfs_loader] Monthly geocoding limit reached "
-                f"({current_count}/{_GEOCODE_CALL_LIMIT}) — skipping API call for '{query}'"
-            )
-            return None
-
-    # Network I/O outside the lock.
-    try:
-        resp = _http_session.get(
-            _GOOGLE_MAPS_GEOCODE_URL,
-            params={
-                "address": query if ("chicago" in query.lower() or ", il" in query.lower() or "illinois" in query.lower()) else query + ", Chicago, IL",
-                "key": _GOOGLE_MAPS_API_KEY,
-                "components": "country:US",
-                "bounds": _CHICAGO_BOUNDS,
-            },
-            timeout=5,
-        )
-        data = resp.json()
-    except Exception as exc:
-        print(f"[gtfs_loader] Google geocoding failed for '{query}': {exc}")
-        # Don't cache transient network/timeout errors — allow retries.
-        return None
-
-    # Re-acquire lock to store the result atomically and increment the quota counter.
-    with _geocode_lock:
-        # Re-check: another thread may have stored the result while we were in flight.
-        if query in _geocode_cache:
-            return _geocode_cache[query]
-
-        if data.get("status") == "OK" and data.get("results"):
-            loc = data["results"][0]["geometry"]["location"]
-            coords: tuple[float, float] = (float(loc["lat"]), float(loc["lng"]))
-            _geocode_cache[query] = coords
-            _geocode_pending[query] = coords
-            _geocode_ages[query] = time.time()  # record insertion time for age-based eviction
-            new_count = _increment_geocode_call_count()
-            print(
-                f"[gtfs_loader] Geocoded and cached '{query}' -> {coords} "
-                f"(monthly calls: {new_count}/{_GEOCODE_CALL_LIMIT})"
-            )
-            return coords
-
-        status = data.get("status")
-        print(f"[gtfs_loader] Google geocoding returned status '{status}' for '{query}'")
-        # Only cache permanent misses (ZERO_RESULTS = address genuinely doesn't exist).
-        # Transient errors (OVER_QUERY_LIMIT, REQUEST_DENIED, UNKNOWN_ERROR, etc.)
-        # must not be cached so future requests can retry.
-        if status == "ZERO_RESULTS":
-            # BUG-029: ZERO_RESULTS still costs one API credit — count it
-            _increment_geocode_call_count()
-            _geocode_cache[query] = None
-            _geocode_pending[query] = None
-            _geocode_ages[query] = time.time()
-
-    return None
-
-
-def reverse_geocode_google(lat: float, lon: float) -> str | None:
-    """
-    Reverse geocode (lat, lon) to a human-readable address string using the
-    Google Maps Geocoding API.  Returns None on any failure or missing key.
-
-    The returned string has the zip code and country stripped so it fits
-    cleanly in the location input, e.g. "78 E Washington St, Chicago, IL".
-
-    Counts against the same monthly Google Geocoding quota as the forward
-    geocoder — both the pre-flight cap check and post-call counter increment
-    use ``_geocode_lock`` so a flood of /reverse-geocode requests can't
-    silently exhaust the budget without the in-process counter moving.
-    """
-    if not _GOOGLE_MAPS_API_KEY:
-        return None
-
-    # Pre-flight quota check under the lock; release before the network call
-    # so concurrent requests for different points proceed in parallel.
-    with _geocode_lock:
-        current_count = _geocode_call_count()
-        if _GEOCODE_CALL_LIMIT > 0 and current_count >= _GEOCODE_CALL_LIMIT:
-            print(
-                f"[gtfs_loader] Monthly geocoding limit reached "
-                f"({current_count}/{_GEOCODE_CALL_LIMIT}) — skipping reverse geocode for ({lat},{lon})"
-            )
-            return None
-
-    try:
-        resp = _http_session.get(
-            _GOOGLE_MAPS_GEOCODE_URL,
-            params={
-                "latlng": f"{lat},{lon}",
-                "key": _GOOGLE_MAPS_API_KEY,
-            },
-            timeout=5,
-        )
-        data = resp.json()
-    except Exception as exc:
-        print(f"[gtfs_loader] Reverse geocoding failed for ({lat},{lon}): {exc}")
-        return None
-
-    status = data.get("status")
-    # OK and ZERO_RESULTS both bill one credit; transient errors
-    # (OVER_QUERY_LIMIT, REQUEST_DENIED, UNKNOWN_ERROR) don't, so they're
-    # excluded from the counter — same policy as geocode_google.
-    if status in ("OK", "ZERO_RESULTS"):
-        with _geocode_lock:
-            _increment_geocode_call_count()
-
-    if status == "OK" and data.get("results"):
-        addr = data["results"][0].get("formatted_address", "")
-        # Strip zip code and country suffix, e.g. ", 60602, USA" or ", IL 60602, USA"
-        addr = re.sub(r",\s*\d{5}(-\d{4})?(?=,|$)", "", addr)
-        addr = re.sub(r",\s*(United States|USA)$", "", addr)
-        return addr.strip() or None
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -548,10 +82,17 @@ def _load_stops() -> tuple[list[dict], list[dict]]:
     Parse stops.txt and return (train_stations, bus_stops).
 
     On first call after a GTFS update the CSV is parsed and the result is
-    persisted to stops_cache.pkl alongside the source file's mtime.  On
-    subsequent starts the pickle is loaded instead, skipping CSV parsing
-    entirely.  The pickle is written atomically (tmp → rename) so a crash
+    persisted to stops_cache.json alongside the source file's mtime.  On
+    subsequent starts the cache is loaded instead, skipping CSV parsing
+    entirely.  The cache is written atomically (tmp → rename) so a crash
     during the write never leaves a corrupt cache.
+
+    JSON (not pickle) is used so the deserialization surface is plain data
+    — a tampered cache file cannot execute arbitrary code at startup
+    (SEC-005). The cached structure is shaped as
+    ``{"mtime": float, "train_stations": [dict], "bus_stops": [dict]}``;
+    older ``stops_cache.pkl`` files from before the migration are simply
+    ignored (the loader falls through to re-parse) and removed.
 
     Called once per process; result is also kept in the lru_cache.
     """
@@ -564,14 +105,28 @@ def _load_stops() -> tuple[list[dict], list[dict]]:
 
     current_mtime: float = stops_file.stat().st_mtime
 
-    # Try the binary cache first.
+    # Clean up the legacy pickle artifact if a previous install left one
+    # behind. We never read it (see SEC-005) — re-parsing the CSV is cheap.
+    _legacy_pkl = GTFS_DIR / "stops_cache.pkl"
+    if _legacy_pkl.exists():
+        try:
+            _legacy_pkl.unlink()
+        except OSError:
+            pass
+
+    # Try the JSON cache first.
     if _STOPS_CACHE_PATH.exists():
         try:
-            with _STOPS_CACHE_PATH.open("rb") as f:
-                cached_mtime, train_stations, bus_stops = pickle.load(f)
-            if cached_mtime == current_mtime:
-                return train_stations, bus_stops
-            # mtime mismatch — fall through to re-parse.
+            with _STOPS_CACHE_PATH.open("r", encoding="utf-8") as f:
+                cached = json.load(f)
+            if (
+                isinstance(cached, dict)
+                and cached.get("mtime") == current_mtime
+                and isinstance(cached.get("train_stations"), list)
+                and isinstance(cached.get("bus_stops"), list)
+            ):
+                return cached["train_stations"], cached["bus_stops"]
+            # mtime mismatch or shape mismatch — fall through to re-parse.
         except Exception as exc:
             print(f"[gtfs_loader] Could not load stops cache (will re-parse): {exc}")
 
@@ -613,8 +168,15 @@ def _load_stops() -> tuple[list[dict], list[dict]]:
     # Persist the parsed result atomically so the next startup can skip CSV parsing.
     tmp = _STOPS_CACHE_PATH.with_suffix(".tmp")
     try:
-        with tmp.open("wb") as f:
-            pickle.dump((current_mtime, train_stations, bus_stops), f)
+        with tmp.open("w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "mtime": current_mtime,
+                    "train_stations": train_stations,
+                    "bus_stops": bus_stops,
+                },
+                f,
+            )
         tmp.replace(_STOPS_CACHE_PATH)
     except Exception as exc:
         print(f"[gtfs_loader] Could not save stops cache: {exc}")
@@ -666,6 +228,52 @@ def _candidates_within(
 # ---------------------------------------------------------------------------
 # Public lookup functions
 # ---------------------------------------------------------------------------
+
+def find_nearest_train_stations_progressive(
+    lat: float,
+    lon: float,
+    rings: tuple[float, ...],
+    max_results: int = 3,
+    walk_to_station: bool = True,
+) -> tuple[list[dict], float]:
+    """
+    Single-pass equivalent of calling find_nearest_train_stations() once per
+    ring in `rings` and stopping at the first non-empty result (OPT-004).
+
+    Runs the spatial-grid query once at the outermost ring, then partitions
+    the hits client-side until a non-empty ring is found. Returns
+    ``(stations, ring_radius_used)``; ``stations`` is empty when no station
+    sits within ``rings[-1]`` miles.
+    """
+    if not rings:
+        return [], 0.0
+    max_radius = rings[-1]
+    all_hits = _candidates_within("train", lat, lon, max_radius)
+    if not all_hits:
+        return [], max_radius
+
+    selected: list[tuple[float, dict]] = []
+    used_radius = max_radius
+    for radius in rings:
+        selected = [item for item in all_hits if item[0] <= radius]
+        if selected:
+            used_radius = radius
+            break
+    if not selected:
+        return [], max_radius
+
+    candidates = [
+        {**s}
+        for _, s in heapq.nsmallest(max_results, selected, key=lambda item: item[0])
+    ]
+    for s in candidates:
+        if walk_to_station:
+            s["walk_minutes"] = walk_minutes(lat, lon, s["lat"], s["lon"])
+        else:
+            s["walk_minutes"] = walk_minutes(s["lat"], s["lon"], lat, lon)
+    candidates.sort(key=lambda s: s["walk_minutes"])
+    return candidates, used_radius
+
 
 def find_nearest_train_stations(
     lat: float,
@@ -744,87 +352,3 @@ def fuzzy_match_neighborhood(query: str) -> tuple[tuple[float, float] | None, st
     return _fuzzy_match_neighborhood(query, NEIGHBORHOOD_COORDS)
 
 
-_COORD_RE = re.compile(r"^(-?\d{1,3}\.?\d*),\s*(-?\d{1,3}\.?\d*)$")
-
-
-def resolve_location(
-    query: str,
-) -> tuple[list[dict], list[dict], str | None, tuple[float, float] | None]:
-    """
-    Convert a free-text location query to nearby train stations and bus stops.
-
-    Resolution order:
-      1. Exact match against NEIGHBORHOOD_COORDS
-      2. Fuzzy match against NEIGHBORHOOD_COORDS (threshold: 0.95 similarity)
-      3. Google Maps Geocoding API (network call, ~100ms, biased to Chicago)
-
-    Returns:
-        (train_stations, bus_stops, matched_name, coords)
-        matched_name is the dict key or the original query if geocoded.
-        coords is the resolved (lat, lon), or None when nothing matched. Returned
-        alongside the stations so callers don't have to re-run the same dict /
-        fuzzy / geocode chain via coords_for_location() (OPT-BE-218).
-    """
-    original_query = query.strip()
-
-    # Fast-path: GPS coordinate strings (e.g. "41.893,-87.631") bypass all fuzzy
-    # matching and geocoding so they never hit geocode_google(), avoiding extra latency.
-    m = _COORD_RE.match(original_query)
-    if m:
-        lat, lon = float(m.group(1)), float(m.group(2))
-        return (
-            find_nearest_train_stations(lat, lon),
-            find_nearest_bus_stops(lat, lon),
-            original_query,
-            (lat, lon),
-        )
-
-    q = original_query.lower()
-    q = _normalize_street_abbr(q)          # expand "Ave" → "avenue", etc.
-
-    # 1. Exact match
-    coords = NEIGHBORHOOD_COORDS.get(q)
-    matched_name = original_query if coords else None
-
-    # 2. Fuzzy match via shared helper (0.95 threshold + meaningful-word guard)
-    if coords is None:
-        coords, matched_name = fuzzy_match_neighborhood(q)
-
-    # 3. Google Maps geocoding fallback
-    if coords is None:
-        coords = geocode_google(q)
-        if coords:
-            matched_name = original_query
-
-    if coords is None:
-        return [], [], None, None
-
-    lat, lon = coords
-    return (
-        find_nearest_train_stations(lat, lon),
-        find_nearest_bus_stops(lat, lon),
-        matched_name,
-        coords,
-    )
-
-
-def coords_for_location(
-    query: str,
-    fallback_stations: list[dict] | None = None,
-) -> tuple[float, float] | None:
-    """Return (lat, lon) for a location query: exact dict → fuzzy → Google → station centroid."""
-    q = _normalize_street_abbr(query.lower().strip())
-    coords = NEIGHBORHOOD_COORDS.get(q)
-    if coords:
-        return coords
-    coords, _ = fuzzy_match_neighborhood(q)
-    if coords:
-        return coords
-    coords = geocode_google(q)
-    if coords:
-        return coords
-    if fallback_stations:
-        lats = [s["lat"] for s in fallback_stations]
-        lons = [s["lon"] for s in fallback_stations]
-        return (sum(lats) / len(lats), sum(lons) / len(lons))
-    return None

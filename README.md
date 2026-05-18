@@ -10,12 +10,12 @@ An AI-powered, real-time Chicago Transit Authority (CTA) route recommendation ap
 
 A user enters their origin and destination. The app:
 
-1. Resolves both locations to nearby CTA stops via Google Maps geocoding, with autocomplete suggestions covering train stations, neighborhoods, and bus stops
+1. Resolves both locations to nearby CTA stops via a local-first geocoder cascade (curated landmark dict → fuzzy neighborhood match → local Chicago OSM address + intersection corpus → LocationIQ fallback for misses), with autocomplete suggestions covering train stations, neighborhoods, addresses, intersections, and bus stops
 2. Runs a routing engine (GTFS + NetworkX + OSMnx) to calculate train, bus, and intermodal options including walking legs and transfers — with street-network turn-by-turn walk directions and long/short block classification
 3. Fetches live CTA train and bus arrival times to compute real wait times, including live arrivals at transfer stops
 4. Optionally passes the ranked route options to Claude (Anthropic API) for a plain-English recommendation (AI layer is opt-in via the settings panel)
 5. Displays structured route cards with leg-by-leg breakdowns, crowdedness estimates, and transfer wait countdowns
-6. Shows an interactive map with the route drawn on OpenFreeMap Liberty tiles, including transit photos for featured stops
+6. Shows an interactive map with the route drawn on OpenFreeMap Liberty tiles, with editorial markers (§ origin, ✦ destination, ➤ live position) and a service-alert-aware leg-muting overlay
 
 ### Features
 
@@ -39,7 +39,7 @@ A user enters their origin and destination. The app:
 | **Frontend** | React (PWA), MapLibre GL JS v4, OpenFreeMap Liberty tiles, Vite, i18next (27 languages) |
 | **Backend** | Python, FastAPI, NetworkX (transit graph), igraph (walking graph), OSMnx, scikit-learn, aiohttp |
 | **AI** | Claude (`claude-sonnet-4-6` / `claude-haiku-4-5-20251001`) via Anthropic Python SDK |
-| **Data** | CTA GTFS (static schedules), CTA Bus & Train Tracker APIs (real-time), CTA Alerts API, CTA Route Status API, NWS Weather API, Google Maps Geocoding API |
+| **Data** | CTA GTFS (static schedules), CTA Bus & Train Tracker APIs (real-time), CTA Alerts API, CTA Route Status API, NWS Weather API, LocationIQ Geocoding API (Tier-5 fallback in a local-first geocoder cascade) |
 | **Hosting** | Railway (backend) + Vercel (frontend) |
 
 ## Local development
@@ -51,7 +51,6 @@ A user enters their origin and destination. The app:
 - `ANTHROPIC_API_KEY` — Anthropic API key for Claude
 - `CTA_TRAIN_API_KEY` — CTA Train Tracker API key
 - `CTA_BUS_API_KEY` — CTA Bus Tracker API key
-- `GOOGLE_MAPS_API_KEY` — Google Maps Geocoding API key
 
 **Backend** — optional (production tuning):
 
@@ -64,6 +63,10 @@ A user enters their origin and destination. The app:
 - `DAU_ADMIN_TOKEN` — Bearer token protecting all `GET /admin/*` analytics endpoints
 - `DAILY_SALT` — Daily-rotating HMAC salt used by the DAU + sessions counters (production-required)
 - `MAXMIND_LICENSE_KEY` — Free MaxMind license key (Railway *Build Argument*, not a runtime env var). Without it the Dockerfile skips the GeoLite2-City download and the FEAT-003 geography panel reads `—`.
+- `LOCATIONIQ_API_KEY` — LocationIQ API key used by Tier 5 of the local-first geocoder cascade. Missing key silently disables Tier 5 (local-only behaviour).
+- `LOCATIONIQ_ENABLED` — `true`/`false` kill switch for Tier 5 (default `true`).
+- `LOCATIONIQ_DAILY_CAP` — UTC-day call ceiling for LocationIQ (default `4900`; ~100-call headroom under the 5,000/day free tier).
+- `LOCATIONIQ_CACHE_TTL_DAYS` — Age in days after which `cached_forward` / `cached_reverse` rows are swept at FastAPI startup (default `90`, `0` disables eviction).
 - `CTA_TRAIN_API_URL`, `CTA_BUS_API_URL` — Override CTA API base URLs (used by `active_routes.py`)
 - `STREET_GRAPH_URL` — Release-asset URL the Dockerfile fetches `street_graph_igraph.pkl` from at build time
 
@@ -98,10 +101,11 @@ The FastAPI server (`backend/main.py`) exposes:
 | `GET /health` | Liveness probe |
 | `GET /ping` | Lightweight no-op endpoint used to issue/refresh the analytics session cookie |
 | `POST /events` | Frontend-fired analytics events (allowlisted names only — see `backend/events.py`) |
-| `GET /autocomplete?q=` | Location autocomplete (stations, neighborhoods, bus stops) |
-| `GET /reverse-geocode?lat=&lon=` | GPS coordinate → human-readable address (Google Maps) |
+| `GET /autocomplete?q=` | Location autocomplete (train stations, neighborhoods, intersections, bus stops, addresses) |
+| `GET /reverse-geocode?lat=&lon=` | GPS coordinate → human-readable address (local-first cascade: cached_reverse → nearest neighborhood → nearest OSM address → LocationIQ fallback) |
 | `GET /alerts` | CTA service alerts feed |
 | `GET /stop-arrivals` | Live arrivals for the home-screen pinned stops board |
+| `GET /last-departure` | Last-train-of-the-day lookup for the FEAT-018 "Last Train" tool — given route/direction/station, returns the final scheduled departure time |
 | `GET /schedule/routes` | Schedule picker manifest — all CTA routes with categories + reverse stop→routes index (FEAT-018) |
 | `GET /schedule/{route_id}` | Full published schedule for a route, bucketed by direction → stop → service-day (FEAT-018) |
 | `GET /admin/dau` | Daily-unique-user counts (protected by `DAU_ADMIN_TOKEN` — internal/operator only) |
@@ -140,7 +144,7 @@ Standalone scripts that run independently of the server:
 
 ## Operational notes
 
-- **Google Maps geocoding cap.** `backend/gtfs_loader.py` enforces a temporary monthly safety cap of 9,500 calls/month against the Google Maps Geocoding API to stay inside the free tier. The cap is opt-out tuning; remove or raise it via `docs/TODO.md` once billing is wired up.
+- **LocationIQ geocoding cap.** Free-text geocoding runs the local-first five-tier cascade in `backend/geocoding.py`. Tier 5 (LocationIQ) is bounded by `LOCATIONIQ_DAILY_CAP` (default 4,900/UTC day, ~100 below the free-tier ceiling of 5,000) plus a 60→120→240→300 s circuit breaker on HTTP 429. When the cap is hit, the cascade silently degrades to local-only for the remainder of the UTC day.
 - **Rate limiting.** OFF by default. Set `RATE_LIMIT_ENABLED=true` (with optional `RATE_LIMIT_RPM` / `RATE_LIMIT_RPH` overrides) before opening up `/recommend` to public traffic.
 - **Street graph hosting.** Both `backend/street_graph.graphml` and `backend/street_graph_igraph.pkl` are gitignored. The pkl is hosted as an asset on the `street-graph` GitHub Release and pulled at Docker build time (see `backend/Dockerfile`). For local development, run `python backend/fetch_street_graph.py` to build both files from OpenStreetMap. The runtime loads the pkl first and falls back to the graphml; if neither is present, walk routing falls back to Haversine estimates.
 
@@ -148,9 +152,13 @@ Standalone scripts that run independently of the server:
 
 - [docs/PROJECT_CONTEXT.md](docs/PROJECT_CONTEXT.md) — Full project brief, architecture, decisions, and phase history
 - [docs/FEATURE_PLANS.md](docs/FEATURE_PLANS.md) — Chunked implementation plans for upcoming features and post-launch enhancement ideas
-- [docs/BUGS.md](docs/BUGS.md) — Open bugs (0 🔴 high, 1 🟡 medium, 1 🟢 low)
+- [docs/BUGS.md](docs/BUGS.md) — Open bugs (0 🔴 high, 3 🟡 medium, 1 🟢 low)
 - [docs/TODO.md](docs/TODO.md) — Tasks requiring human action (accounts, API keys, deployment steps)
+- [docs/SMOKE_TESTS.md](docs/SMOKE_TESTS.md) — One-shot browser-smoke checklist for everything in TODO.md that needs a real browser
 - [docs/TECH_DEBT.md](docs/TECH_DEBT.md) — Known technical debt items
 - [docs/EFFICIENCY.md](docs/EFFICIENCY.md) — Optimization notes and efficiency improvements
+- [docs/SECURITY.md](docs/SECURITY.md) — Open security/dependency findings (SEC-XXX from code review, DEP-XXX from dependency audits)
 - [docs/PRIVACY.md](docs/PRIVACY.md) — Privacy notes for the analytics suite (DAU, geography, sessions, hourly, devices, referrers, public dashboard)
 - [docs/ANALYTICS_MAINTENANCE.md](docs/ANALYTICS_MAINTENANCE.md) — Per-feature analytics-suite maintenance notes (dependency upkeep, GeoLite2 refresh cadence, panel-add/redact procedure)
+- [docs/USER_ACQUISITION.md](docs/USER_ACQUISITION.md) — Marketing / growth playbook for getting people to know the app exists and install it
+- [docs/design_system.md](docs/design_system.md) — Standalone design-system reference (Six Principles, voice rules, composition patterns) for new-feature work

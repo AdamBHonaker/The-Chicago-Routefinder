@@ -3,8 +3,10 @@
  *
  * Maps CRF's design tokens (--paper, --ink, --mute-fog, --rule, --ease-out,
  * --dur-slow, --safe-bottom, --rust) onto the --bsk-* contract used by
- * styles/bottom-sheet.css. A portable snapshot of the original kit
- * (including tokens.example.css) lives under Implementation Plans/mobile-sheet-kit/.
+ * styles/bottom-sheet.css. The original mobile-sheet-kit reference
+ * directory (including tokens.example.css) was inlined into the repo and
+ * removed in commit 5def68c "Repo cleanup: inline mobile-sheet-kit"; this
+ * file and bottom-sheet.css are the authoritative copy.
  *
  * styles/bottom-sheet.css reads these variables; this file is the
  * single seam between CRF's design system and the sheet styles.

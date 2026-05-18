@@ -31,7 +31,12 @@ from pathlib import Path
 import networkx as nx
 import numpy as np
 
-from gtfs_loader import GTFS_DIR, find_nearest_train_stations, find_nearest_bus_stops
+from gtfs_loader import (
+    GTFS_DIR,
+    find_nearest_train_stations,
+    find_nearest_train_stations_progressive,
+    find_nearest_bus_stops,
+)
 from utils import haversine_miles as _haversine_miles, SpatialGrid, TRANSFER_PENALTY_MINUTES, CHICAGO_TZ
 from cta_client import LINE_NAMES
 from walking import (
@@ -48,7 +53,8 @@ _TRANSFER_MINUTES = TRANSFER_PENALTY_MINUTES
 # Maximum number of line changes per route (3 transit legs = 2 transfers).
 # find_routes() drops any candidate path that exceeds this so Yen's algorithm
 # can't surface absurd 4+ transfer itineraries.
-_MAX_TRANSFERS: int = 2
+# Sourced from config.py — set MAX_TRANSFERS_PER_ROUTE env var to override.
+_MAX_TRANSFERS: int = _cfg.MAX_TRANSFERS_PER_ROUTE
 
 # Deadline applied to NetworkX Yen's k-shortest-paths iteration in find_routes
 # (BUG-049 chunk 1). Yen's is a generator that can take arbitrarily long on a
@@ -80,6 +86,13 @@ def _bearing_to_direction(lat1: float, lon1: float, lat2: float, lon2: float) ->
 # Pre-computed shape lookup: (route_id, direction_id) -> [[lat, lon], ...]
 # Populated once during warm_up() by _build_shape_lookup(); read-only after that.
 _shape_lookup: dict[tuple[str, str], list[list[float]]] = {}
+
+# OPT-015: parallel cache of numpy (N, 2) arrays for each shape list in
+# _shape_lookup, keyed by id(list). clip_shape() runs np.argmin against these
+# every time a TransitLeg is constructed; building the ndarray once per shape
+# at startup amortises the conversion across every Yen's-produced route that
+# clips the same line. Populated by _build_shape_lookup(); read-only after.
+_shape_np_cache: dict[int, "np.ndarray"] = {}
 
 # Maximum plausible scheduled leg time; longer values are treated as GTFS noise
 _MAX_LEG_MINUTES: float = _cfg.MAX_LEG_MINUTES
@@ -686,8 +699,11 @@ def _stream_all_stop_sequences(
     print("[transit_graph] Streaming stop_times.txt (unified train+bus pass) …")
     t0 = time.time()
 
-    train_raw: dict[str, list] = {tid: [] for tid in train_candidates}
-    bus_raw:   dict[str, list] = {tid: [] for tid in bus_candidates}
+    # defaultdict avoids allocating an empty list for every candidate trip up
+    # front; lists materialize only when the streaming pass actually writes a
+    # row for that trip. Downstream code already skips empty/absent entries.
+    train_raw: dict[str, list] = defaultdict(list)
+    bus_raw:   dict[str, list] = defaultdict(list)
     # Last Train tool: latest GTFS departure per (route_id, direction_id,
     # parent_mapid). Per-line keying lets a multi-line station return the
     # correct last-train for the specific line the rider picked.
@@ -726,7 +742,7 @@ def _stream_all_stop_sequences(
             except (ValueError, IndexError):
                 continue
 
-            if tid in train_raw:
+            if tid in train_candidates:
                 sid = row.get("stop_id", "").strip()
                 parent = platform_to_parent.get(sid, sid)
                 train_raw[tid].append((seq, parent, arr_min))
@@ -742,7 +758,7 @@ def _stream_all_stop_sequences(
                 if prev is None or dep_min > prev[0]:
                     last_dep[key] = (dep_min, dep_str)
 
-            if tid in bus_raw:
+            if tid in bus_candidates:
                 sid = row.get("stop_id", "").strip()
                 if sid in bus_stop_lookup:
                     bus_raw[tid].append((seq, sid, arr_min))
@@ -833,6 +849,28 @@ def _load_transfer_edges(
     return edges
 
 
+@lru_cache(maxsize=1)
+def _canonical_transfer_edges() -> tuple[tuple[str, str, float], ...]:
+    """
+    OPT-014: process-lifetime cache of the canonical transfer-edge list.
+
+    _assemble_graph builds a fresh graph for each of five service-period
+    variants on first request. Transfers are period-independent (the same
+    platform↔parent mapping and same parent stations apply), so re-streaming
+    transfers.txt for every variant build is pure waste.
+
+    The args of _load_transfer_edges are kept (for test fixtures that pass
+    synthetic dicts) but the production callsite — _assemble_graph — uses this
+    parameterless cached entry point, which sources both dicts from
+    _load_all_stops() (itself @lru_cache(maxsize=1)).
+
+    Returns an immutable tuple so callers can iterate without risking mutation
+    of the cached value.
+    """
+    parent_stations, platform_to_parent, _ = _load_all_stops()
+    return tuple(_load_transfer_edges(platform_to_parent, parent_stations))
+
+
 # ---------------------------------------------------------------------------
 # Graph builder — service-period-aware (BUG-051)
 # ---------------------------------------------------------------------------
@@ -895,6 +933,11 @@ _canonical_lock: threading.Lock = threading.Lock()
 # Per-period graph cache. Built lazily on first request for the period.
 _variant_graphs: dict[str, tuple[nx.DiGraph, dict[str, dict]]] = {}
 _variant_locks:  dict[str, threading.Lock] = {p.name: threading.Lock() for p in _PERIODS_LIST}
+
+# Cache of the midday rep-trip selection populated by
+# _populate_canonical_aux_caches(). _select_representative_trips() reuses it for
+# the canonical period instead of re-grouping every candidate trip (OPT-002).
+_canonical_midday_reps: "tuple[dict[str, tuple[str, str]], dict[tuple[str, str], list[tuple]]] | None" = None
 
 
 def _load_canonical_trip_data() -> _CanonicalTripData:
@@ -966,7 +1009,7 @@ def _populate_canonical_aux_caches(data: _CanonicalTripData) -> None:
     _train_stop_pos. These caches feed callers that need a stable positional
     view (crowdedness bell-curve, transfer scoring) — not per-period ones.
     """
-    global _bus_seq_cache, _train_stop_pos
+    global _bus_seq_cache, _train_stop_pos, _canonical_midday_reps
 
     # Train stop position index
     train_groups: dict[tuple[str, str], list[str]] = {}
@@ -978,6 +1021,7 @@ def _populate_canonical_aux_caches(data: _CanonicalTripData) -> None:
         train_groups.setdefault((rid, did), []).append(tid)
 
     train_pos: dict[tuple[str, str, str], tuple[int, int]] = {}
+    train_selected_midday: dict[str, tuple[str, str]] = {}
     for (rid, did), tids in train_groups.items():
         best = max(tids, key=lambda t: (
             len(data.train_seqs.get(t, [])),
@@ -987,6 +1031,7 @@ def _populate_canonical_aux_caches(data: _CanonicalTripData) -> None:
         total = len(seq)
         for pos, (mapid, _) in enumerate(seq):
             train_pos[(mapid, rid, did)] = (pos, total)
+        train_selected_midday[best] = (rid, did)
     _train_stop_pos = train_pos
 
     # Canonical (midday) bus stop sequences
@@ -1004,6 +1049,9 @@ def _populate_canonical_aux_caches(data: _CanonicalTripData) -> None:
         short = data.bus_route_map.get(rid, rid)
         bus_result[(short, did)] = data.bus_seqs[best]
     _bus_seq_cache = bus_result
+    # OPT-002: stash the midday rep selection so _select_representative_trips
+    # can reuse it when serving the canonical period instead of re-grouping.
+    _canonical_midday_reps = (train_selected_midday, bus_result)
     print(f"[transit_graph] Canonical aux caches: "
           f"{len(train_pos)} train stop-pos entries, {len(bus_result)} bus route/dir sequences")
 
@@ -1021,6 +1069,13 @@ def _select_representative_trips(
     Trips not operating in the period are filtered via _periods_for_trip().
     """
     period = _PERIODS[period_name]
+    # OPT-002: the canonical (midday) selection is already produced by
+    # _populate_canonical_aux_caches() with the same target_min (720). Reuse
+    # it instead of re-grouping every candidate trip.
+    if (period_name == _DEFAULT_PERIOD
+            and _canonical_midday_reps is not None
+            and period.target_min == _TARGET_NOON_MINUTES):
+        return _canonical_midday_reps
     sids_by_day = _load_service_ids_by_day()
 
     # Train
@@ -1125,7 +1180,9 @@ def _assemble_graph(
         )
         transit_edge_count += 1
 
-    transfer_edges = _load_transfer_edges(platform_to_parent, parent_stations)
+    # OPT-014: source from the parameterless cached entry point so the file
+    # parse runs at most once per process, not once per service-period variant.
+    transfer_edges = _canonical_transfer_edges()
     transfer_edge_count = 0
     for from_mapid, to_mapid, minutes in transfer_edges:
         for a, b in [(from_mapid, to_mapid), (to_mapid, from_mapid)]:
@@ -1375,6 +1432,18 @@ def _build_shape_lookup() -> None:
 
     _shape_lookup = new_lookup
 
+    # OPT-015: pre-build numpy arrays for every distinct shape list. Multiple
+    # (route_id, direction_id) keys can map to the same underlying list (both
+    # the route_id and the route_short_name routing keys are populated above),
+    # so we dedupe by id() to avoid double-converting.
+    global _shape_np_cache
+    np_cache: dict[int, "np.ndarray"] = {}
+    for pts in new_lookup.values():
+        key = id(pts)
+        if key not in np_cache:
+            np_cache[key] = np.array(pts)
+    _shape_np_cache = np_cache
+
     print(
         f"[transit_graph] Shape lookup ready: {len(_shape_lookup)} route/direction pairs "
         f"({time.time() - t0:.1f}s)"
@@ -1454,15 +1523,37 @@ def get_station_by_name(name: str) -> tuple[float, float] | None:
     if coords:
         return coords
     # Contains-match fallback — rank by similarity to avoid wrong-line matches
-    # (e.g. "Harlem" matches both Harlem-Lake and Harlem-Forest Park)
+    # (e.g. "Harlem" matches both Harlem-Lake and Harlem-Forest Park).
+    # OPT-005: collect contains-matches first; short-circuit when there is
+    # exactly one, and otherwise rank by length-proximity (cheap O(1) per
+    # candidate) before falling back to SequenceMatcher only to break ties
+    # among the closest-length candidates.
+    matches: list[tuple[str, dict]] = [
+        (s_lower, s)
+        for s_lower, s in _station_name_entries
+        if name_lower in s_lower or s_lower in name_lower
+    ]
+    if not matches:
+        return None
+    if len(matches) == 1:
+        s = matches[0][1]
+        return (s["lat"], s["lon"])
+    qlen = len(name_lower)
+    matches.sort(key=lambda item: abs(len(item[0]) - qlen))
+    # Only run the O(N*M) ratio compare on candidates whose length is closest
+    # (i.e. tied on the cheap key) — typically 1–2 entries instead of all.
+    best_len_delta = abs(len(matches[0][0]) - qlen)
+    tied = [item for item in matches if abs(len(item[0]) - qlen) == best_len_delta]
+    if len(tied) == 1:
+        s = tied[0][1]
+        return (s["lat"], s["lon"])
     best_match = None
     best_ratio = 0.0
-    for s_lower, s in _station_name_entries:
-        if name_lower in s_lower or s_lower in name_lower:
-            ratio = SequenceMatcher(None, name_lower, s_lower).ratio()
-            if ratio > best_ratio:
-                best_ratio = ratio
-                best_match = s
+    for s_lower, s in tied:
+        ratio = SequenceMatcher(None, name_lower, s_lower).ratio()
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_match = s
     if best_match:
         return (best_match["lat"], best_match["lon"])
     return None
@@ -1526,7 +1617,12 @@ def clip_shape(
     if not shape_points:
         return [_round_pt([board_lat, board_lon]), _round_pt([exit_lat, exit_lon])]
 
-    pts = np.array(shape_points)          # (N, 2) — rows are [lat, lon]
+    # OPT-015: reuse the pre-built numpy form of this shape if it's one of the
+    # _shape_lookup lists (the common path). Fall back to a fresh allocation
+    # for ad-hoc callers (tests, future view modes) that pass an unmanaged list.
+    pts = _shape_np_cache.get(id(shape_points))
+    if pts is None:
+        pts = np.array(shape_points)          # (N, 2) — rows are [lat, lon]
     board_idx = int(np.argmin((pts[:, 0] - board_lat) ** 2 + (pts[:, 1] - board_lon) ** 2))
     exit_idx  = int(np.argmin((pts[:, 0] - exit_lat)  ** 2 + (pts[:, 1] - exit_lon)  ** 2))
 
@@ -1628,6 +1724,11 @@ def _path_to_route(
     legs: list = []
     walk_total    = 0.0
     transit_total = 0.0
+    # Track first TransitLeg index and total transit-leg count during the main
+    # loop so the trailing pass (which used to do two O(N) list scans for the
+    # same information) collapses to a single fall-through to Route(...).
+    first_transit_idx: int | None = None
+    transit_leg_count = 0
     ORIGIN = "__ORIGIN__"
     DEST   = "__DEST__"
 
@@ -1775,6 +1876,9 @@ def _path_to_route(
         # for both train and bus edges — use it directly for the TransitLeg.
         line_code = group_route
 
+        if first_transit_idx is None:
+            first_transit_idx = len(legs)
+        transit_leg_count += 1
         legs.append(TransitLeg(
             line=group_line,
             line_code=line_code,
@@ -1792,13 +1896,11 @@ def _path_to_route(
         transit_total += seg_minutes
         idx = look
 
-    transit_legs = [l for l in legs if isinstance(l, TransitLeg)]
-    first_transit_idx = next((i for i, l in enumerate(legs) if isinstance(l, TransitLeg)), None)
     return Route(
         legs=legs,
         transit_minutes=transit_total,
         walk_minutes_total=walk_total,
-        transfers=max(0, len(transit_legs) - 1),
+        transfers=max(0, transit_leg_count - 1),
         first_transit_leg_index=first_transit_idx,
     )
 
@@ -1824,13 +1926,20 @@ def _dedup_stations_by_line(G: nx.DiGraph, stations: list[dict]) -> list[dict]:
             result.append(s)
             continue
         station_lines: set[str] = set()
-        for _, _, data in G.edges(mapid, data=True):
+        # G.adj[mapid].items() returns (neighbour, edge_attr_dict) pairs
+        # directly from the adjacency table without constructing an
+        # OutEdgeDataView around them — measurably cheaper for the small
+        # 3-station-per-side dedup loop on the /recommend hot path.
+        for _, data in G.adj[mapid].items():
             if data.get("edge_type") != "transit":
                 continue
-            if data.get("line"):
-                station_lines.add(data["line"])
-            for _, (_, line_name) in (data.get("all_routes") or {}).items():
-                station_lines.add(line_name)
+            line = data.get("line")
+            if line:
+                station_lines.add(line)
+            all_routes = data.get("all_routes")
+            if all_routes:
+                for _, line_name in all_routes.values():
+                    station_lines.add(line_name)
         if not station_lines or station_lines - covered_lines:
             result.append(s)
             covered_lines |= station_lines
@@ -1951,25 +2060,19 @@ def find_routes_with_status(
     # radius in 0.25-mile increments up to 2.0 miles when needed (e.g. the
     # user is in a neighbourhood that is more than 0.5 miles from the nearest
     # station).
+    # OPT-004: single max-radius spatial query + client-side ring partition
+    # replaces the old eight-iteration loop. Same expanding-ring semantics
+    # (prefer closest stations, expand only if empty), but at most one grid
+    # query per side rather than one per ring.
     if not origin_stations:
-        for _r in _RADIUS_RINGS:
-            origin_stations = find_nearest_train_stations(
-                origin_lat, origin_lon, max_distance_miles=_r
-            )
-            if origin_stations:
-                break
+        origin_stations, _ = find_nearest_train_stations_progressive(
+            origin_lat, origin_lon, rings=_RADIUS_RINGS
+        )
 
     # Destination stations (walk direction: station → destination).
-    # Same progressive-expansion logic: prefer the closest station but don't
-    # fail just because the destination is slightly over 0.5 miles from the
-    # nearest platform.
-    dest_stations: list[dict] = []
-    for _r in _RADIUS_RINGS:
-        dest_stations = find_nearest_train_stations(
-            dest_lat, dest_lon, walk_to_station=False, max_distance_miles=_r
-        )
-        if dest_stations:
-            break
+    dest_stations, _ = find_nearest_train_stations_progressive(
+        dest_lat, dest_lon, rings=_RADIUS_RINGS, walk_to_station=False
+    )
 
     if not origin_stations or not dest_stations:
         # BUG-047: distinguish "out of CTA coverage" from "no path found" so the

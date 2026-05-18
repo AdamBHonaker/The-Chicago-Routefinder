@@ -1,8 +1,16 @@
 // ---------------------------------------------------------------------------
-// Backend URL — falls back to localhost:8000 so `npm run dev` works without .env.local.
-// Production builds always have VITE_BACKEND_URL set via .env.production / Vercel env vars.
+// Backend URL — falls back to <current-host>:8000 in dev so the same bundle
+// works on the dev machine (localhost:5173 → localhost:8000) and on a phone
+// hitting Vite over the LAN (192.168.x.y:5173 → 192.168.x.y:8000) without
+// requiring a hardcoded VITE_BACKEND_URL.
+// Production builds always have VITE_BACKEND_URL set via .env.production /
+// Vercel env vars, so this fallback is dev-only in practice.
 // ---------------------------------------------------------------------------
-export const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
+const _devBackendFallback =
+  typeof window !== "undefined" && window.location?.hostname
+    ? `${window.location.protocol}//${window.location.hostname}:8000`
+    : "http://localhost:8000";
+export const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || _devBackendFallback;
 
 // ---------------------------------------------------------------------------
 // Timing constants for LocationInput and related UI (TD-014).

@@ -2,11 +2,15 @@ import asyncio
 import logging
 import os
 import time
-import xml.etree.ElementTree as ET
 from contextlib import asynccontextmanager
 from datetime import datetime
 
 import aiohttp
+# defusedxml hardens stdlib XML parsing against entity-expansion attacks
+# (billion laughs, quadratic blowup). Used for parsing the CTA Customer
+# Alerts API XML response — see SEC-006. defusedxml mirrors the stdlib
+# ElementTree API so this is a drop-in replacement for fromstring().
+from defusedxml.ElementTree import fromstring as _xml_fromstring
 from cachetools import TTLCache
 
 from fastapi import FastAPI, HTTPException, Request, Header, Query
@@ -17,14 +21,22 @@ import anthropic
 
 
 # load_dotenv() must be called before importing local modules.
-# gtfs_loader.py reads GOOGLE_MAPS_API_KEY at module level (import time),
+# geocoding.py reads LOCATIONIQ_API_KEY at module level (import time),
 # so the .env file must be loaded into os.environ first.
 load_dotenv()
 
 from gtfs_loader import (
-    resolve_location, geocode_google, reverse_geocode_google, NEIGHBORHOOD_COORDS,
-    fuzzy_match_neighborhood, _load_stops, coords_for_location,
+    find_nearest_train_stations, find_nearest_bus_stops,
 )
+import config as _cfg
+from geocoding import (
+    resolve_location,
+    reverse_geocode_point,
+    evict_cache_older_than as _evict_geocoder_cache,
+    GeocoderDegradedError,
+    LocationOutsideChicagoError,
+)
+import local_search
 from geocode_text import _normalize_street_abbr
 from cta_client import get_train_arrivals, get_bus_arrivals, get_alerts, get_route_statuses, TRAIN_LINE_TO_ALERT_ID, LINE_NAMES, init_session as _init_cta_session, close_session as _close_cta_session, _get_session as _get_cta_session
 from transit_graph import (
@@ -63,8 +75,8 @@ weather_service = WeatherService()
 # ---------------------------------------------------------------------------
 # Response cache
 # ---------------------------------------------------------------------------
-_CACHE_TTL_SECONDS = 120      # seconds
-_CACHE_MAX_SIZE    = 500      # entries
+_CACHE_TTL_SECONDS = int(os.getenv("RESPONSE_CACHE_TTL_SECONDS", "120"))  # seconds
+_CACHE_MAX_SIZE    = int(os.getenv("RESPONSE_CACHE_MAX_SIZE", "500"))     # entries
 _response_cache: TTLCache = TTLCache(maxsize=_CACHE_MAX_SIZE, ttl=_CACHE_TTL_SECONDS)
 # Set RESPONSE_CACHE_ENABLED=false to bypass the cache (e.g. to reduce Railway memory while
 # traffic is low). Default true. Re-enable by setting the var to "true" or removing it.
@@ -101,6 +113,35 @@ _stop_arrivals_cache: TTLCache = TTLCache(maxsize=200, ttl=_STOP_ARRIVALS_TTL)
 def _cache_key(origin: str, destination: str, transit_mode: str, bus_fullness: str,
                byok: bool = False, ai_enabled: bool = False, language: str = "en",
                walk_speed: float = 1.0) -> str:
+    """Build the response-cache key from request inputs that affect the output.
+
+    Every parameter listed below is part of the cache identity — two requests
+    that differ on any one of them must NOT share a cached response. When
+    adding a new cache dimension, add it BOTH here and to every call site in
+    `recommend()`; missing a call site silently widens the cache (one user's
+    response served to a different user with a different setting).
+
+    Parameters
+    ----------
+    origin, destination : raw user input. Lower-cased + stripped so trivial
+        whitespace/case variants share an entry.
+    transit_mode : one of "All" / "Train" / "Bus" / "Walk" — changes which
+        legs the routing engine considers.
+    bus_fullness : one of "All" / "Empty" / "Half-Full" / "Full" — filters
+        out crowded buses; affects the route list.
+    byok : True when the user supplied their own Anthropic API key. BYOK and
+        shared-quota responses are billed differently, so they MUST NOT share
+        cache entries.
+    ai_enabled : when False, response.recommendation is null. Different output
+        shape → separate cache entry.
+    language : BCP-47 code. Different languages → different Claude output.
+    walk_speed : pace multiplier in [0.5, 2.0]. Affects every leg's minutes
+        in the response.
+
+    Returned string is pipe-delimited (no parameter value may legitimately
+    contain "|" — origin/destination are short free-text but never include
+    pipes in practice).
+    """
     # Include a BYOK flag so BYOK and shared-quota requests never share cache
     # entries — a non-BYOK user would otherwise be served a response whose
     # Claude call was paid for by a BYOK user (and vice-versa).
@@ -172,81 +213,72 @@ if os.getenv("APP_ENV") == "production" and not _extra_origin_list:
     )
 ALLOWED_ORIGINS = ["http://localhost:5173", "http://localhost:5174"] + _extra_origin_list
 
+# Dev-only LAN allowlist: when not in production, also accept origins on the
+# Vite dev ports from RFC1918 private ranges so a phone on the same Wi-Fi can
+# hit the dev backend without the developer having to hardcode their LAN IP in
+# ALLOWED_ORIGINS every time DHCP hands out a new one. Disabled in production
+# so an attacker on a shared NAT can never bypass the explicit allowlist.
+_DEV_LAN_ORIGIN_REGEX = (
+    r"http://("
+    r"192\.168\.\d{1,3}\.\d{1,3}"
+    r"|10\.\d{1,3}\.\d{1,3}\.\d{1,3}"
+    r"|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}"
+    r"):(5173|5174)"
+)
+_CORS_ORIGIN_REGEX = None if os.getenv("APP_ENV") == "production" else _DEV_LAN_ORIGIN_REGEX
+
 # Hard cap on POST body size. /recommend bodies are <1 KB in normal use; 16 KB
 # leaves generous headroom while preventing OOM/DoS via giant payloads.
 _MAX_REQUEST_BYTES = 16 * 1024
 
 
-# ---------------------------------------------------------------------------
-# Autocomplete index — built once at startup from GTFS + neighborhood data
-# ---------------------------------------------------------------------------
-_ac_train_names: list[str] = []   # train parent-station display names
-_ac_neighborhood_names: list[str] = []  # title-cased neighborhood/landmark names
-_ac_bus_names: list[str] = []     # deduplicated bus stop display names
-# Master list of all suggestion dicts — each entry stored exactly once.
-_ac_master: list[dict] = []
-# Inverted prefix index: 2- and 3-char lowercase prefixes → [(tier, score, idx)]
-# idx is an integer index into _ac_master; avoids storing duplicate dict refs.
-# score 0 = full-name prefix (first word), score 1 = inner-word prefix
-_ac_prefix_index: dict[str, list[tuple[int, int, int]]] = {}
-
-
-def _build_autocomplete_index() -> None:
-    global _ac_train_names, _ac_neighborhood_names, _ac_bus_names
-    global _ac_master, _ac_prefix_index
-    train_stations, bus_stops = _load_stops()
-    _ac_train_names = [s["name"] for s in train_stations]
-    _ac_neighborhood_names = [name.title() for name in NEIGHBORHOOD_COORDS.keys()]
-    seen: set[str] = set()
-    bus_names: list[str] = []
-    for s in bus_stops:
-        nl = s["name"].lower()
-        if nl not in seen:
-            seen.add(nl)
-            bus_names.append(s["name"])
-    _ac_bus_names = bus_names
-
-    master: list[dict] = []
-    index: dict[str, list[tuple[int, int, int]]] = {}
-
-    def _index_entry(name: str, tier: int, label_type: str) -> None:
-        nl = name.lower()
-        suggestion = {"label": name, "value": name, "type": label_type, "_nl": nl, "_words": nl.split()}
-        idx = len(master)
-        master.append(suggestion)
-        added: set[str] = set()
-        for i, word in enumerate(nl.split()):
-            score = 0 if i == 0 else 1
-            for length in (2, 3):
-                if len(word) >= length:
-                    key = word[:length]
-                    if key not in added:
-                        index.setdefault(key, []).append((tier, score, idx))
-                        added.add(key)
-
-    for name in _ac_train_names:
-        _index_entry(name, 0, "train")
-    for name in _ac_neighborhood_names:
-        _index_entry(name, 1, "neighborhood")
-    for name in _ac_bus_names:
-        _index_entry(name, 2, "bus")
-
-    _ac_master = master
-    _ac_prefix_index = index
-    print(
-        f"[autocomplete] Index built: {len(_ac_train_names)} train stations, "
-        f"{len(_ac_neighborhood_names)} neighborhoods, {len(_ac_bus_names)} bus stop names, "
-        f"{len(index)} prefix keys, {len(master)} master entries"
-    )
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """FastAPI startup/shutdown hook.
+
+    Startup order (each step depends on the previous):
+      1. ``_init_cta_session()`` — opens the shared aiohttp session used by every
+         CTA Train/Bus Tracker call. Must run before any endpoint can serve
+         arrivals.
+      2. ``warm_up()`` (in executor) — loads the transit-graph pickle and
+         pre-computes service-period variants. Sync + CPU-bound, so it runs in
+         the default executor to avoid blocking the event loop.
+      3. ``_evict_geocoder_cache(LOCATIONIQ_CACHE_TTL_DAYS)`` — sweeps stale
+         rows from `cached_forward` / `cached_reverse`. No-op when the DB is
+         absent (production today, until FEAT-019 ships the artifact) or when
+         the TTL is 0 (operator opt-out). Cheap one-shot DELETE per table.
+
+    The autocomplete index lives in ``local_search.py`` (Chunk 4 of the
+    Geocoding & Autocomplete plan); it builds itself lazily on first
+    ``/autocomplete`` request rather than at startup, so warm_up() remains
+    the heaviest startup step.
+
+    Shutdown order (reverse of dependency):
+      * ``_close_cta_session()`` — drains in-flight CTA calls and releases the
+         shared session.
+      * ``weather_service.close()`` — closes the NWS aiohttp session.
+
+    Railway gotcha: warm_up() can take 5–10 s on a cold instance; Railway's
+    startup health probe must be configured with enough grace to cover it
+    (currently 60 s).
+    """
     await _init_cta_session()
     print("[main] Warming up transit graph ...")
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, warm_up)
-    _build_autocomplete_index()
+    # Sweep stale LocationIQ cache rows. Cheap; safe when DB is absent.
+    try:
+        evicted = await loop.run_in_executor(
+            None, _evict_geocoder_cache, _cfg.LOCATIONIQ_CACHE_TTL_DAYS,
+        )
+        if evicted["cached_forward"] or evicted["cached_reverse"]:
+            print(
+                f"[main] LocationIQ cache TTL sweep: "
+                f"forward={evicted['cached_forward']} reverse={evicted['cached_reverse']}"
+            )
+    except Exception as exc:
+        # Defensive: never let a cache-eviction error prevent the app from starting.
+        print(f"[main] LocationIQ cache TTL sweep failed (non-fatal): {exc}")
     print("[main] Ready.")
     yield
     await _close_cta_session()
@@ -268,6 +300,7 @@ register_middlewares(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=_CORS_ORIGIN_REGEX,
     allow_methods=["POST", "GET"],
     allow_headers=["Content-Type", "Accept", "Accept-Language", "Authorization"],
     # FEAT-001: the session cookie is httpOnly + Secure, and SameSite=None in
@@ -325,6 +358,7 @@ class RouteRequest(BaseModel):
     @field_validator("transit_mode")
     @classmethod
     def validate_transit_mode(cls, v: str) -> str:
+        """Reject unknown transit modes with a 422 (no silent fallback)."""
         if v not in _VALID_TRANSIT_MODES:
             raise ValueError(f"transit_mode must be one of {sorted(_VALID_TRANSIT_MODES)}")
         return v
@@ -332,6 +366,7 @@ class RouteRequest(BaseModel):
     @field_validator("bus_fullness")
     @classmethod
     def validate_bus_fullness(cls, v: str) -> str:
+        """Reject unknown bus-fullness values with a 422 (no silent fallback)."""
         if v not in _VALID_BUS_FULLNESS:
             raise ValueError(f"bus_fullness must be one of {sorted(_VALID_BUS_FULLNESS)}")
         return v
@@ -706,19 +741,61 @@ async def _resolve_locations(
     loop: asyncio.AbstractEventLoop,
     request: RouteRequest,
 ) -> tuple:
-    """Resolve origin and destination to stations, bus stops, and coordinates.
+    """Resolve origin and destination to coordinates + nearby stops.
 
     Returns (origin_stations, origin_bus_stops, dest_stations, dest_bus_stops,
              dest_match, origin_coords, dest_coords).
     Raises HTTPException(400) if either location is unresolvable or they are
-    the same location.
+    the same location, and 503 if the Tier-5 geocoder is degraded.
     """
-    (
-        (origin_stations, origin_bus_stops, _, origin_coords),
-        (dest_stations,   dest_bus_stops,   dest_match, dest_coords),
-    ) = await asyncio.gather(
-        loop.run_in_executor(None, resolve_location, request.origin),
-        loop.run_in_executor(None, resolve_location, request.destination),
+    try:
+        origin_coords, dest_coords = await asyncio.gather(
+            loop.run_in_executor(None, resolve_location, request.origin),
+            loop.run_in_executor(None, resolve_location, request.destination),
+        )
+    except GeocoderDegradedError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except LocationOutsideChicagoError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"'{exc.query}' is outside our service area. "
+                "We currently cover Chicago + Evanston (Purple Line corridor)."
+            ),
+        ) from exc
+
+    if origin_coords is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Could not find '{request.origin}'. "
+                "Try a Chicago neighborhood (e.g., 'Wrigleyville', 'Lincoln Park') "
+                "or a street address."
+            ),
+        )
+    if dest_coords is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Could not find '{request.destination}'. "
+                "We currently cover the area from Howard St to 50th St, "
+                "Lakefront to Pulaski Rd."
+            ),
+        )
+
+    dlat = origin_coords[0] - dest_coords[0]
+    dlon = origin_coords[1] - dest_coords[1]
+    if (dlat * dlat + dlon * dlon) < _SAME_LOCATION_THRESHOLD_DEG2:
+        raise HTTPException(
+            status_code=400,
+            detail="Your origin and destination appear to be the same location.",
+        )
+
+    (origin_stations, origin_bus_stops, dest_stations, dest_bus_stops) = await asyncio.gather(
+        loop.run_in_executor(None, find_nearest_train_stations, origin_coords[0], origin_coords[1]),
+        loop.run_in_executor(None, find_nearest_bus_stops,      origin_coords[0], origin_coords[1]),
+        loop.run_in_executor(None, find_nearest_train_stations, dest_coords[0],   dest_coords[1]),
+        loop.run_in_executor(None, find_nearest_bus_stops,      dest_coords[0],   dest_coords[1]),
     )
     if not origin_stations and not origin_bus_stops:
         raise HTTPException(
@@ -738,30 +815,10 @@ async def _resolve_locations(
             ),
         )
 
-    # If resolve_location produced stations but no coords (rare — e.g. the
-    # geocoder cache has a None entry but find_nearest_* still returned hits
-    # via a previous resolution path), fall back to coords_for_location's
-    # station-centroid logic so routing still has a starting point.
-    if origin_coords is None or dest_coords is None:
-        fallback_origin, fallback_dest = await asyncio.gather(
-            loop.run_in_executor(None, coords_for_location, request.origin, origin_stations),
-            loop.run_in_executor(None, coords_for_location, request.destination, dest_stations),
-        )
-        origin_coords = origin_coords or fallback_origin
-        dest_coords   = dest_coords   or fallback_dest
-
-    if origin_coords and dest_coords:
-        dlat = origin_coords[0] - dest_coords[0]
-        dlon = origin_coords[1] - dest_coords[1]
-        if (dlat * dlat + dlon * dlon) < _SAME_LOCATION_THRESHOLD_DEG2:
-            raise HTTPException(
-                status_code=400,
-                detail="Your origin and destination appear to be the same location.",
-            )
-
     return (
         origin_stations, origin_bus_stops,
-        dest_stations, dest_bus_stops, dest_match,
+        dest_stations, dest_bus_stops,
+        request.destination,
         origin_coords, dest_coords,
     )
 
@@ -1276,7 +1333,10 @@ async def post_event(body: EventBody, http_request: Request):
 
 
 @app.get("/stop-arrivals")
-async def stop_arrivals(stops: list[str] = Query(default=[])):
+async def stop_arrivals(
+    http_request: Request,
+    stops: list[str] = Query(default=[]),
+):
     """
     Return live arrivals for a list of pinned stops (Feature Pinned Stops).
     Each stop is specified as "<type>:<stop_id>" — e.g. "train:40500" or "bus:1234".
@@ -1286,6 +1346,13 @@ async def stop_arrivals(stops: list[str] = Query(default=[])):
     Keys are typed (e.g. "train:40900", "bus:1234") so bus stop IDs and train
     mapids do not collide when they share a numeric value.
     """
+    # SEC-011: gate through the shared geocode rate-limit bucket. The 30-second
+    # in-process cache is keyed by the caller-supplied stop set, so an attacker
+    # who rotates stop IDs bypasses the cache and forces a CTA round-trip on
+    # every call. Pinned-stops UI fires at most every 30 s per tile, comfortably
+    # under the 60 RPM / 600 RPH bucket caps.
+    if not _check_geocode_rate_limit(_client_ip(http_request)):
+        raise HTTPException(status_code=429, detail="Too many requests")
     if len(stops) > 10:
         raise HTTPException(status_code=400, detail="Maximum 10 stops per request")
 
@@ -1421,49 +1488,58 @@ async def last_departure(
 # routes/stats.py (registered onto `app` via include_router above).
 
 
+# Map `local_search.Suggestion.source` to the public `type` value the
+# frontend understands. The legacy names (train / neighborhood / bus) are
+# preserved exactly so no frontend change ships with this chunk; the two
+# new types (address, intersection) are surfaced for the first time here.
+_AUTOCOMPLETE_SOURCE_TO_TYPE: dict[str, str] = {
+    "train_station": "train",
+    "neighborhood":  "neighborhood",
+    "intersection":  "intersection",
+    "bus_stop":      "bus",
+    "address":       "address",
+}
+
+
 @app.get("/autocomplete")
 async def autocomplete(
     http_request: Request,
     q: str = Query("", min_length=0, max_length=200),
 ):
     """
-    Return up to 8 location suggestions matching query q (min 2 chars).
-    Priority order: train stations → neighborhoods/landmarks → bus stop names.
-    Within each tier: prefix > word-start match.
+    Return up to 8 location suggestions for query `q` (min 2 chars).
+
+    Backed by `local_search.autocomplete` (Chunk 4 of the Geocoding &
+    Autocomplete plan): FTS5 over Chicago OSM addresses + intersections,
+    unioned with the in-memory neighborhood + GTFS train/bus indexes. Tier
+    order is train_station → neighborhood → intersection → bus_stop →
+    address, with a Decision-8 per-tier soft cap (default 3) and cross-tier
+    dedupe. No hosted-geocoder supplement (Decision 5) — submit-time forward
+    still cascades through LocationIQ in `geocoding.resolve_location` for
+    anything autocomplete misses.
+
+    Response shape is unchanged from the prior implementation:
+    ``{"suggestions": [{"label", "value", "type"}, ...]}``. Two new `type`
+    values ship here for the first time: `address` and `intersection`.
     """
-    query = q.strip().lower()
+    query = q.strip()
     if len(query) < 2:
         return {"suggestions": []}
     if not _check_geocode_rate_limit(_client_ip(http_request)):
         raise HTTPException(status_code=429, detail="Too many requests")
 
-    # O(1) prefix lookup: use 3-char key for queries ≥ 3 chars, else 2-char key.
-    key = query[:3] if len(query) >= 3 else query
-    candidates = _ac_prefix_index.get(key, [])
-
-    ranked: list[tuple[int, int, int]] = []
-    seen: set[str] = set()
-    for tier, _base_score, idx in candidates:
-        suggestion = _ac_master[idx]
-        nl = suggestion["_nl"]
-        if nl.startswith(query):
-            score = 0
-        elif any(w.startswith(query) for w in suggestion["_words"]):
-            score = 1
-        else:
-            continue
-        label = suggestion["label"]
-        if label not in seen:
-            seen.add(label)
-            ranked.append((tier, score, idx))
-
-    ranked.sort(key=lambda x: (x[0], x[1]))
-    # Project to the public shape so internal indexing fields (_nl, _words)
-    # don't leak into the response payload (OPT-BE-223).
+    loop = asyncio.get_running_loop()
+    suggestions = await loop.run_in_executor(
+        None, local_search.autocomplete, query,
+    )
     return {
         "suggestions": [
-            {"label": s["label"], "value": s["value"], "type": s["type"]}
-            for s in (_ac_master[idx] for _, _, idx in ranked[:8])
+            {
+                "label": s.label,
+                "value": s.label,
+                "type": _AUTOCOMPLETE_SOURCE_TO_TYPE.get(s.source, s.source),
+            }
+            for s in suggestions
         ]
     }
 
@@ -1501,7 +1577,7 @@ async def alerts_endpoint():
         ) as resp:
             text = await resp.text()
 
-        root = ET.fromstring(text)
+        root = _xml_fromstring(text)
         parsed: list[dict] = []
         for alert_el in root.findall("Alert"):
             try:
@@ -1566,6 +1642,28 @@ async def recommend(
     http_request: Request,
     authorization: str | None = Header(default=None),
 ):
+    """The main routing endpoint. Returns ranked route recommendations.
+
+    This handler is long (~200 lines) by design — the orchestration is
+    inherently sequential and refactoring it into helpers would obscure the
+    request lifecycle that operators trace when debugging a slow request.
+    The pipeline, in order:
+
+      1. BYOK key parsing (Authorization header → optional client override).
+      2. Rate-limit + daily-quota check (`rate_limit._check_*`).
+      3. Cache lookup keyed by `_cache_key(...)` — most repeats short-circuit.
+      4. Geocoding origin + destination (gtfs_loader / geocode_text).
+      5. Transit graph routing (`transit_graph.find_routes_with_status`).
+      6. Live arrival fetch (CTA Train + Bus Tracker, parallel).
+      7. Weather context fetch (`weather_service.get_weather_context`).
+      8. Claude recommendation call (when `ai_enabled=True`).
+      9. Analytics event emission (events / sessions / funnel modules).
+
+    Each stage is best-effort downstream of step 5: a CTA outage, weather
+    failure, or Claude error degrades the response but never blocks routing.
+    Future refactor candidate (TD-001): extract stages 4–8 as composable
+    helpers once an integration-test harness exists to verify behaviour.
+    """
     ip = _client_ip(http_request)
 
     # BYOK key arrives via Authorization: Bearer <sk-ant-...>. Parsed here so it
@@ -1627,10 +1725,18 @@ async def recommend(
 
     # Walk mode — skip all CTA API calls; resolve coordinates and route via walking graph only.
     if request.transit_mode == "Walk":
-        origin_coords, dest_coords = await asyncio.gather(
-            loop.run_in_executor(None, coords_for_location, request.origin, None),
-            loop.run_in_executor(None, coords_for_location, request.destination, None),
-        )
+        try:
+            origin_coords, dest_coords = await asyncio.gather(
+                loop.run_in_executor(None, resolve_location, request.origin),
+                loop.run_in_executor(None, resolve_location, request.destination),
+            )
+        except GeocoderDegradedError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except LocationOutsideChicagoError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"'{exc.query}' is outside our service area.",
+            ) from exc
         if not origin_coords:
             raise HTTPException(status_code=400, detail=f"Could not geocode '{request.origin}'.")
         if not dest_coords:
@@ -1795,11 +1901,14 @@ async def reverse_geocode_endpoint(
 ):
     """
     Convert GPS coordinates to a human-readable address string.
-    Used by the frontend after geolocation to display a place name instead of raw coordinates.
-    Falls back to "lat,lon" if the Google Maps API is unavailable.
+
+    Used by the frontend after geolocation to display a place name instead of
+    raw coordinates. The cascade (`geocoding.reverse_geocode_point`) is:
+    cached_reverse → nearest neighborhood (≤200 m) → nearest OSM address
+    (≤50 m) → LocationIQ → "lat,lon" string fallback.
     """
     if not _check_geocode_rate_limit(_client_ip(http_request)):
         raise HTTPException(status_code=429, detail="Too many requests")
     loop = asyncio.get_running_loop()
-    address = await loop.run_in_executor(None, reverse_geocode_google, lat, lon)
-    return {"address": address or f"{lat:.6f},{lon:.6f}"}
+    result = await loop.run_in_executor(None, reverse_geocode_point, lat, lon)
+    return {"address": result["label"]}

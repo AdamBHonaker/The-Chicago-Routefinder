@@ -53,18 +53,35 @@ def _get_holidays() -> Set[str]:
 # ---------------------------------------------------------------------------
 
 class TimePeriod(Enum):
+    """Time-of-day bucket used by the crowdedness heuristic.
+
+    PEAK covers weekday rush hours (CTA's published peak windows); REGULAR is
+    mid-day; OFF_PEAK is evenings/late-night. Maps to a base-crowdedness
+    multiplier inside ``_estimate_crowdedness``.
+    """
     PEAK     = "peak"
     REGULAR  = "regular"
     OFF_PEAK = "off_peak"
 
 
 class DayType(Enum):
+    """Day-of-week / holiday bucket.
+
+    HOLIDAY (US-federal + Illinois state) is treated as WEEKEND for
+    crowdedness purposes — CTA runs reduced service and ridership tracks the
+    weekend profile more closely than the weekday profile.
+    """
     WEEKDAY = "weekday"
     WEEKEND = "weekend"
     HOLIDAY = "holiday"    # treated as weekend for crowdedness purposes
 
 
 class CrowdednessLevel(Enum):
+    """Four-step ordinal crowdedness rating surfaced to the frontend.
+
+    Ordering (LOW < MODERATE < HIGH < VERY_HIGH) is preserved in
+    ``CROWDEDNESS_LEVEL_ORDER`` for max/min comparisons across legs.
+    """
     LOW       = "low"
     MODERATE  = "moderate"
     HIGH      = "high"

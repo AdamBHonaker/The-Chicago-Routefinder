@@ -6,11 +6,20 @@ The pedestrian street graph is loaded from the pre-built igraph artifact
 to parsing street_graph.graphml via igraph directly.
 
 Walking speed assumption: 3 mph (1.34 m/s) — a comfortable pedestrian pace.
+
+Legacy bug-tracker references in inline comments:
+  * "BUG-048" — the Haversine-fallback telemetry path (corrupt pickle / missing
+    vertex attrs / igraph internal error). See ``_record_fallback_error``.
+  * "BUG-049 chunk 2" — the cross-city distance pre-flight that bypasses the
+    street-graph Dijkstra for queries beyond MAX_STREET_WALK_MILES.
+These IDs are kept for git-blame continuity; the surrounding comments fully
+explain the behaviour, so reading the code does not require external lookup.
 """
 
 import gc
 import hashlib
 import math
+import os
 import pickle
 import threading
 import time
@@ -79,7 +88,11 @@ _lcc_vertex_ids: "np.ndarray | None" = None
 
 # Idle-eviction TTL sourced from config.py; set WALK_GRAPH_EVICT_TTL_S=0 to disable.
 WALK_GRAPH_EVICT_TTL_S: int = _cfg.WALK_GRAPH_EVICT_TTL_S
-_EVICT_CHECK_INTERVAL_S: int = 60  # how often the background thread wakes to check
+# Wake-up cadence for the eviction daemon. 60 s balances memory-reclamation
+# latency (worst case: graph stays loaded ~60 s past the idle deadline) against
+# the cost of waking the daemon. Lowering this only helps if you also lower
+# WALK_GRAPH_EVICT_TTL_S aggressively; otherwise the check is wasted work.
+_EVICT_CHECK_INTERVAL_S: int = int(os.getenv("WALK_GRAPH_EVICT_CHECK_INTERVAL_S", "60"))
 _last_walk_time: float = 0.0       # monotonic timestamp of the most recent walk call
 
 
@@ -167,9 +180,24 @@ def _graph_eviction_worker() -> None:
         gc.collect()
 
 
-threading.Thread(
-    target=_graph_eviction_worker, daemon=True, name="walk-graph-evictor"
-).start()
+# OPT-006: only spin up the eviction thread when an eviction TTL is actually
+# configured, and start it lazily on first graph load so utilities that import
+# `walking` but never load the graph don't pay for an idle daemon.
+_eviction_thread_started: bool = False
+_eviction_thread_lock = threading.Lock()
+
+
+def _ensure_eviction_thread() -> None:
+    global _eviction_thread_started
+    if _eviction_thread_started or WALK_GRAPH_EVICT_TTL_S <= 0:
+        return
+    with _eviction_thread_lock:
+        if _eviction_thread_started:
+            return
+        threading.Thread(
+            target=_graph_eviction_worker, daemon=True, name="walk-graph-evictor"
+        ).start()
+        _eviction_thread_started = True
 
 # Coordinate snap precision for cache keys. 5 decimals ≈ 1.1 m at Chicago's
 # latitude — well below the precision GTFS / geocoded coords need to land on
@@ -299,6 +327,10 @@ def _load_graph() -> "ig.Graph | None":
         return _graph_cache
     if _graph_load_failed:
         return None
+
+    # OPT-006: start the eviction daemon now that something is actually about
+    # to load the graph (no-op when WALK_GRAPH_EVICT_TTL_S <= 0).
+    _ensure_eviction_thread()
 
     with _graph_lock:
         if _graph_cache is not None:
@@ -526,13 +558,18 @@ def walk_minutes(
         return _haversine_walk_minutes(origin_lat, origin_lon, dest_lat, dest_lon)
 
 
+@lru_cache(maxsize=512)
 def _walk_directions_impl(
     origin_lat: float,
     origin_lon: float,
     dest_lat: float,
     dest_lon: float,
 ) -> tuple:
-    """Cached implementation for walk_directions — returns a tuple so the cache holds immutable data."""
+    """Cached implementation for walk_directions — returns a tuple so the cache holds immutable data.
+
+    Wrappers snap coords through ``_snap()`` before calling, so near-identical
+    origins/destinations collapse onto the same cache key (1.1 m grid).
+    """
     try:
         path = _get_shortest_path(origin_lat, origin_lon, dest_lat, dest_lon)
         if path is None:
@@ -628,10 +665,17 @@ def walk_directions(
     Returns a fresh list on every call (safe to mutate).
     """
     _touch_walk_time()
-    steps = _walk_directions_impl(origin_lat, origin_lon, dest_lat, dest_lon)
+    # OPT-016: snap at the cache boundary so near-identical coords collapse
+    # onto a single _walk_directions_impl entry, mirroring _get_shortest_path's
+    # snapping policy upstream.
+    steps = _walk_directions_impl(
+        _snap(origin_lat), _snap(origin_lon),
+        _snap(dest_lat),   _snap(dest_lon),
+    )
     return list(steps[:_WALK_DIRECTIONS_MAX_STEPS])
 
 
+@lru_cache(maxsize=512)
 def _walk_path_impl(
     origin_lat: float,
     origin_lon: float,
@@ -643,6 +687,9 @@ def _walk_path_impl(
 
     Returns a tuple of (lat, lon) tuples so the cache holds fully immutable data.
     The public walk_path wrapper converts each point back to [lat, lon] lists.
+
+    Wrappers snap coords through ``_snap()`` before calling, so near-identical
+    origins/destinations collapse onto the same cache key (1.1 m grid).
     """
     try:
         G = _load_graph()
@@ -663,9 +710,17 @@ def _walk_path_impl(
 
         result_coords: list[tuple[float, float]] = []
 
+        # OPT-003: bulk-fetch the geometry attribute once (C-level call) and
+        # index by eid in the loop, mirroring _walk_directions_impl.
+        edge_geometries = (
+            G.es["geometry"]
+            if G.ecount() > 0 and "geometry" in G.es.attributes()
+            else None
+        )
+
         for eid, u, v in zip(epath, vpath, vpath[1:]):
             # geometry is stored as [(lon, lat), ...] list (None if absent)
-            geom_coords = G.es[eid]["geometry"]
+            geom_coords = edge_geometries[eid] if edge_geometries is not None else None
 
             if geom_coords:
                 u_lon = _vertex_lons[u]
@@ -719,9 +774,14 @@ def walk_path(
     Returns a fresh list on every call (safe to mutate).
     """
     _touch_walk_time()
+    # OPT-016: snap at the cache boundary so near-identical coords collapse
+    # onto a single _walk_path_impl entry.
     return [
         [round(lat, _WALK_COORD_DECIMALS), round(lon, _WALK_COORD_DECIMALS)]
-        for lat, lon in _walk_path_impl(origin_lat, origin_lon, dest_lat, dest_lon)
+        for lat, lon in _walk_path_impl(
+            _snap(origin_lat), _snap(origin_lon),
+            _snap(dest_lat),   _snap(dest_lon),
+        )
     ]
 
 

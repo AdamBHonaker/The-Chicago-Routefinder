@@ -48,6 +48,8 @@ _REQUIRED_TOPICS: tuple[str, ...] = (
     "Referrers",
     "returnId",            # FEAT-002 cookie name
     "Bloom filter",        # how cross-day recognition is implemented
+    "LocationIQ",          # Tier-5 geocoder fallback (Chunk 9 of the
+                           # Geocoding & Autocomplete plan, 2026-05-14)
 )
 
 # "What is NOT collected" guarantees that must appear on both sides.

@@ -16,6 +16,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from enum import Enum
 from typing import Optional
+from urllib.parse import urlparse
 
 import aiohttp
 from cachetools import TTLCache
@@ -37,6 +38,23 @@ if not _nws_contact_email:
     _nws_contact_email = "nws-contact-not-configured@example.com"
 _NWS_USER_AGENT = f"The-Chicago-Routefinder/1.0 ({_nws_contact_email})"
 _NWS_BASE = "https://api.weather.gov"
+# SEC-008: NWS returns ``forecast`` / ``forecastHourly`` URLs in the
+# /points response which we then fetch in a chained call. The hostnames must
+# match this allowlist; otherwise an upstream compromise (or MITM of an HTTPS
+# response that the OS trust store mis-validated) could redirect us at
+# attacker-controlled infrastructure and the response would flow back into
+# the weather pipeline. ``api.weather.gov`` is the only host NWS publishes
+# for those follow-on URLs.
+_NWS_ALLOWED_HOSTS: frozenset[str] = frozenset({"api.weather.gov"})
+
+
+def _is_nws_url(url: str) -> bool:
+    """Return True iff ``url`` is an https://<NWS allowlist host>/... URL."""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    return parsed.scheme == "https" and (parsed.hostname or "") in _NWS_ALLOWED_HOSTS
 
 # Grid-point URL cache: (lat_2dp, lon_2dp) → (forecast_url, forecast_hourly_url)
 # NWS grid point URLs are stable per location; 24 h TTL is safe.
@@ -53,6 +71,7 @@ _weather_cache: TTLCache = TTLCache(maxsize=200, ttl=1800)
 # ---------------------------------------------------------------------------
 
 class PrecipitationType(str, Enum):
+    """Coarse precipitation classification derived from NWS short-forecast text."""
     NONE          = "none"
     RAIN          = "rain"
     SNOW          = "snow"
@@ -61,16 +80,31 @@ class PrecipitationType(str, Enum):
 
 
 class PrecipitationInfo(BaseModel):
+    """Precipitation type + intensity for a single forecast period.
+
+    intensity is one of "light" / "moderate" / "heavy" (or "" when type is NONE).
+    """
     type:      PrecipitationType = PrecipitationType.NONE
     intensity: str               = ""  # "light" | "moderate" | "heavy" | ""
 
 
 class WindInfo(BaseModel):
+    """Wind speed and optional peak gust for a single forecast period.
+
+    Both values are in **miles per hour**. ``gust_mph`` is None when NWS does
+    not report a gust value (typical for calm conditions).
+    """
     speed_mph: float          = 0.0
     gust_mph:  Optional[float] = None
 
 
 class CurrentWeather(BaseModel):
+    """Now-cast snapshot: temperature, feels-like, sky/precipitation, wind.
+
+    Temperatures are in **°F**. ``short_forecast`` is the NWS one-liner
+    (e.g. "Mostly Cloudy", "Light Snow") used both for display and as the
+    input to ``_parse_precip``.
+    """
     temperature_f: float
     feels_like_f:  float
     short_forecast: str              = ""
@@ -79,6 +113,11 @@ class CurrentWeather(BaseModel):
 
 
 class ForecastPoint(BaseModel):
+    """Single hour of the upcoming hourly forecast.
+
+    ``hour`` is the Chicago-local hour-of-day (0–23) at the start of the period.
+    Other fields match ``CurrentWeather``.
+    """
     hour:           int
     temperature_f:  float
     short_forecast: str               = ""
@@ -87,6 +126,13 @@ class ForecastPoint(BaseModel):
 
 
 class WeatherContext(BaseModel):
+    """Full weather payload injected into Claude's recommendation prompt.
+
+    ``hourly_forecast`` is up to 6 upcoming hours; ``alerts`` is up to 3 active
+    NWS alert headlines for the point. ``fetched_at`` is the wall-clock time
+    the response was assembled (Chicago tz) — surfaced in /health for cache
+    freshness diagnostics.
+    """
     current:          CurrentWeather
     hourly_forecast:  list[ForecastPoint] = []
     alerts:           list[str]           = []
@@ -172,6 +218,14 @@ class WeatherService:
         )
         if not urls[0] or not urls[1]:
             raise ValueError("NWS returned empty forecast URLs")
+        # SEC-008: reject any URL that isn't on api.weather.gov over HTTPS.
+        # Caches a *validated* tuple so subsequent requests don't re-check,
+        # and a tampered response never poisons the 24h cache.
+        if not (_is_nws_url(urls[0]) and _is_nws_url(urls[1])):
+            raise ValueError(
+                f"NWS returned non-allowlisted forecast URLs (forecast={urls[0]!r}, "
+                f"forecastHourly={urls[1]!r}); refusing to follow"
+            )
         _grid_cache[key] = urls
         return urls
 
@@ -286,7 +340,7 @@ class WeatherService:
 
             short_fc = period.get("shortForecast", "")
             wind     = self._parse_wind(
-                period.get("windSpeed", ""),
+                period.get("windSpeed", "") or "",
                 period.get("windGust", "") or "",
             )
             rh_raw      = period.get("relativeHumidity") or {}

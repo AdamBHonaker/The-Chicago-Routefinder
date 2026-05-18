@@ -15,15 +15,16 @@ This file holds three kinds of forward-looking planning entries: **Chunked Imple
 
 1. Feature Monetization — House Ads (overall Phase 7, sub-phase 1; third-party networks deferred) — **Bolt-On**. Chunk 1 shipped 2026-05-05 behind `VITE_HOUSE_AD_ENABLED=false`; Chunk 1.1 polish pass + Phase 2/2b/3 work remain.
 2. Feature PaceMetraCoverage — Pace + Metra service-area expansion of the walking street graph — **Structural** (depends on Pace/Metra being added to the transit graph)
-3. Geocoding & Autocomplete — Local-First Cascade (Passage-mirror) — **Structural**. Decisions captured 2026-05-12 (9/9); 10 chunks scoped. Supersedes FEAT-011 / 011a / 011b, FEAT-014, and the Mapbox migration Consideration. Ready to invoke Chunk 1.
+3. CSP Hardening — Drop `style-src 'unsafe-inline'` (SEC-003 remediation) — **Structural**. Scoped 2026-05-14 (5/5 decisions); 8 chunks. Eliminates inline `style="..."` attributes across six React surfaces; final chunk flips the production CSP atomically. The previously-sequenced "Geocoding & Autocomplete — Local-First Cascade" plan fully shipped 2026-05-15 — the new `AddressAutocomplete.jsx` (Chunk 7 of that plan) introduces one dynamic-positioning `style={listboxStyle}` on the portaled listbox that this plan will need to refactor along with the other surfaces (e.g., to a CSS custom-property + class pattern). See [docs/archive/FEATURE_HISTORY.md](archive/FEATURE_HISTORY.md) for the geocoding history record.
 
 **Analytics Suite — Privacy-Preserving Reach & Engagement Metrics** — ✅ **Complete 2026-05-04.** All nine features (FEAT-001 through FEAT-009) fully implemented across four build phases. Public dashboard live at `/stats`; admin endpoints at `/admin/*`. Three accompanying Considerations (third-party analytics, DAU reconciliation, GeoIP) all resolved. See [docs/archive/FEATURE_HISTORY.md](archive/FEATURE_HISTORY.md) for the full implementation record and [docs/ANALYTICS_MAINTENANCE.md](ANALYTICS_MAINTENANCE.md) for ongoing maintenance notes.
 
 **Standalone Features** (not part of a chunked plan or the analytics suite):
 
-- FEAT-013 — Curated Chicago Public Library tier in autocomplete — **Bolt-On**. Scoped, ready to implement after the Geocoding & Autocomplete chunked plan's Chunk 4 (`local_search.py`) ships.
-- FEAT-015 — Bus-stop platform-level disambiguation in autocomplete — **Bolt-On**. Scoping stub; ready to revisit after the Geocoding & Autocomplete chunked plan ships.
+- FEAT-013 — Curated Chicago Public Library tier in autocomplete — **Bolt-On**. Scoped; unblocked 2026-05-14 (Chunk 4 of the Geocoding & Autocomplete plan shipped, full plan completed 2026-05-15). Ready to implement.
+- FEAT-015 — Bus-stop platform-level disambiguation in autocomplete — **Bolt-On**. Scoping stub; eligible to revisit (Geocoding & Autocomplete plan fully shipped 2026-05-15).
 - FEAT-016 — Translate the new alerts-flow strings across all 27 locales — **Bolt-On**. Scoping stub; parent alerts-flow FEAT shipped English-only on 2026-05-07, so non-English locales currently fall back to English in the new banner + filter surfaces. Pure data work — 14 keys × 27 locales, no code changes.
+- **FEAT-019 — Ship `chicago_geocode.db` to production (GitHub Release + Dockerfile curl)** — **Bolt-On** but **🔴 production-blocking for the user-visible part of the Geocoding & Autocomplete plan**. Scoping stub filed 2026-05-15. The chunked plan shipped code-complete but `backend/static_data/chicago_geocode.db` is gitignored and not delivered to the Railway container — so in production `local_search._connect()` returns None, Tier 4 of the cascade silently no-ops, `/autocomplete` returns only train stations + neighborhoods + bus stops (no addresses, no intersections), and every submit-time forward resolution that misses Tiers 1–3 goes straight to LocationIQ. Maintainer's chosen approach: Option A — upload the built DB as a GitHub Release asset and add a Dockerfile `curl` step mirroring the existing `street_graph.graphml` pattern.
 
 **Considerations** (design directions evaluated and deferred, with explicit revisit triggers):
 
@@ -93,7 +94,7 @@ Adds a house ad component to partially offset Railway hosting costs without comp
 
 - `AdSlot` defined inline at the top of [frontend/src/App.jsx](../frontend/src/App.jsx); reads `HOUSE_AD_ENABLED` / `HOUSE_AD_URL` / `HOUSE_AD_TEXT` from [frontend/src/constants.js](../frontend/src/constants.js). Mounted inside the `result.routes.length > 0` section after the route map and before `</section>`, gated on `!tripActive`. The rendered `<a>` carries `target="_blank"` and `rel="sponsored noopener noreferrer"` and a "SPONSORED" caps kicker (FTC affiliate-link guidance).
 - New stylesheet [frontend/src/styles/house-ad.css](../frontend/src/styles/house-ad.css) (registered in `App.css`): cream `--paper` background, `--hairline` top divider, italic `--serif` body so the slot reads as a maintainer-voice tip rather than a foreign element. No animation, no shadow, no accent fill.
-- New translation key `ad_sponsored_kicker` in [frontend/public/locales/en/translation.json](../frontend/public/locales/en/translation.json), backfilled into all 22 existing locales. Ad copy itself is intentionally not translated (affiliate URL/text are en-US per scoping decision).
+- New translation key `ad_sponsored_kicker` in [frontend/public/locales/en/translation.json](../frontend/public/locales/en/translation.json), backfilled into all 27 existing locales. Ad copy itself is intentionally not translated (affiliate URL/text are en-US per scoping decision).
 - Env vars added to [frontend/.env.example](../frontend/.env.example), [frontend/.env.local](../frontend/.env.local), [frontend/.env.production](../frontend/.env.production): `VITE_HOUSE_AD_ENABLED` (default `false`), `VITE_HOUSE_AD_URL`, `VITE_HOUSE_AD_TEXT`. Vercel env-var table in `PROJECT_CONTEXT.md` updated to match.
 
 **Outstanding:** end-to-end QA in a Vercel preview — confirm the slot inherits `--paper`, sits clear of the fixed tab bar on mobile, and Lighthouse a11y is unchanged before flipping `VITE_HOUSE_AD_ENABLED=true` in production.
@@ -328,7 +329,7 @@ Until one of these fires, the test is not worth the maintenance cost — `maplib
 
 ### Context
 
-The 2026-05-04 testing expansion (see [archive/FEATURE_HISTORY.md](archive/FEATURE_HISTORY.md) for the test-suite buildout) brought the project from 218 to 651 tests across backend (393) and frontend (258) layers. Coverage is now strong everywhere a pure-logic / mocked-IO test pays back: GTFS parsing, graph construction, CTA client response handling, all 15 React components without map dependencies, all utils, and 4 of 7 hooks.
+The 2026-05-04 testing expansion (see [archive/FEATURE_HISTORY.md](archive/FEATURE_HISTORY.md) for the test-suite buildout) brought the project from 218 to 651 tests; the suite has continued to grow to **1,099 tests across backend (676) and frontend (423) layers** as of 2026-05-18. Coverage is now strong everywhere a pure-logic / mocked-IO test pays back: GTFS parsing, graph construction, CTA client response handling, all 15 React components without map dependencies, all utils, and 4 of 7 hooks.
 
 What remains uncovered is the slice that genuinely needs a real browser — maplibre WebGL rendering, geolocation, service worker, and the App.jsx orchestration that wires them together:
 
@@ -413,144 +414,63 @@ Today the street-graph bbox covers Chicago city limits + Evanston (Purple Line).
 
 ---
 
-## Geocoding & Autocomplete — Local-First Cascade (Passage-mirror)
+## CSP Hardening — Drop `style-src 'unsafe-inline'` (SEC-003 remediation)
 
 ### Overview
 
-Migrates the project's geocoding + autocomplete stack from a hosted-first model (Google Maps Geocoding API for both forward and reverse; in-memory prefix index for `/autocomplete` with no address coverage) to a **local-first cascade backed by a single SQLite/FTS5 database**, with **LocationIQ** as an optional hosted fallback. Mirrors the design shipped in the Passage project at `c:\GitHub\Passage\`.
+Removes `'unsafe-inline'` from CSP `style-src` by eliminating every dynamic React-emitted `style="..."` attribute. The fix is **not a single code change** — it is an architectural pattern shift: replace inline styles with build-time-generated CSS classes for discrete dynamic values (rail line colors, GTFS bus `route_color`, marker rotations in 15° steps, BottomSheet snap states), and a tightly-scoped CSSOM helper writing into a single hashed `<style>` block for the small set of continuous gesture-driven values (BottomSheet drag-in-progress height, App resizable column width). After this lands, the CSP collapses to `style-src 'self' 'sha256-<empty-style-hash>' https://fonts.googleapis.com` — uniformly enforced across Chrome, Safari, and Firefox, with no reliance on the partial-coverage CSP Level 3 `style-src-attr` directive.
 
 **Goals:**
 
-1. Eliminate per-request hosted-geocoder cost as the dominant operating expense at growth.
-2. Make `/autocomplete` instant and address-aware — typing "1234 N Damen" or "Damen & Milwaukee" returns inline suggestions for the first time.
-3. Keep working when the network is unhappy — local tiers serve while the breaker is open.
-4. Replace the in-memory prefix index + JSON cache + monthly call counter with a single SQLite file holding the corpus *and* the persistent cache.
+1. Close the `style-src 'unsafe-inline'` defense-in-depth gap called out in [`docs/SECURITY.md`](SECURITY.md) SEC-003 across all major browsers, including Safari (which as of 2026 does not enforce `style-src-attr`).
+2. Keep the deploy topology static-HTML on Vercel — no shift to edge middleware required.
+3. Establish a single, lint-enforceable pattern so new components naturally land CSP-clean and don't re-introduce the gap.
 
-**Type: Structural** — touches backend resolution, autocomplete endpoint, frontend combobox, i18n, privacy doc; introduces a new ingest pipeline and a quarterly rebuild cadence.
+**Type: Structural** — touches the frontend build pipeline (a new generated stylesheet), six React surfaces (LinePill, SchedulesPicker, MapView markers + bearing rotation, BottomSheet, App resizable column, AlertsFilterBar plus the long-tail), and the CSP itself. Multiple PRs across multiple chunks.
 
-**Status:** Decisions captured (9/9 as of 2026-05-12). Final consistency audit complete. Supersedes FEAT-011 / FEAT-011a / FEAT-011b (which scoped a TIGER + Google + static-index approach), FEAT-014 (subsumed by `cached_forward` + negative-cache), and the deferred "Geocoding Provider Migration (Google Maps → Mapbox)" Consideration (directly replaced). FEAT-013 (curated CPL libraries) and FEAT-015 (bus-stop platform disambiguation) survive — FEAT-013 retargets onto Chunk 4 of this plan; FEAT-015 is orthogonal.
+**Status:** Scoped; 5 decisions captured 2026-05-14. The sequencing dependency — Geocoding & Autocomplete chunked plan — fully shipped 2026-05-15, so this plan is now eligible to invoke. SEC-003 is severity 🟢 Low and explicitly defense-in-depth (not a live exploit path), so no security urgency. Note: the new `AddressAutocomplete.jsx` from Geocoding Chunk 7 introduces one `style={listboxStyle}` inline-style on the portaled listbox that Chunk 2/3 of this plan will need to refactor (e.g., CSS custom-property + class pattern) alongside the six surfaces originally scoped.
 
 **Prerequisites:**
 
-- LocationIQ account + API key provisioned (free tier is 5,000 requests/day, sufficient at current and near-term DAU).
-- Disk space for `backend/static_data/chicago_geocode.db` — estimate ~150–250MB once both addresses (~600–900k rows) and intersections (~50k rows) are ingested with FTS5 mirror tables.
-
----
-
-### Reference design (Passage)
-
-Before reading this plan, the canonical reference implementation lives in:
-
-- `c:\GitHub\Passage\backend\geocoding.py` — Tier-1/2/3 cascade, LocationIQ client, 429 circuit breaker, SQLite-backed forward+reverse cache, KDTree neighborhood reverse, fuzzy matcher
-- `c:\GitHub\Passage\backend\local_search.py` — autocomplete + forward + nearest_address against the SQLite store; ranking, dedupe, cross-street parser
-- `c:\GitHub\Passage\backend\geocode_text.py` — shared `normalize_street_name` / `normalize_address` used at both ingest and query time
-- `c:\GitHub\Passage\backend\scripts\_geocode_db.py` — single-file SQLite schema (addresses, intersections, addresses_fts, intersections_fts, cached_forward, cached_reverse)
-- `c:\GitHub\Passage\backend\scripts\build_address_points.py`, `build_intersections.py` — quarterly ingest scripts (Overpass for addresses; pedestrian graph for intersections)
-- `c:\GitHub\Passage\backend\scripts\migrate_geocode_cache.py` — one-shot migrator from legacy JSON cache
-- `c:\GitHub\Passage\backend\main.py` lines ~320–383 — GET /autocomplete endpoint shape
-- `c:\GitHub\Passage\frontend\src\components\AddressAutocomplete.jsx` + `frontend\src\lib\autocompleteApi.js` — generic, pluggable-data-source typeahead combobox; WAI-ARIA combobox 1.1 inline pattern
-- `c:\GitHub\Passage\CLAUDE.md` — "Geocoding (local-first cascade)" and "Address autocomplete" sections
-
----
-
-### Architecture to port
-
-**Forward resolution cascade** (`resolve_location`):
-
-1. Coord-pair regex (instant)
-2. Exact `NEIGHBORHOOD_COORDS` dict (curated landmarks + neighborhoods — kept as the Python dict; small, version-controlled, human-edited)
-3. Fuzzy match against `NEIGHBORHOOD_COORDS` (SequenceMatcher, threshold 0.95, inverted-word-index prefilter)
-4. `local_search.forward()` → SQLite/FTS5 over Chicago OSM addresses (~600–900k rows) + intersections (~50k rows)
-5. LocationIQ `/v1/search` — optional; missing API key or `LOCATIONIQ_ENABLED=false` makes Tier 5 return `None`
-
-**Reverse resolution cascade** (`reverse_geocode_point`):
-
-1. `cached_reverse` SQLite hit (lat/lon quantized to 1e5)
-2. KDTree-nearest neighborhood within ~200m → label
-3. `local_search.nearest_address` within ~50m (bbox prefilter + Haversine sort)
-4. LocationIQ `/v1/reverse` (cached on success)
-5. Coordinate-string fallback (never cached)
-
-**Key invariants copied verbatim from Passage:**
-
-- **One SQLite file** at `backend/static_data/chicago_geocode.db` holds all four tables: `addresses`, `intersections`, `cached_forward`, `cached_reverse`. Plain (non-content-linked) FTS5 mirror tables `addresses_fts` and `intersections_fts` — easier ingest, costs a few MB.
-- **DB location matters.** Must live under `backend/static_data/`, NOT `backend/data/`. Railway's persistent analytics volume overlays `backend/data/` at runtime, which would destroy the corpus on every deploy.
-- **Two connections to the same DB.** `local_search.py` opens read-only with `mode=ro` + mmap (128 MB); `geocoding.py` opens a writeable connection in WAL mode for cache writes. Concurrent reads never block cache inserts.
-- **Negative cache.** Misses are stored as rows with `lat`/`lon` = `NULL` — `_cache_get_forward` returns a `NEG_HIT` sentinel so the network is never re-queried for known-bad strings.
-- **Shared 429 circuit breaker.** Forward + reverse both gate on the same `_circuit_open_until`. Exponential backoff 60→120→240s, capped at 300s. First post-cool-off call probes; success closes the breaker. Tier-4 (local) results still serve while the breaker is open. Raise a dedicated `GeocoderDegradedError` only when the request would have needed Tier 5.
-- **Shared text normalization.** `normalize_street_name` and `normalize_address` are imported by both the ingest scripts and the runtime. Anything that builds a row also defines the query canonicalization — never let those drift.
-- **`/autocomplete` endpoint: local-only.** No hosted supplement of any kind. Submit-time forward still cascades through LocationIQ for queries the local layer misses.
-- **Source priority ranking:** neighborhood > intersection > address > place. Within a source, exact > prefix; in-bbox > out-of-bbox; ties break toward Chicago center via Haversine.
-- **Per-tier soft cap = 3, total cap = 8.** Each tier capped at `AUTOCOMPLETE_PER_TIER_CAP` (default `3`) before lower tiers are pulled in, preventing any tier from starving others.
-- **Cross-tier dedupe.** Same canonical entity in two tiers (matched by normalized name OR coords within 50m) → higher-priority tier wins. Within a source, dedupe by quantized coord and (source, label).
-- **Privacy.** User-typed queries are SHA-256 redacted (`q#abcd1234ef`) in logs.
-- **Coverage gating.** Anything that resolves outside the Chicago bbox raises `LocationOutsideChicagoError` — distinct from `None` (= "not found").
-- **Cost ceiling.** `LOCATIONIQ_DAILY_CAP=4900` UTC-day counter (in-process, cheap) silently degrades Tier 5 to local-only when cap is hit. Leaves ~100-call headroom under the 5,000/day free-tier ceiling for clock skew / race conditions. Defense against a runaway-bug cost incident the 429 breaker can't catch.
-- **Env-var opt-out.** `LOCATIONIQ_ENABLED=true` by default. Setting `false` disables Tier 5 entirely (self-hoster privacy control + emergency kill switch).
-
-**Frontend pattern.** `AddressAutocomplete.jsx` is generic. Takes a `getSuggestions(query, { signal })` async function. Handles debounce (150ms), abort-on-keystroke, keyboard + pointer + touch selection. Renders via portal to escape `overflow: hidden` / transform clipping ancestors (relevant for the mobile bottom sheet). WAI-ARIA combobox 1.1 inline pattern (`role="combobox"`, `aria-controls`, `aria-expanded`, `aria-activedescendant`). `LocationInput.jsx` becomes a thin wrapper that adds the geo button, saved-location items, and form integration.
+- Geocoding & Autocomplete chunked plan fully complete through Chunk 10. ✅ Completed 2026-05-15.
+- Knowledge of the SHA-256 of the empty `<style>` block (well-known: `47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=`) — added to the CSP in Chunk 8.
 
 ---
 
 ### Scoping decisions
 
-1. **Hosted geocoder provider (Q1) → LocationIQ.** *Captured 2026-05-12.*
-   - LocationIQ replaces Google for the Tier-5 fallback. Existing `geocode_google` / `reverse_geocode_google` removed (no pluggable interface, no Google retention as fallback — explicitly rejected as overengineering).
-   - **Env var:** `LOCATIONIQ_API_KEY`. Missing key makes Tier 5 silently return `None`.
-   - **Rationale:** mirrors Passage exactly; friendlier caching terms (LocationIQ has no equivalent of Google's 30-day cache-retention clause that the existing 90-day TTL already violates); free-tier ceiling of 5,000 req/day is more than sufficient given negative-cache + local-corpus coverage.
+1. **Architectural path (Q1) → Frontend refactor; drop `'unsafe-inline'` entirely.** *Captured 2026-05-14.*
+   - Path A (edge-injected nonce CSP via a Vercel middleware) was rejected: it would require `style-src-attr 'unsafe-inline'` for the React-emitted `style="..."` attributes (nonces don't apply to style attributes), and Safari does not enforce `style-src-attr` as of 2026 — Safari users would still effectively have `unsafe-inline` on every style attribute.
+   - Path D (defer indefinitely; document only) — the path the existing SEC-003 entry recommends as a fallback — is explicitly superseded by this plan.
+   - **Rationale:** uniform browser coverage; no runtime middleware that can silently re-introduce `'unsafe-inline'` via a bug or misconfig; composable end-state (`style-src 'self' 'sha256-<known>' fonts.googleapis.com` with no attribute carve-outs); easy to lint-enforce going forward (grep for `style={` in `frontend/src/`).
 
-2. **Monthly call counter (Q2) → Drop the monthly counter; keep a daily cap.** *Captured 2026-05-12 (revised after FEAT-011a Decision 2 review).*
-   - Drop `GEOCODE_MONTHLY_LIMIT` + `geocode_counter.json` + monthly-rollover logic — legacy Google bookkeeping.
-   - Add `LOCATIONIQ_DAILY_CAP` (default `4900`, UTC day, in-process counter). On cap hit, Tier 5 silently degrades to local-only for the remainder of the day; event is logged.
-   - **Why a daily cap, not just the breaker:** the Passage 429 breaker only protects against provider-side throttling. A runaway-bug or attack hammering LocationIQ inside our own cache-miss paths could rack costs before the breaker fires. The daily cap is a non-negotiable circuit against bug/abuse cost incidents — captured reasoning from the prior FEAT-011a Decision 2.
-   - **Why 4900 and not 5000:** leaves ~100-call headroom under the LocationIQ free-tier daily ceiling for clock skew (server vs. LocationIQ's clock for the day boundary) and concurrency races between simultaneous cap-checks.
+2. **Per-tick marker-bearing rotation (Q2) → Build-time-generated 15° stepped rotation classes.** *Captured 2026-05-14.*
+   - Generate 24 classes at build (`.rot-0` … `.rot-345`); marker JSX picks `Math.round(bearing / 15) * 15`. No runtime CSS injection on this surface.
+   - Rejected: constructable stylesheets + `adoptedStyleSheets` (Safari 16.4 cutoff — silent rotation failure on older iPhones); CSSOM `insertRule` on the marker surface (adds an unnecessary runtime CSS-string-construction surface that takes attacker-influenceable GPS bearing values).
+   - **Rationale:** cleanest CSP end-state; universal browser support; visual cost is below the perceptual floor for a ~16-pixel arrow marker (GPS heading noise in urban canyons routinely exceeds 15° between samples).
 
-3. **Address + intersection corpus scope (Q3) → Chicago city limits, addresses + intersections.** *Captured 2026-05-12.*
-   - Overpass for addresses (`addr:housenumber` + `addr:street` nodes/ways) within the Chicago city polygon. Estimate ~600–900k rows.
-   - Intersections derived from the existing pedestrian/street graph (`backend/fetch_street_graph.py` output). Estimate ~50k rows.
-   - **Quarterly rebuild** via two ingest scripts; DB output gitignored.
-   - **Rationale:** matches Passage's proven scope; intersections are too useful in Chicago ("Damen & Milwaukee") to skip; suburb buffer deferred to a follow-up if real users hit the edge.
+3. **GTFS bus `route_color` values (~150 dynamic hex colors) (Q3) → Build-time enumerate from GTFS.** *Captured 2026-05-14.*
+   - At frontend build, read the bundled GTFS `routes.txt`, emit one class per unique `route_color` (`.bus-color-<HEX> { background:#<HEX> }`) into a generated stylesheet. Components map `route.color` → class name. New CTA `route_color`s require a frontend rebuild — already part of the quarterly GTFS refresh cadence.
+   - **Rationale:** matches the Decision 2 pattern (build-time enumeration over runtime injection); ~150 classes is a trivial bundle-size impact (~5 KB raw, ~1 KB gzipped); the bundled GTFS data is the source of truth, and rebuilds are already scheduled.
 
-4. **Existing JSON cache migration (Q4) → One-shot migrator into SQLite.** *Captured 2026-05-12.*
-   - `scripts/migrate_geocode_cache.py` reads `backend/geocode_cache.json`, re-normalizes each key through the new `geocode_text` module (canonicalization differs from Google's raw key), inserts into `cached_forward` with bounded synthetic timestamps so the TTL eviction sweep doesn't immediately wipe them.
-   - Pre-warms LocationIQ cache; preserves months of real-user query→coord pairs (provider-agnostic — coords are just lat/lon).
-   - One-time run with a `.migrated` marker file; refuses to re-run unless `--force` is passed.
-   - **Rationale:** small (~2 hours of work), meaningfully softens the launch by keeping Tier 5 cold longer.
+4. **Rollout strategy (Q4) → Incremental refactor, atomic CSP flip at the end.** *Captured 2026-05-14.*
+   - Chunks 2–6 refactor components one surface at a time without changing the CSP. Chunk 7 verifies the post-refactor state by enabling a stricter CSP locally in dev. Chunk 8 flips the production CSP in a single small PR.
+   - Rejected: intermediate `style-src-attr 'unsafe-inline'` stepping stone (two CSP flips for limited additional safety; not worth the operational complexity); big-bang single PR (unreviewable diff; high regression risk).
+   - **Rationale:** small, reviewable per-component PRs; atomic security cutover; honors the project policy at [frontend/index.html:14-15](../frontend/index.html#L14-L15) of never regressing to `Content-Security-Policy-Report-Only` in production (verification happens via local dev with a temporarily stricter meta tag, not in production telemetry).
 
-5. **`/autocomplete` Tier-5 supplement (Q5) → Local-only, no supplement.** *Captured 2026-05-12.*
-   - Passage's digit-prefix supplement (fire a LocationIQ call when local <3 results AND first token is digit-prefixed) is **not ported**.
-   - **Rationale:** with a full Chicago address+intersection corpus, the supplement's marginal recall improvement is tiny; autocomplete fires on every keystroke (debounced 150ms), making it the highest-volume endpoint by orders of magnitude — even a 1% leak rate dwarfs all other LocationIQ traffic. Submit-time forward still cascades through Tier 5, so anything autocomplete misses still gets resolved when the user presses Go. Revisit if production metrics show real recall gaps.
-
-6. **Frontend combobox approach (Q6) → Port `AddressAutocomplete` generic + refactor `LocationInput` to compose it.** *Captured 2026-05-12.*
-   - New `frontend/src/components/AddressAutocomplete.jsx` + `frontend/src/lib/autocompleteApi.js` ported from Passage. Generic combobox owns ARIA combobox 1.1, portal rendering, abort-on-keystroke, debounce.
-   - `LocationInput.jsx` refactored to compose `AddressAutocomplete`, retaining its geo button, save-location flow, and saved-locations dropdown items.
-   - **Rationale:** ARIA combobox + portal + abort is a self-contained correctness concern; separating it from form-binding logic is the only exception to the "don't extract abstractions prematurely" instinct that's warranted here. Brings across Passage's existing test suite for the component.
-
-7. **Reverse-geocoding local tiers (Q7) → Full cascade: cache + neighborhood + nearest_address + LocationIQ.** *Captured 2026-05-12.*
-   - All four tiers as listed in the architecture section. Data is already local once Chunks 3+4 ship.
-   - **Rationale:** geo-button latency drops from ~100–300ms (hosted round-trip) to <10ms for the vast majority of locations. Cascade implementation is ~80 lines on data we already have. Geo button is one of the most-used interactions in the app.
-
-8. **Per-tier soft cap + cross-tier dedupe rules (Q8, implied by FEAT-011a Decisions 7+9) → Adopt.** *Captured 2026-05-12.*
-   - **Per-tier soft cap:** `AUTOCOMPLETE_PER_TIER_CAP` (default `3`); endpoint total cap `8`. Tier-greedy fill from highest-priority tier with the cap enforced before descending.
-   - **Cross-tier dedupe:** higher-priority tier wins when the same canonical entity appears in two tiers. Dedupe key = (a) exact normalized name match OR (b) coords within 50m.
-   - **Rationale:** explicit caps are cleaner than relying on ranking alone; FEAT-011a captured the same reasoning and the rule is portable across the new architecture.
-
-9. **Privacy + opt-out (Q9) → PRIVACY.md correction + new LocationIQ section + `LOCATIONIQ_ENABLED` env opt-out.** *Captured 2026-05-12.*
-   - Fix the existing inaccurate "no third-party processor" claim in `docs/PRIVACY.md` ([docs/PRIVACY.md:144-145](../PRIVACY.md)).
-   - Add a new section ("Geocoding & autocomplete (LocationIQ)") documenting: (a) forward calls on submit when the local cascade falls through to Tier 5; (b) reverse calls when the geo-button reverse cascade falls through to Tier 5; (c) the daily cap behavior; (d) what is and is not sent (typed text; deployment outbound IP; no rider identifier; no session cookie).
-   - `LOCATIONIQ_ENABLED` env var (default `true`). When `false`, the backend skips Tier 5 entirely and behaves as local-only. Useful for self-hosters with stricter privacy postures, emergency disabling, and local-only dev testing.
-   - **Rationale:** privacy correction is mandatory regardless of provider choice; the env-var opt-out is FEAT-011a's already-decided posture, retargeted at LocationIQ.
+5. **Sequencing vs the Geocoding & Autocomplete chunked plan (Q5) → Run entirely after Geocoding ships.** *Captured 2026-05-14.*
+   - SEC-003 is severity 🟢 Low and explicitly defense-in-depth — no live exploit path. The delay carries no security cost worth the cost of interrupting in-flight work or retrofitting the new `AddressAutocomplete` (Geocoding Chunk 7) twice.
+   - **Rationale:** avoids retrofit churn; keeps maintainer focus on the in-flight plan; this plan picks up cleanly once Geocoding finishes.
 
 ---
 
-### Final-pass consistency audit (2026-05-12)
+### Final-pass consistency audit (2026-05-14)
 
-- **Decisions 1+2+5 (LocationIQ, daily cap, no AC supplement) consistently minimize hosted exposure** — coherent.
-- **Decisions 3+7 (full corpus, full reverse cascade) both lean on the SQLite layer being complete** — chunk sequencing must place corpus ingest (Chunk 3) before reverse-cascade wiring (Chunk 5). Plan reflects this.
-- **Decision 4 + Decision 1 (migrator + LocationIQ swap)** — migrator absorbs Google-resolved query→coord pairs; coords are provider-agnostic, so safe.
-- **Decision 6 + Decision 5 (generic combobox + local-only AC)** — generic component takes a `getSuggestions` function; in this app it always points at local `/autocomplete`. Coherent.
-- **Decision 8 (per-tier cap + cross-tier dedupe)** — applies inside `local_search.autocomplete`; doesn't conflict with any other decision.
-- **Decision 9 + Decision 2 (privacy + daily cap)** — daily cap behavior is part of what PRIVACY.md must disclose. Wording in Chunk 9 will cover both.
+- **Decisions 1+2+3 (refactor + build-time stepped rotation + build-time GTFS colors) all align on the same pattern** — discrete dynamic values become generated CSS classes; no runtime CSS injection for the high-traffic sites. Coherent.
+- **Continuous gesture-driven sites are not covered by Decisions 2/3 directly.** BottomSheet drag-in-progress height and App resizable column width have continuous value ranges; build-time enumeration would force visual quantization (a UX regression on smooth-drag interactions). These two sites use a small CSSOM helper that writes a `:root { --<var>: <value> }` rule into a single hashed `<style>` block — narrowly scoped, numeric-input-only, single audited surface. Captured as Chunk 5.
+- **Decisions 1+4 (full refactor + atomic flip) interact cleanly with the project's no-report-only-in-production rule** — the verification step in Chunk 7 is dev-only via a temporarily stricter meta tag, then Chunk 8 lands the same tightening in production with high confidence.
+- **Decision 5 (after Geocoding ships)** — no chunk in this plan has a code dependency on any Geocoding chunk; the sequencing is purely about avoiding retrofit cost on `AddressAutocomplete`. A one-line note could be added to the Geocoding plan's Chunk 7 reminding the implementer not to introduce new `style="..."` attributes if avoidable, but this is a low-priority polish — even if `AddressAutocomplete` ships with inline styles, this plan's Chunk 6 sweeps them.
+- **SEC-003's "Suggested Fix" wording is partially obsolete.** It currently recommends `'unsafe-inline'` be left in place and the residual risk documented. This plan supersedes that recommendation. SEC-003 remains unchanged in `docs/SECURITY.md` until Chunk 8 ships; then SEC-003 is deleted and a resolved-history entry is added to `docs/archive/RESOLVED_HISTORY.md` per the security-file resolution process. A cross-reference line in SEC-003 noting this plan's existence is optional polish, not blocking.
 
 No contradictions found.
 
@@ -558,198 +478,139 @@ No contradictions found.
 
 ### Chunked implementation plan
 
-Each chunk is independently checkpointable: after each, the app builds, tests pass, and we pause for review before the next chunk starts. Chunks are ordered so each one delivers something useful or strictly enables the next.
+Each chunk is independently checkpointable: after each, the app builds, tests pass, and the **production CSP remains unchanged** with `'unsafe-inline'` in `style-src`. Only Chunk 8 changes the CSP.
 
-#### Chunk 1 --- Shared text normalization module
+#### Chunk 1 --- Infrastructure: build-time CSS generation + CSSOM helper
 
-**Files created:** `backend/geocode_text.py`
+**Files created:** `frontend/scripts/generate-dynamic-css.mjs` (build-time generator); `frontend/src/styles/dynamic.generated.css` (generator output, gitignored); `frontend/src/lib/dynamicStyle.js` (CSSOM helper for continuous values); `frontend/src/tests/dynamicStyle.test.js`.
 
-**Files modified:** `backend/gtfs_loader.py` (re-export from new module for back-compat *within this chunk only*; removed in Chunk 10)
-
-**What ships:**
-
-- Port `normalize_street_name(name)` and `normalize_address(addr)` from Passage verbatim (compound directionals, USPS suffix expansion, punctuation/whitespace collapse).
-- Move `_normalize_street_abbr` + `fuzzy_match_neighborhood` here too. Existing call sites in `gtfs_loader.py` and `main.py` updated to import from `backend.geocode_text`.
-- Unit tests ported from Passage's normalize tests, retargeted at this project's import paths.
-
-**Checkpoint signal:** All existing tests pass. No behavior change yet. `pytest backend/tests` green.
-
-**Why first:** Every downstream chunk (ingest, local_search, cascade) consumes these helpers. Establishing the single source of truth here means ingest and runtime can't drift.
-
-#### Chunk 2 --- SQLite schema + DB scaffolding
-
-**Files created:** `backend/scripts/_geocode_db.py` (schema definition + connection helpers); `backend/static_data/` directory (must be `static_data/` not `data/` per Railway constraint); `.gitignore` additions.
-
-**Files modified:** `.gitignore` (add `backend/static_data/*.db*`).
+**Files modified:** `frontend/vite.config.js` (run generator as a build plugin / pre-build hook); [frontend/index.html](../frontend/index.html) (add `<style id="dyn-style"></style>` empty block near the CSP meta tag, with a comment recording the SHA-256 of empty content); `.gitignore` (add `frontend/src/styles/dynamic.generated.css`).
 
 **What ships:**
 
-- Schema for `addresses`, `intersections`, `addresses_fts` + `intersections_fts` (plain non-content-linked FTS5), `cached_forward`, `cached_reverse`.
-- Connection helpers: `open_readonly()` (mode=ro + 128MB mmap), `open_writeable()` (WAL).
-- Empty DB initialization script.
-- Schema tests: open empty DB, confirm tables exist, confirm FTS5 is available in the SQLite build.
+- Generator reads the bundled GTFS `routes.txt` (bus `route_color`s — ~150 unique values) and a small hand-list of rail line colors (8 lines), and emits:
+  - `.bus-color-<HEX> { background:#<HEX>; }` per unique bus color.
+  - `.rail-color-<NAME> { background:<hex>; color:<text-color>; }` per rail line (using the existing `lineColors.js` source-of-truth values).
+  - `.rot-0`, `.rot-15`, …, `.rot-345` (24 rotation classes).
+  - 3 BottomSheet snap classes (`.sheet-peek`, `.sheet-half`, `.sheet-full`) using the existing snap heights.
+- `dynamicStyle.js` exports `setStyleVar(name, value)`: validates that `name` matches `/^--[a-z][a-z0-9-]*$/` and `value` is a bounded number with an allowed unit suffix (`px`, `deg`, `%`); writes a `:root { --<name>: <value>; }` rule into `#dyn-style.sheet` via `deleteRule`/`insertRule`. No string-interpolation of attacker-controlled data.
+- A comment near the CSP meta tag in `index.html` records the SHA-256 of the empty `<style>` block content (`47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=`) so Chunk 8 can paste it in.
 
-**Checkpoint signal:** `python -m backend.scripts._geocode_db --init` creates an empty DB at `backend/static_data/chicago_geocode.db`; schema test passes; nothing else changes.
+**Checkpoint signal:** `npm run build` succeeds; `dynamic.generated.css` is emitted with the expected class counts (8 rail, ~150 bus, 24 rotation, 3 snap); `dynamicStyle` unit tests pass; no behavior change in the running app (no component yet uses the new pieces).
 
-**Why second:** Pure infrastructure. Lets later chunks land ingest + queries against a stable, tested schema.
+**Why first:** Every component-refactor chunk depends on the generator output and/or the CSSOM helper.
 
-#### Chunk 3 --- Address + intersection ingest scripts
+#### Chunk 2 --- `LinePill` rail + bus pills → generated classes
 
-**Files created:** `backend/scripts/build_address_points.py`, `backend/scripts/build_intersections.py`.
-
-**Files modified:** none in runtime path.
-
-**What ships:**
-
-- `build_address_points.py`: Overpass query over the existing routing bbox (`STREET_GRAPH_*` constants in `utils.py` — main Chicago box + Evanston Purple Line corridor) for `nwr["addr:housenumber"]["addr:street"]` features. Chunked into a 4×4 grid (16 sub-bboxes) with 180s per-chunk Overpass timeout, 10s sleep between chunks, 3 retries with 15s exponential backoff. Normalize each row via Chunk-1 helpers. Bulk-insert into `addresses` + `addresses_fts`. Resumable / idempotent.
-- `build_intersections.py`: Overpass query over the same bbox for every named `highway=*` way (one query, `timeout:300`). Pedestrian-graph artifact (`street_graph_igraph.pkl`) is **not** used — OSMnx's `consolidate_intersections` strips names from collapsed-node edges, so the artifact is unsuitable as a source (per Passage's design note). Compute true geometric crossings with Shapely STRtree over the LineStrings; emit one row per (canonical name A, canonical name B, lat, lon) intersection point. Normalize, insert into `intersections` + `intersections_fts`.
-- Quarterly run instructions added to `docs/PROJECT_CONTEXT.md` (one-line ops note).
-
-**Checkpoint signal:** Run both scripts on dev machine. Resulting DB has ~400–900k addresses and ~25–50k intersections (Chicago's actual OSM `addr:housenumber` density came in toward the low end on the first build — 409k addresses + 24.5k intersections, 55 MB total). FTS5 queries against it return sensible results from a manual probe.
-
-**Status:** ✅ Built 2026-05-12. DB lives at `backend/static_data/chicago_geocode.db`.
-
-**Why third:** Builds the corpus needed by Chunks 4 and 6. No runtime code touches the DB yet — production keeps using Google.
-
-#### Chunk 4 --- `local_search.py` module
-
-**Files created:** `backend/local_search.py`.
-
-**Files modified:** none.
+**Files modified:** [frontend/src/components/LinePill.jsx](../frontend/src/components/LinePill.jsx).
 
 **What ships:**
 
-- `autocomplete(query, limit=8, per_tier_cap=3, in_bbox_only=True)` — FTS5 over addresses + intersections, union with neighborhood/station results, apply Passage's ranking + Decision-8 per-tier soft cap + Decision-8 cross-tier dedupe.
-- `forward(query)` — same FTS5 layer, returns top-ranked coord.
-- `nearest_address(lat, lon, radius_m=50)` — bbox-prefilter on `addresses` (simple lat/lon range) + Haversine sort.
-- Cross-street parser (`"Damen & Milwaukee"` → intersections table lookup).
-- Tests ported from Passage's `test_local_search.py`, retargeted.
+- Replace `style={{ background: bg, color: textColor, ...fontStyle }}` at [frontend/src/components/LinePill.jsx:42](../frontend/src/components/LinePill.jsx#L42) with class-based composition. Rail pills use `.rail-color-<name>`; bus pills use `.bus-color-<hex>`.
+- The conditional `fontStyle` adjustment (smaller font for ≥3-char labels in `sm`/`md` sizes) becomes two utility classes in the existing static stylesheet (`.lin-pill--font-7`, `.lin-pill--font-9`) instead of inline `style={fontSize, letterSpacing}`.
+- Existing component tests updated; add coverage for the rail-vs-bus class branching.
 
-**Checkpoint signal:** Module is import-tested and unit-tested. Not yet called from any endpoint. No production behavior change.
+**Checkpoint signal:** Visual diff on rail pills (all 8 lines) and a sample of bus pills (~5 routes) shows no change. Devtools confirms no `style=` attribute on rendered `<span>` elements.
 
-**Why fourth:** Self-contained query layer. Validating it in isolation before wiring into endpoints keeps the integration chunk small.
+**Why second:** Smallest component, biggest occurrence count across the UI — establishes the pattern.
 
-#### Chunk 5 --- Forward + reverse cascade + LocationIQ client
+#### Chunk 3 --- `SchedulesPicker` route pill backgrounds → generated bus-color classes
 
-**Files created:** `backend/geocoding.py` (replaces `gtfs_loader.geocode_google` / `reverse_geocode_google`).
-
-**Files modified:** `backend/main.py` (`_resolve_locations` and share-link path swap `resolve_location`/`coords_for_location` to the new module's `resolve_location`); `backend/gtfs_loader.py` (delete `geocode_google`, `reverse_geocode_google`, `_geocode_call_counter` plumbing, JSON cache load/save — pure deletion, no shims); `backend/config.py` (remove `GEOCODE_MONTHLY_LIMIT` and friends; add `LOCATIONIQ_API_KEY`, `LOCATIONIQ_DAILY_CAP`, `LOCATIONIQ_ENABLED` env-var docs).
+**Files modified:** [frontend/src/components/tools/SchedulesPicker.jsx](../frontend/src/components/tools/SchedulesPicker.jsx) and any same-file inline-style call sites.
 
 **What ships:**
 
-- `LocationIQClient` with shared 60→120→240→300s circuit breaker + probe-on-first-call-after-cooloff.
-- `LOCATIONIQ_DAILY_CAP=4900` UTC-day counter; silent degrade-to-local-only on cap hit; log on cap-cross.
-- `LOCATIONIQ_ENABLED` env opt-out wiring.
-- `cached_forward` / `cached_reverse` read+write helpers; negative-cache sentinel (`NEG_HIT`).
-- `resolve_location(query)` cascade: coord-regex → NEIGHBORHOOD_COORDS exact → fuzzy → `local_search.forward()` → LocationIQ.
-- `reverse_geocode_point(lat, lon)` cascade: cached_reverse → KDTree-neighborhood (≤200m) → `local_search.nearest_address` (≤50m) → LocationIQ.
-- `LocationOutsideChicagoError` raised when resolution lands outside the Chicago bbox.
-- `GeocoderDegradedError` raised only when a Tier-5 call would have been needed and the breaker is open.
-- SHA-256 query redaction in logs (`q#abcd1234ef`).
-- `/reverse-geocode` endpoint updated to call new `reverse_geocode_point`.
-- Existing tests updated to mock the new client where they mocked Google.
+- Replace `style={{ background: pillColor(r) }}` at [frontend/src/components/tools/SchedulesPicker.jsx:74](../frontend/src/components/tools/SchedulesPicker.jsx#L74) with `className={`pill bus-color-${r.color}`}` (or the rail-color equivalent for rail routes).
+- Any other inline-style sites in the same component swept opportunistically.
 
-**Checkpoint signal:** All routing flows still work end-to-end against the new cascade. Tier-5 hit rate observably low in dev. Breaker behavior verified by injecting a 429 in a test. Daily-cap behavior verified by injecting a counter-at-cap state.
+**Checkpoint signal:** Schedules picker renders identically; manual spot-check across rail + ~5 bus routes; no `style=` attributes on route pills.
 
-**Why fifth:** This is the big switchover. By landing it after Chunks 1–4, the new module has all its dependencies (normalize, schema, corpus, query layer) and the swap is a relatively localized edit at the call sites.
+**Why third:** Same pattern as Chunk 2, separate component — isolates the diff for review.
 
-#### Chunk 6 --- `/autocomplete` endpoint rewrite
+#### Chunk 4 --- `MapView` markers + bearing rotation → generated rotation classes
 
-**Files modified:** `backend/main.py` (`/autocomplete` handler swapped to call `local_search.autocomplete`; remove `_build_autocomplete_index`, `_ac_master`, `_ac_prefix_index` — entirely superseded by FTS5).
+**Files modified:** [frontend/src/MapView.jsx](../frontend/src/MapView.jsx); [frontend/src/hooks/useMapMarker.jsx](../frontend/src/hooks/useMapMarker.jsx); any marker-emitting helper.
 
 **What ships:**
 
-- `/autocomplete` now returns addresses + intersections + neighborhoods + stations (a real upgrade over today's stations-only output).
-- No hosted supplement (Decision 5).
-- Existing rate-limit bucket preserved.
-- Endpoint shape unchanged for the frontend (`{ suggestions: [{ label, value, type }] }`) plus new `type` values: `address`, `intersection`.
-- Tests updated; new tests for the address + intersection suggestion paths.
+- All `transform: rotate(${bearing}deg)` inline style attributes replaced with `className={`mk rot-${Math.round(bearing / 15) * 15 % 360}`}`. The `% 360` handles negative bearings and the 345 → 360 boundary.
+- Static and dynamic inline styles in marker components (per SEC-003's "marker components — assorted static and dynamic styles") swept at the same time.
+- Unit test that the bearing math snaps correctly at boundary values (0, 7.5, 15, 352.5, 360, negative bearings).
 
-**Checkpoint signal:** Typing "1234 N Damen" in the existing `LocationInput` produces address suggestions for the first time. Backend tests green.
+**Checkpoint signal:** Live-trip tracking shows a visibly stable arrow; bearing-snap quantization not perceptible to the eye. No `style=` attributes on marker elements at any point during a live trip.
 
-**Why sixth:** Once the corpus + `local_search` are in place, this is a contained endpoint swap that delivers immediate user-visible value while the frontend is still the old component.
+**Why fourth:** Largest single component touch (markers are emitted in several places) — done after the simpler pill chunks have validated the discrete-class pattern.
 
-#### Chunk 7 --- Frontend: port `AddressAutocomplete` + refactor `LocationInput`
+#### Chunk 5 --- Continuous gesture-driven values → CSSOM helper
 
-**Files created:** `frontend/src/components/AddressAutocomplete.jsx`, `frontend/src/lib/autocompleteApi.js`, `frontend/src/tests/AddressAutocomplete.test.jsx`.
-
-**Files modified:** `frontend/src/components/LocationInput.jsx` (refactored to compose `AddressAutocomplete`; keeps geo button, save-location flow, saved-locations dropdown items); `frontend/src/tests/LocationInput.test.jsx` (updated for the composed structure); `frontend/src/App.css` (badge styling for `address` and `intersection` types).
+**Files modified:** [frontend/src/components/BottomSheet.jsx](../frontend/src/components/BottomSheet.jsx); [frontend/src/App.jsx](../frontend/src/App.jsx); [frontend/src/hooks/useCardsColumnWidth.js](../frontend/src/hooks/useCardsColumnWidth.js); [frontend/src/App.css](../frontend/src/App.css) (consume the new CSS variables).
 
 **What ships:**
 
-- Generic `AddressAutocomplete` with portal rendering, abort-on-keystroke, 150ms debounce, full ARIA combobox 1.1.
-- `autocompleteApi.js` provides `getSuggestions(query, { signal })` against `GET /autocomplete`.
-- `LocationInput.jsx` becomes a thin shell around the generic combobox; existing tests updated.
-- Mobile bottom-sheet overflow/clipping issues that may exist today get fixed for free via portal rendering.
+- `BottomSheet`: at rest the sheet uses the discrete snap classes from Chunk 1 (`.sheet-peek` / `.sheet-half` / `.sheet-full`). During an active drag, `setStyleVar('--sheet-height', `${px}px`)` updates the CSSOM rule in `#dyn-style`. On release, the helper clears `--sheet-height` and the appropriate snap class takes over.
+- App resizable column: replace `element.style.setProperty('--cards-col-width', `${width}px`)` with `setStyleVar('--cards-col-width', `${width}px`)`.
+- The existing CSS rules in `App.css` that consume these variables (e.g., `.cards-col { width: var(--cards-col-width, 360px); }`) continue working — they read from the `:root` scope where the helper writes the rules.
+- Behavior tests for both gesture flows (drag + resize) including release / restore paths.
 
-**Checkpoint signal:** Manual test in browser. Typing in the route form shows addresses + intersections + stations + neighborhoods. Saved-locations + geo button still work. Keyboard nav + screen-reader announcements correct. Mobile bottom-sheet does not clip the dropdown.
+**Checkpoint signal:** Smooth drag on mobile bottom sheet; smooth resize on the desktop column divider. Devtools confirms no `style=` attributes on the sheet or column elements at any point during or after the gesture.
 
-**Why seventh:** Backend already delivers the right shape after Chunk 6, so this is a pure frontend swap with no backend dependency.
+**Why fifth:** Introduces the CSSOM helper into real use only after Chunks 2–4 have validated the discrete-class path works. The two sites in this chunk are the only ones in the app that need the CSSOM mechanism.
 
-#### Chunk 8 --- i18n badge translations across 27 locales
+#### Chunk 6 --- Remaining residual inline-style sites
 
-**Files modified:** `frontend/public/locales/*/translation.json` (all 27 locales).
-
-**What ships:**
-
-- New i18n keys: `autocomplete.badge.address`, `autocomplete.badge.intersection`.
-- Translations across all 27 locales using the same translation pipeline as prior locale work.
-- 3 `RESEARCH_LOCALES` (`aii`, `ksw`, `rhg`) surface the `mt-review-notice` MT badge on these keys.
-
-**Checkpoint signal:** All 27 locale files contain both keys. Spot-check on RTL (`ar`) and CJK (`zh`) confirms render without layout breakage.
-
-**Why eighth:** Pure data work. Can in principle ship alongside Chunk 7, but separating it keeps the frontend code review focused.
-
-#### Chunk 9 --- PRIVACY.md updates
-
-**Files modified:** `docs/PRIVACY.md`.
+**Files modified:** [frontend/src/components/AlertsFilterBar.jsx](../frontend/src/components/AlertsFilterBar.jsx); plus any other call site surfaced by a fresh `grep -rn "style={" frontend/src/` audit.
 
 **What ships:**
 
-- Correct the existing inaccurate "no third-party processor" claim ([docs/PRIVACY.md:144-145](../PRIVACY.md)) — at this point in the migration it is true that LocationIQ is reached only in narrow fallback conditions, but it is still a third-party processor.
-- New section ("Geocoding & autocomplete (LocationIQ)") documenting:
-  - When LocationIQ is called (forward Tier 5 on submit fallthrough; reverse Tier 5 on geo-button fallthrough).
-  - What is sent: typed prefix; deployment outbound IP. No rider identifier; no session cookie.
-  - What is cached locally and for how long (90-day TTL on `cached_forward` and `cached_reverse`; `NEG_HIT` rows for known-bad strings).
-  - The `LOCATIONIQ_DAILY_CAP=4900` UTC-day cap behavior — what happens after the cap is hit (silent degrade to local-only for the rest of the day).
-  - The `LOCATIONIQ_ENABLED=false` env opt-out (for self-hosters with stricter privacy postures).
-- Note that LocationIQ's own retention is governed by LocationIQ's privacy policy.
+- Each residual `style={...}` is either converted to a class (if discrete) or routed through `setStyleVar` (if continuous-numeric).
+- Static inline styles (no dynamic input) are moved into the appropriate component stylesheet.
+- Final `grep -rn "style={" frontend/src/` returns zero matches in component code (or only the documented exceptions, none expected).
 
-**Checkpoint signal:** PRIVACY.md is accurate end-to-end with the new architecture. Existing inaccuracy is corrected.
+**Checkpoint signal:** The grep returns clean; app behavior unchanged in a manual sweep across all main flows.
 
-**Why ninth:** Mandatory but small. Lands after the code paths exist so the doc describes deployed reality, not planned reality.
+**Why sixth:** The long-tail. Easier to enumerate once the named bulk has been refactored.
 
-#### Chunk 10 --- One-shot cache migrator + final cleanup
+#### Chunk 7 --- Dev verification under stricter CSP
 
-**Files created:** `backend/scripts/migrate_geocode_cache.py`.
-
-**Files deleted (after migrator runs):** `backend/geocode_cache.json`, `backend/geocode_cache.journal`, `backend/geocode_cache_ages.json`, `backend/geocode_counter.json`.
+**Files modified:** documentation only — add a `docs/SECURITY_NOTES.md` ops entry (or extend an existing ops doc) describing the procedure.
 
 **What ships:**
 
-- Migrator reads the JSON cache, re-normalizes each key via `geocode_text`, inserts into `cached_forward` with bounded synthetic timestamps (so TTL eviction doesn't immediately wipe them).
-- Run-once safety: writes a `.migrated` marker file; refuses to re-run without `--force`.
-- Final removal of Chunk-1 re-export shims from `gtfs_loader.py`.
-- Docs note in `docs/PROJECT_CONTEXT.md` (or ops-notes location) explaining the one-time run.
+- A documented dev procedure: replace the `style-src` line in `frontend/index.html` locally with `style-src 'self' 'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=' https://fonts.googleapis.com` (no `'unsafe-inline'`); run the dev server; exercise each main flow with the devtools console open (search → results → trip-tracking → schedules picker → alerts tab → settings → bottom-sheet drag → column resize) on Chrome, Safari, Firefox; capture any reported CSP violations.
+- **Gating:** if violations are found, add additional component-level chunks before Chunk 8 and re-run the verification. Chunk 8 cannot proceed until verification is clean across all three browsers.
 
-**Checkpoint signal:** Run the migrator locally. `cached_forward` row count jumps by however many entries were in the JSON file. Spot-check that previously-cached queries now resolve from SQLite without hitting LocationIQ. JSON cache files are deleted from the repo.
+**Checkpoint signal:** Manual exercise of all main flows under the stricter CSP shows zero violations in the devtools console across Chrome, Safari, and Firefox.
 
-**Why last:** Pure data move with no code dependency. Deferring this until the new cascade is fully live means the migrator is writing into a well-tested, real schema.
+**Why seventh:** Final safety net before flipping production. The project explicitly forbids report-only in production, so this dev-only stricter-CSP procedure is the substitute.
+
+#### Chunk 8 --- Flip production CSP; archive SEC-003
+
+**Files modified:** [frontend/index.html](../frontend/index.html) (remove `'unsafe-inline'` from `style-src`; add `'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='`; update the CSP comment to remove the SEC-003 rationale and replace it with a resolved-history note); [docs/SECURITY.md](SECURITY.md) (delete the SEC-003 entry); [docs/archive/RESOLVED_HISTORY.md](archive/RESOLVED_HISTORY.md) (add a resolved-history entry summarizing the architectural pattern and call-site sweep).
+
+**What ships:**
+
+- Final CSP: `style-src 'self' 'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=' https://fonts.googleapis.com`.
+- SEC-003 deleted from `docs/SECURITY.md`; archived entry in `docs/archive/RESOLVED_HISTORY.md` references this plan's chunk list as the implementation record.
+- One-paragraph caveat in the resolved-history entry: PWA-installed clients running an older service-worker may serve the old HTML with the old CSP until the service worker updates. Standard SW-update lifecycle applies — no special remediation, but worth recording.
+
+**Checkpoint signal:** Production deploy. Devtools `Security` tab shows no `'unsafe-inline'` in `style-src`. Live-app smoke test on Chrome + Safari + Firefox shows zero CSP violations across the main flows. SEC-003 is gone from `docs/SECURITY.md` and present in `docs/archive/RESOLVED_HISTORY.md`. This entire entry is then deleted from `FEATURE_PLANS.md` and a summary added to `docs/archive/FEATURE_HISTORY.md`.
+
+**Why last:** Atomic security cutover. All preceding chunks are pure refactors with no security-posture change; this one flips the bit.
 
 ---
 
 ### Out of scope (explicit non-goals)
 
-- **Suburb / regional expansion of the corpus.** Decision 3 chose Chicago city limits. Follow-up if real users hit the edge.
-- **LocationIQ supplement on `/autocomplete`.** Decision 5 deferred. Revisit only if production metrics show real recall gaps.
-- **POI tier (the FEAT-011b half).** Not in this plan. If wanted later, becomes an additive tier in `local_search.autocomplete` sourced from a Geofabrik OSM extract (`amenity`, `shop`, `tourism`, `leisure`, etc.). Decision deferred — own follow-up FEAT.
-- **Fuzzy matching beyond `NEIGHBORHOOD_COORDS`.** Today's prefix-exact behavior is preserved across new tiers. Cross-tier fuzzy matching is a desirable future improvement with a different perf profile.
-- **Tier-hit-rate telemetry.** None in Passage; can be added later if needed.
-- **Backwards-compatibility shims for `geocode_google` / the JSON cache after Chunk 10.** No shims per maintainer preference.
+- **Removing `'unsafe-inline'` from `script-src`.** Already not present (`script-src 'self'` per [frontend/index.html:33](../frontend/index.html#L33)). Nothing to do.
+- **Self-hosting Google Fonts to drop the `https://fonts.googleapis.com` allowance from `style-src`.** Separate concern — the existing index.html font-loading comment (lines 59–67) covers the rationale and the SRI / self-host follow-up. Not in this plan.
+- **Adding Subresource Integrity for fonts.** Same separate-concern carve-out.
+- **`script-src-elem` / `script-src-attr` granular controls.** No scripts are inline-emitted today; not in scope.
+- **Migrating CSP from `<meta http-equiv>` to a Vercel response header.** Useful for future-tuning the CSP without an HTML rebuild — the index.html comment at lines 13–14 already notes this as a future-tunability improvement. Stands alone as a follow-up; not required for this fix.
+- **Edge-rendered nonce CSP infrastructure (the rejected Path A).** Permanently deferred. Revisit only if (a) the deploy is already moving off static-HTML hosting for an unrelated reason, AND (b) browser support for `style-src-attr` reaches parity with the rest of CSP Level 3 (Safari is the holdout as of 2026).
 
 ### When to revisit
 
-Ready to invoke implementation in chunk-by-chunk sequence — Chunk 1 first. After Chunk 10 ships, this entire entry is deleted from FEATURE_PLANS.md and a summary added to `docs/archive/FEATURE_HISTORY.md`. FEAT-013 (CPL libraries) and FEAT-015 (bus-stop platform disambiguation) become eligible to resume — FEAT-013 retargets onto Chunk 4's `local_search.autocomplete` as one more curated source.
+The sequencing prerequisite — Geocoding & Autocomplete chunked plan — fully shipped 2026-05-15, so this plan is now eligible. Invoke Chunk 1 of this plan via `/resolve-item` (or equivalent) and work the chunks in order. After Chunk 8 ships, this entire entry is deleted from `FEATURE_PLANS.md`; SEC-003 is deleted from `docs/SECURITY.md` and summarized in `docs/archive/RESOLVED_HISTORY.md`.
 
 ---
 
@@ -761,7 +622,7 @@ Ready to invoke implementation in chunk-by-chunk sequence — Chunk 1 first. Aft
 
 **Type:** Bolt-On
 
-**Status:** Scoped, ready to implement after the Geocoding & Autocomplete chunked plan's Chunk 4 (`local_search.py`) ships. Decisions originally captured 2026-05-06 via the `/resolve-item FEAT-011` walk-through; retargeted 2026-05-12 onto the Passage-mirror SQLite/FTS5 scaffolding (FEAT-011 was superseded by that chunked plan).
+**Status:** Scoped, ready to implement. Dependency satisfied 2026-05-14 when Chunk 4 of the Geocoding & Autocomplete plan shipped (`backend/local_search.py`); the full plan completed 2026-05-15. Decisions originally captured 2026-05-06 via the `/resolve-item FEAT-011` walk-through; retargeted 2026-05-12 onto the Passage-mirror SQLite/FTS5 scaffolding (FEAT-011 was superseded by that chunked plan, now archived in [FEATURE_HISTORY.md](archive/FEATURE_HISTORY.md)).
 
 **Dependency:** Geocoding & Autocomplete chunked plan, Chunk 4 (`local_search.autocomplete`). CPL becomes one more curated source merged into the ranking — slots in alongside `NEIGHBORHOOD_COORDS` as a curated tier above OSM-derived addresses/intersections.
 
@@ -826,16 +687,16 @@ Hours, phone, branch type, and other CPL metadata are explicitly **out of scope*
 
 **Type:** Bolt-On
 
-**Status:** Scoping stub. Spawned 2026-05-06 from FEAT-011 Decision 10. Open question awaiting evidence-driven resolution after FEAT-011 ships.
+**Status:** Scoping stub. Spawned 2026-05-06 from FEAT-011 Decision 10 (FEAT-011 was subsequently superseded by the Geocoding & Autocomplete chunked plan, which fully shipped 2026-05-15 — see [docs/archive/FEATURE_HISTORY.md](archive/FEATURE_HISTORY.md)). Now eligible to scope; revisit after the richer post-cascade autocomplete dropdown has accumulated some weeks of usage data.
 
-**Dependency:** None hard. Likely sequenced after FEAT-011 so the maintainer can observe how riders use the richer post-FEAT-011 dropdown before deciding the right disambiguation pattern.
+**Dependency:** None hard. Sequencing rationale: the maintainer should first observe how riders use the addresses + intersections + neighborhoods + stations dropdown the chunked plan delivered before deciding the right disambiguation pattern for bus-stop platforms.
 
 **User story / motivation:** The current bus-stop tier in `/autocomplete` dedupes by name — multiple physical stops at the same intersection (e.g., "Belmont & Clark" — NB, SB, EB, WB platforms) collapse to a single suggestion. This is generally the right call for casual riders who think in terms of intersections, but obscures useful structure for: (a) power users who know the platform they need, (b) accessibility-aware routing where specific platforms have specific accessibility states, (c) schedule lookups tied to a specific direction. The open question is whether to surface that structure, and how.
 
 **Current coverage (for context):**
 
-- Bus-stop tier today: deduped by name in [backend/main.py:312-358](../backend/main.py#L312-L358).
-- After FEAT-011: bus-stop tier behavior is **explicitly preserved** (Decision 10) — addresses, POIs, and library tiers are added without touching it.
+- Bus-stop tier today: deduped by name in [backend/local_search.py](../backend/local_search.py) `_ensure_in_mem_index` (the post-Chunk-4 location of the dedupe pass; pre-Chunk-6 it lived in `backend/main.py:312-358`).
+- The 2026-05-15 Geocoding & Autocomplete cascade explicitly preserved the bus-stop tier's deduped-by-name behavior (Decision 10) — addresses, intersections, and the eventual library tier slot in without touching it.
 
 **Open questions (to resolve in a future scoping walk-through):**
 
@@ -859,7 +720,7 @@ Hours, phone, branch type, and other CPL metadata are explicitly **out of scope*
 - `frontend/public/locales/*/translation.json` (any new direction or platform labels — 27 locales)
 - `backend/tests/`
 
-**When to revisit:** After FEAT-011 has shipped and accumulated some weeks of usage data. Observed dropdown-pick patterns for bus-stop suggestions (do riders often pick a deduped entry and immediately re-route? do they search for direction-specific names like "Belmont southbound"?) will inform which option is right.
+**When to revisit:** After the Geocoding & Autocomplete cascade (which superseded FEAT-011, shipped 2026-05-15) has accumulated some weeks of usage data. Observed dropdown-pick patterns for bus-stop suggestions (do riders often pick a deduped entry and immediately re-route? do they search for direction-specific names like "Belmont southbound"?) will inform which option is right.
 
 ---
 
@@ -909,6 +770,53 @@ Hours, phone, branch type, and other CPL metadata are explicitly **out of scope*
 - `frontend/public/locales/*/translation.json` (27 files)
 
 **When to revisit:** Schedule alongside the next routine locale-coverage pass, or sooner if rider analytics show non-English usage of the Notices & Delays surface.
+
+---
+
+### FEAT-019 --- Ship `chicago_geocode.db` to production (GitHub Release + Dockerfile curl)
+
+**Type:** Bolt-On (operational / deployment plumbing). **🔴 Production-blocking for the user-visible part of the Geocoding & Autocomplete plan.**
+
+**Status:** Scoping stub filed 2026-05-15. Maintainer plans to use **Option A** (GitHub Release + Dockerfile curl), mirroring the existing pattern used for `street_graph.graphml`. Implementation deferred — maintainer will pick this up.
+
+**Why this exists:** The Geocoding & Autocomplete chunked plan (fully shipped 2026-05-15, see [docs/archive/FEATURE_HISTORY.md](archive/FEATURE_HISTORY.md)) introduced `backend/static_data/chicago_geocode.db` — a 55 MB SQLite/FTS5 store containing 409 k addresses + 24.5 k intersections plus the `cached_forward` / `cached_reverse` LocationIQ cache. The DB is **gitignored** (too large, derived artifact) and the Dockerfile does not pull it in. Net effect in production right now:
+
+- `local_search._connect()` returns `None` because the DB file isn't present → **Tier 4 (local SQLite address + intersection search) silently no-ops**.
+- `geocoding._cache_connect()` returns `None` for the same reason → **`cached_forward` / `cached_reverse` writes silently no-op**, so every LocationIQ hit re-hits LocationIQ on the next encounter (cache is effectively disabled).
+- `/autocomplete` returns only train stations + neighborhoods + bus stops; the new `address` and `intersection` types are wired in the response schema but never have rows to populate them. The headline new capability of the plan (typing "1234 N Damen" → inline address suggestion) **does not work in production** even though the code is complete.
+- Submit-time forward resolution for any query that misses Tiers 1–3 goes straight to LocationIQ. `LOCATIONIQ_DAILY_CAP=4900` budget burns faster than designed at growth.
+
+**Acceptance criteria:**
+
+- `chicago_geocode.db` is fetched into `backend/static_data/` during the Docker image build, with **build-arg-driven asset resolution** so a stale Release URL never silently ships an empty image.
+- The first `/autocomplete` request after a fresh deploy returns address-type and intersection-type suggestions (verifies Tier 4 is live).
+- `geocoding.geocode_external` writes to `cached_forward` on a Tier-5 hit, and a follow-up identical query short-circuits via the cache (verifies the writer connection works).
+- The Dockerfile build still completes in under 5 minutes (the existing budget); the 55 MB download adds < 30 s on Railway's network.
+
+**Fix approach (single chunk):**
+
+1. **Local:** rebuild the DB if stale (`python backend/scripts/build_address_points.py` + `build_intersections.py`), then sanity-check row counts (`addresses` ~ 409 k, `intersections` ~ 24.5 k).
+2. **GitHub Release:** create a `chicago-geocode-db-YYYY-MM-DD` release (or attach to the existing release that ships `street_graph.graphml`) and upload `chicago_geocode.db` as an asset. Capture the asset ID.
+3. **Dockerfile:** add a `curl` step modeled on the existing `street_graph.graphml` block (lines ~22–60). Use a build-arg `GEOCODE_DB_ASSET_ID` so the asset reference can be rotated without code churn. Reuse the same `GITHUB_TOKEN` build-arg pattern + the same security mitigations (fine-grained PAT, contents:read only, rotated after public push). Cache-invalidation via a `CACHEBUST_GEOCODE_DB` build-arg.
+4. **Image-layer placement:** copy the DB into `/app/backend/static_data/chicago_geocode.db` so it lands at the path `_cache_connect()` and `local_search._connect()` already look for.
+5. **Verification step in the Dockerfile:** after the curl, run a small Python one-liner (`python -c "import sqlite3; conn = sqlite3.connect('backend/static_data/chicago_geocode.db'); n = conn.execute('SELECT COUNT(*) FROM addresses').fetchone()[0]; assert n > 100_000, n"`) so a corrupt download fails the build instead of silently producing a broken deploy.
+6. **Rebuild cadence:** the corpus is OSM-derived and ages slowly; quarterly is plenty. Document the rebuild + upload pipeline in the script's docstring or a short `docs/OPERATIONS.md` section.
+
+**Decisions deferred to scoping (when invoked):**
+
+- Whether to bundle the DB with the existing `street_graph.graphml` release tag or give the DB its own tag (separate cadence — street graph rebuilds rarely, DB rebuilds quarterly).
+- Whether to bake an integrity-check (sha256 sum stored as a sibling release asset) into the Dockerfile, beyond the row-count assertion. Probably yes; cheap.
+- Whether to expose a `DB_BUILD_DATE` build-arg that becomes a runtime-readable string surfaced on `/health` or `/stats` so operators can see which corpus build is live.
+
+**Files likely touched:**
+
+- `backend/Dockerfile` (new curl + verify block)
+- `backend/scripts/_geocode_db.py` (maybe — add a `verify()` helper used by both the migrator and the Dockerfile)
+- `docs/PROJECT_CONTEXT.md` (Geocoding Strategy section: remove the "DB shipping mechanism is pending" caveat)
+- `docs/PRIVACY.md` — TD-051's TTL eviction shipped 2026-05-15, so when FEAT-019 lands the privacy doc no longer needs the redeploy-wipe caveat (it's already been removed); revisit only if FEAT-019 changes where the DB lives at runtime in a way that affects the cache-rows description.
+- `.github/workflows/` (optional: GitHub Action to rebuild + upload the asset on a quarterly schedule — could defer)
+
+**When to revisit:** Soon. This is the last piece between "code-complete" and "feature-actually-live-for-users." Until it ships, the Geocoding & Autocomplete chunked plan is shipped on paper but invisible to riders.
 
 ---
 
@@ -1014,7 +922,7 @@ Revenue does not scale linearly with DAU across geographies. The model below use
 **Downward pressure:**
 - Failure to ship Pace + Metra — caps Chicagoland revenue at ~60% of the table's "Pace + Metra added" row
 - Per-city maintenance burden compounds — every added city without a local contributor degrades data freshness and increases bug surface
-- Google Maps cost wall hits before geocoding migration — at 5k+ DAU on Google, the cost line wipes out the revenue gain from any expansion stage
+- LocationIQ free-tier ceiling hit before paid-tier migration — the geocoding migration off Google Maps shipped 2026-05-15, so this is now a Tier-5-capacity question rather than a Google-Maps-billing one. The local-first cascade keeps most queries off LocationIQ, but at expansion-stage DAU the 5,000/UTC-day free-tier ceiling becomes the new cost wall; paid-tier LocationIQ or a self-hosted geocoder must be in place before scaling past that threshold
 - Solo burnout on sponsor sales — most likely failure mode for the "Modest sustainable side income" path
 
 ### Recommendation

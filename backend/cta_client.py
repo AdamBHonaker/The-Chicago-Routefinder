@@ -31,11 +31,25 @@ _session: aiohttp.ClientSession | None = None
 
 
 async def init_session() -> None:
+    """Open the module-level shared aiohttp session.
+
+    Call once at FastAPI startup (see ``main.lifespan``). Safe to call when a
+    session already exists — it will be replaced (the previous session is
+    leaked, so don't call this twice in normal operation).
+
+    If this is skipped (e.g. in standalone scripts or isolated unit tests),
+    ``_get_session()`` lazily creates a session on first use as a fallback.
+    """
     global _session
     _session = aiohttp.ClientSession()
 
 
 async def close_session() -> None:
+    """Close the shared session at FastAPI shutdown.
+
+    Drains in-flight requests and releases the underlying TCP connections.
+    Safe to call multiple times (no-op if already closed).
+    """
     global _session
     if _session is not None:
         await _session.close()
@@ -60,8 +74,15 @@ TRAIN_BASE = f"{_CTA_TRAIN_BASE}/ttarrivals.aspx"
 BUS_BASE   = f"{_CTA_BUS_BASE}/getpredictions"
 
 # Reusable timeout objects — created once at module load rather than per request.
+# Two tiers:
+#   _API_TIMEOUT (default 8 s, env-tunable via CTA_API_TIMEOUT_SECONDS) — used
+#     for the main arrival fetches where Railway-to-CTA latency can spike
+#     during bad weather; generous to avoid spurious failures.
+#   _SHORT_TIMEOUT (5 s) — used for secondary calls (alerts, route statuses)
+#     where 8 s would noticeably degrade UX if a single call hung. These calls
+#     are best-effort and degrade gracefully if they time out.
 _API_TIMEOUT   = aiohttp.ClientTimeout(total=_cfg.CTA_API_TIMEOUT_SECONDS)
-_SHORT_TIMEOUT = aiohttp.ClientTimeout(total=5)
+_SHORT_TIMEOUT = aiohttp.ClientTimeout(total=float(os.getenv("CTA_SHORT_TIMEOUT_SECONDS", "5")))
 
 # Human-readable line names keyed by the API's rt abbreviation
 LINE_NAMES = {

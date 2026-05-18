@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { LINE_COLORS } from "../lineColors.js";
 
@@ -63,6 +63,58 @@ function FilterButton({
   );
 }
 
+// Shared popover shell for both filter categories (TD-FE-023).
+// Owns the wrapper + list + clear-button scaffolding; the per-row visual
+// (color swatch + label vs. mono code label) is supplied by renderRow.
+// helpText / emptyText are optional and used only by the bus popover.
+function FilterPopover({
+  variant, ariaLabel, items, selected, toggleItem, clearLabel, onClear,
+  renderRow, helpText, emptyText,
+}) {
+  return (
+    <div
+      className={`alerts-filter__popover alerts-filter__popover--${variant}`}
+      role="menu"
+      aria-label={ariaLabel}
+    >
+      {helpText && <p className="alerts-filter__help">{helpText}</p>}
+      {items.length === 0 && emptyText ? (
+        <p className="alerts-filter__empty">{emptyText}</p>
+      ) : (
+        <ul className="alerts-filter__list" role="none">
+          {items.map((key) => {
+            const checked = selected.has(key);
+            return (
+              <li key={key} role="none">
+                <label
+                  className={
+                    "alerts-filter__row" + (checked ? " alerts-filter__row--checked" : "")
+                  }
+                  role="menuitemcheckbox"
+                  aria-checked={checked}
+                >
+                  <input
+                    type="checkbox"
+                    className="alerts-filter__checkbox"
+                    checked={checked}
+                    onChange={() => toggleItem(key)}
+                  />
+                  {renderRow(key)}
+                </label>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {selected.size > 0 && (
+        <button type="button" className="alerts-filter__clear" onClick={onClear}>
+          {clearLabel}
+        </button>
+      )}
+    </div>
+  );
+}
+
 export default function AlertsFilterBar({
   selectedLines,
   selectedBuses,
@@ -76,7 +128,12 @@ export default function AlertsFilterBar({
   const lButtonRef = useRef(null);
   const busButtonRef = useRef(null);
 
-  const sortedBuses = sortBusRoutes(availableBusRoutes ?? []);
+  // Memo on availableBusRoutes (OPT-FE-210) — popover-toggle setStates and
+  // checkbox ticks otherwise re-sort every render.
+  const sortedBuses = useMemo(
+    () => sortBusRoutes(availableBusRoutes ?? []),
+    [availableBusRoutes],
+  );
 
   useEffect(() => {
     if (!openPanel) return undefined;
@@ -138,99 +195,44 @@ export default function AlertsFilterBar({
       />
 
       {openPanel === "l" && (
-        <div
-          className="alerts-filter__popover alerts-filter__popover--l"
-          role="menu"
-          aria-label={t("alerts_filter_l_aria")}
-        >
-          <ul className="alerts-filter__list" role="none">
-            {L_LINES.map((name) => {
-              const checked = selectedLines.has(name);
-              return (
-                <li key={name} role="none">
-                  <label
-                    className={
-                      "alerts-filter__row" + (checked ? " alerts-filter__row--checked" : "")
-                    }
-                    role="menuitemcheckbox"
-                    aria-checked={checked}
-                  >
-                    <input
-                      type="checkbox"
-                      className="alerts-filter__checkbox"
-                      checked={checked}
-                      onChange={() => toggleLine(name)}
-                    />
-                    <span
-                      className="alerts-filter__swatch"
-                      aria-hidden="true"
-                      style={{ background: LINE_COLORS[name] }}
-                    />
-                    <span className="alerts-filter__row-label">{name} Line</span>
-                  </label>
-                </li>
-              );
-            })}
-          </ul>
-          {selectedLines.size > 0 && (
-            <button
-              type="button"
-              className="alerts-filter__clear"
-              onClick={() => onSelectedLinesChange(new Set())}
-            >
-              {t("alerts_filter_clear")}
-            </button>
+        <FilterPopover
+          variant="l"
+          ariaLabel={t("alerts_filter_l_aria")}
+          items={L_LINES}
+          selected={selectedLines}
+          toggleItem={toggleLine}
+          clearLabel={t("alerts_filter_clear")}
+          onClear={() => onSelectedLinesChange(new Set())}
+          renderRow={(name) => (
+            <>
+              <span
+                className="alerts-filter__swatch"
+                aria-hidden="true"
+                style={{ background: LINE_COLORS[name] }}
+              />
+              <span className="alerts-filter__row-label">{name} Line</span>
+            </>
           )}
-        </div>
+        />
       )}
 
       {openPanel === "bus" && (
-        <div
-          className="alerts-filter__popover alerts-filter__popover--bus"
-          role="menu"
-          aria-label={t("alerts_filter_bus_aria")}
-        >
-          <p className="alerts-filter__help">{t("alerts_bus_filter_help")}</p>
-          {sortedBuses.length === 0 ? (
-            <p className="alerts-filter__empty">{t("alerts_empty")}</p>
-          ) : (
-            <ul className="alerts-filter__list" role="none">
-              {sortedBuses.map((code) => {
-                const checked = selectedBuses.has(code);
-                return (
-                  <li key={code} role="none">
-                    <label
-                      className={
-                        "alerts-filter__row" + (checked ? " alerts-filter__row--checked" : "")
-                      }
-                      role="menuitemcheckbox"
-                      aria-checked={checked}
-                    >
-                      <input
-                        type="checkbox"
-                        className="alerts-filter__checkbox"
-                        checked={checked}
-                        onChange={() => toggleBus(code)}
-                      />
-                      <span className="alerts-filter__row-label alerts-filter__row-label--mono">
-                        {code}
-                      </span>
-                    </label>
-                  </li>
-                );
-              })}
-            </ul>
+        <FilterPopover
+          variant="bus"
+          ariaLabel={t("alerts_filter_bus_aria")}
+          items={sortedBuses}
+          selected={selectedBuses}
+          toggleItem={toggleBus}
+          clearLabel={t("alerts_filter_clear")}
+          onClear={() => onSelectedBusesChange(new Set())}
+          helpText={t("alerts_bus_filter_help")}
+          emptyText={t("alerts_empty")}
+          renderRow={(code) => (
+            <span className="alerts-filter__row-label alerts-filter__row-label--mono">
+              {code}
+            </span>
           )}
-          {selectedBuses.size > 0 && (
-            <button
-              type="button"
-              className="alerts-filter__clear"
-              onClick={() => onSelectedBusesChange(new Set())}
-            >
-              {t("alerts_filter_clear")}
-            </button>
-          )}
-        </div>
+        />
       )}
     </div>
   );

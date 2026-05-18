@@ -1,6 +1,10 @@
 import { useState, useRef, useEffect, useMemo, useCallback, Fragment, lazy, Suspense } from "react";
 import { useTranslation } from "react-i18next";
 import "./App.css";
+import AdSlot from "./components/AdSlot.jsx";
+import ArrivedToast from "./components/ArrivedToast.jsx";
+import { useCardsColumnWidth, SIDE_RAIL_WIDTH } from "./hooks/useCardsColumnWidth.js";
+import { useAlertsTabFilter } from "./hooks/useAlertsTabFilter.js";
 // MapView pulls in maplibre-gl (~210 KB gz) — keep it out of the eager
 // bundle. Suspense fallback is a blank panel (panel-map already has the
 // app background colour) so cold loads don't flash a skeleton.
@@ -31,10 +35,6 @@ import {
   RETRY_DELAYS_MS,
   BYOK_ENABLED,
   WALK_SPEED_FACTORS,
-  HOUSE_AD_ENABLED,
-  HOUSE_AD_URL,
-  HOUSE_AD_TEXT,
-  ARRIVED_TOAST_DISMISS_MS,
 } from "./constants.js";
 import LabelSavePanel from "./components/LabelSavePanel.jsx";
 import LocationInput from "./components/LocationInput.jsx";
@@ -51,7 +51,7 @@ import { useLocalStorage } from "./hooks/useLocalStorage.js";
 import { fetchWithRetry as _fetchWithRetry } from "./utils/fetchWithRetry.js";
 import { renderMarkdown } from "./utils/renderMarkdown.js";
 import { extractTransitLines } from "./utils/routeUtils.js";
-import { LINE_COLORS } from "./lineColors.js";
+import { stripLineSuffix } from "./lineColors.js";
 import { deriveTransferPoints } from "./utils/deriveTransferPoints.js";
 import {
   TRIP_PLAN_KEY,
@@ -66,26 +66,6 @@ import { track } from "./analytics.js";
 // Full implementation and JSDoc live in utils/fetchWithRetry.js (TD-040).
 function fetchWithRetry(url, options, onRetrying) {
   return _fetchWithRetry(url, options, RETRY_DELAYS_MS, onRetrying);
-}
-
-// House ad slot (Feature Monetization, Chunk 1). Renders only when
-// VITE_HOUSE_AD_ENABLED=true and both URL+TEXT env vars are set. Mounted
-// at the bottom of the results column and hidden during an active trip.
-// FTC: rel="sponsored" + visible "SPONSORED" kicker. The body copy is
-// intentionally not translated — affiliate links are typically en-US.
-function AdSlot({ kicker }) {
-  if (!HOUSE_AD_ENABLED || !HOUSE_AD_URL || !HOUSE_AD_TEXT) return null;
-  return (
-    <a
-      className="ad-slot"
-      href={HOUSE_AD_URL}
-      target="_blank"
-      rel="sponsored noopener noreferrer"
-    >
-      <span className="ad-slot__kicker">{kicker}</span>
-      <span className="ad-slot__body">{HOUSE_AD_TEXT}</span>
-    </a>
-  );
 }
 
 export default function App() {
@@ -130,31 +110,13 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [activeTab, setActiveTab] = useState("home"); // mobile tab bar; on desktop drives cards-column content (Home/Alerts/Tools)
 
-  // Desktop cards-column width (px). User-resizable via the .panel-splitter
-  // handle between the cards and map panels. Persisted across sessions.
-  // Floors at CARDS_MIN_WIDTH; ceilings at viewport - rail - splitter - map min.
-  const CARDS_MIN_WIDTH = 520;
-  const MAP_MIN_WIDTH = 320;
-  const SIDE_RAIL_WIDTH = 60;
-  const SPLITTER_WIDTH = 6;
-  const [cardsColumnWidth, setCardsColumnWidth] = useLocalStorage("cards_column_width", CARDS_MIN_WIDTH);
-  const [cardsColumnMax, setCardsColumnMax] = useState(() =>
-    typeof window !== "undefined"
-      ? Math.max(CARDS_MIN_WIDTH, window.innerWidth - SIDE_RAIL_WIDTH - SPLITTER_WIDTH - MAP_MIN_WIDTH)
-      : CARDS_MIN_WIDTH
-  );
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const recompute = () => {
-      const max = Math.max(CARDS_MIN_WIDTH, window.innerWidth - SIDE_RAIL_WIDTH - SPLITTER_WIDTH - MAP_MIN_WIDTH);
-      setCardsColumnMax(max);
-      setCardsColumnWidth((prev) => Math.max(CARDS_MIN_WIDTH, Math.min(max, prev)));
-    };
-    recompute();
-    window.addEventListener("resize", recompute);
-    return () => window.removeEventListener("resize", recompute);
-  }, [setCardsColumnWidth]);
+  // Desktop cards-column width — extracted to useCardsColumnWidth (TD-FE-020).
+  const {
+    width: cardsColumnWidth,
+    setWidth: setCardsColumnWidth,
+    max: cardsColumnMax,
+    min: CARDS_MIN_WIDTH,
+  } = useCardsColumnWidth();
 
   // ── Mobile bottom-sheet state ────────────────────────────────────────────
   // Below 800px the layout swaps to a Passage-style full-bleed map + draggable
@@ -208,13 +170,20 @@ export default function App() {
 
   // Pinned-stop arrivals — fetched via useApiQuery (TD-038) so loading/error
   // state is managed centrally and the board auto-refreshes every 60 s.
+  // Derive a stable identity key from the pinned-stop set (OPT-FE-215) so the
+  // query only re-subscribes when the actual set of stops changes — reorders
+  // and equivalent array re-creations don't trigger redundant abort+refetch.
+  const pinnedStopsKey = useMemo(
+    () => pinnedStops.map((s) => `${s.type}:${s.stop_id}`).sort().join("|"),
+    [pinnedStops],
+  );
   const pinnedArrivalsFetcher = useCallback((signal) => {
     const params = pinnedStops.map((s) => `stops=${s.type}:${s.stop_id}`).join("&");
     return fetch(`${BACKEND_URL}/stop-arrivals?${params}`, { signal });
   }, [pinnedStops]);
   const { data: pinnedArrivalsData, refetch: refetchPinnedArrivals } = useApiQuery(
     pinnedArrivalsFetcher,
-    [pinnedStops],
+    [pinnedStopsKey],
     { refetchInterval: 60000, enabled: pinnedStops.length > 0 },
   );
   const pinnedArrivals = pinnedArrivalsData?.arrivals || {};
@@ -226,7 +195,7 @@ export default function App() {
     () => new Set(
       undismissedAlerts
         .flatMap((a) => a.routes ?? [])
-        .map((r) => r.replace(" Line", ""))
+        .map(stripLineSuffix)
     ),
     [undismissedAlerts]
   );
@@ -240,62 +209,31 @@ export default function App() {
   const currentRouteLines = useMemo(() => {
     const lines = routeTransitLines[selectedRouteIndex];
     if (!lines?.length) return null;
-    return new Set(lines.map((l) => l.isBus ? l.lineCode : l.line?.replace(" Line", "")));
+    return new Set(lines.map((l) => l.isBus ? l.lineCode : stripLineSuffix(l.line)));
   }, [routeTransitLines, selectedRouteIndex]);
 
   const visibleAlerts = useMemo(() => {
     if (!currentRouteLines) return [];
     return undismissedAlerts.filter((a) =>
-      (a.routes ?? []).some((r) => currentRouteLines.has(r.replace(" Line", "")))
+      (a.routes ?? []).some((r) => currentRouteLines.has(stripLineSuffix(r)))
     );
   }, [undismissedAlerts, currentRouteLines]);
 
-  // Notices & Delays tab — opt-in filter state. Multi-select Sets of L line
-  // names (e.g., "Red", "Blue") and bus route short names (e.g., "22", "X9").
-  // Session-scoped only; not persisted (matches the dismissal state's lifetime).
-  const [alertsTabSelectedLines, setAlertsTabSelectedLines] = useState(() => new Set());
-  const [alertsTabSelectedBuses, setAlertsTabSelectedBuses] = useState(() => new Set());
+  // Notices & Delays tab — state + derivations extracted to useAlertsTabFilter (TD-FE-020).
+  const {
+    selectedLines: alertsTabSelectedLines,
+    setSelectedLines: setAlertsTabSelectedLines,
+    selectedBuses: alertsTabSelectedBuses,
+    setSelectedBuses: setAlertsTabSelectedBuses,
+    availableBusRoutes,
+    filteredAlertsForTab,
+    seedFromRoute: seedAlertsTabFromCurrentRoute,
+  } = useAlertsTabFilter(undismissedAlerts, currentRouteLines);
 
-  // Bus routes that currently have at least one active notice. Anything in an
-  // alert's `routes` array that isn't a known L line is treated as a bus.
-  const availableBusRoutes = useMemo(() => {
-    const out = new Set();
-    for (const a of undismissedAlerts) {
-      for (const r of a.routes ?? []) {
-        const stripped = r.replace(" Line", "");
-        if (!(stripped in LINE_COLORS)) out.add(stripped);
-      }
-    }
-    return [...out];
-  }, [undismissedAlerts]);
-
-  // Notices & Delays tab — alerts filtered by union of selected L lines + buses.
-  const filteredAlertsForTab = useMemo(() => {
-    if (alertsTabSelectedLines.size === 0 && alertsTabSelectedBuses.size === 0) {
-      return [];
-    }
-    return undismissedAlerts.filter((a) =>
-      (a.routes ?? []).some((r) => {
-        const stripped = r.replace(" Line", "");
-        return alertsTabSelectedLines.has(stripped) || alertsTabSelectedBuses.has(stripped);
-      })
-    );
-  }, [undismissedAlerts, alertsTabSelectedLines, alertsTabSelectedBuses]);
-
-  // Banner click handler: pre-select the route's L lines and bus routes, then
-  // swap the cards-column to the Notices & Delays tab. Wired only when the
-  // route has matching alerts (the static "no notices" banner does not call this).
+  // Banner click handler: pre-select the current route's L lines and bus
+  // routes, then swap the cards-column to the Notices & Delays tab.
   function viewRouteAlerts() {
-    const lines = new Set();
-    const buses = new Set();
-    if (currentRouteLines) {
-      for (const code of currentRouteLines) {
-        if (code in LINE_COLORS) lines.add(code);
-        else buses.add(code);
-      }
-    }
-    setAlertsTabSelectedLines(lines);
-    setAlertsTabSelectedBuses(buses);
+    seedAlertsTabFromCurrentRoute();
     setActiveTab("alerts");
   }
 
@@ -353,6 +291,23 @@ export default function App() {
     startTrip, stopTrip, toggleOnVehicle, dismissOffRoute, dismissTripGeoError, resetForReroute,
   } = useTripTracker({ result, selectedRouteIndex });
 
+  // Stable per-RouteCard callbacks (OPT-FE-209 / OPT-007). RouteCard is memo()'d,
+  // but inline arrows in the .map() block below would mint fresh function refs on
+  // every App render — including every GPS tick during a trip — defeating the
+  // memo and re-rendering the full leg/step subtree at ~1 Hz. The remaining
+  // hook-sourced callbacks (stopTrip, toggleOnVehicle, dismissTripGeoError,
+  // setSelectedTransferId) are already stable via useCallback inside their
+  // owning hooks or as useState setters.
+  const handleRouteSelect = useCallback((i) => {
+    setSelectedRouteIndex(i);
+    stopTrip();
+    track("route_selected");
+  }, [stopTrip]);
+  const handleStartTripWithTrack = useCallback(() => {
+    track("start_route_tapped");
+    startTrip();
+  }, [startTrip]);
+
   // Persist the route plan (origin/destination/result/selectedRouteIndex)
   // alongside useTripTracker's state blob while a trip is active, so the
   // PWA can resume mid-trip if the OS evicts the page. Clears on
@@ -406,20 +361,9 @@ export default function App() {
   }, [tripActive, selectedRoute, result?.originCoords, result?.destCoords]);
   // ── End Feature TransferMarkers ───────────────────────────────────────────
 
-  // ── Feature ArrivedToast ─────────────────────────────────────────────────
-  const [showArrivedToast, setShowArrivedToast] = useState(false);
-
-  // Reset toast when the trip ends.
-  useEffect(() => {
-    if (!tripActive) setShowArrivedToast(false);
-  }, [tripActive]);
-
-  // Auto-dismiss after 5 s; clear the timer on unmount or re-trigger.
-  useEffect(() => {
-    if (!showArrivedToast) return;
-    const id = setTimeout(() => setShowArrivedToast(false), ARRIVED_TOAST_DISMISS_MS);
-    return () => clearTimeout(id);
-  }, [showArrivedToast]);
+  // ── Feature ArrivedToast — show/hide + auto-dismiss live in ArrivedToast.
+  // Bump this counter from the MapView arrival callback to trigger the toast.
+  const [arrivedSignal, setArrivedSignal] = useState(0);
 
   // Shared /recommend API call — used by both performSearch and handleReroute
   // so the request body, error handling, and setResult shape stay in one place.
@@ -835,11 +779,11 @@ export default function App() {
                             index={i}
                             isFirst={i === 0}
                             isSelected={i === selectedRouteIndex}
-                            onSelect={() => { setSelectedRouteIndex(i); stopTrip(); track("route_selected"); }}
+                            onSelect={handleRouteSelect}
                             tripActive={tripActive && i === selectedRouteIndex}
                             activeLegIndex={activeLegIndex}
                             completedSteps={completedSteps}
-                            onStartTrip={() => { track("start_route_tapped"); startTrip(); }}
+                            onStartTrip={handleStartTripWithTrack}
                             onStopTrip={stopTrip}
                             tripGeoError={tripGeoError && i === selectedRouteIndex}
                             onDismissTripGeoError={dismissTripGeoError}
@@ -885,7 +829,7 @@ export default function App() {
         activeTab={activeTab}
         mapPadding={isMobile ? mapPadding : null}
         sheetSnap={isMobile ? sheetSnap : null}
-        onArrived={() => { track("trip_completed"); setShowArrivedToast(true); }}
+        onArrived={() => { track("trip_completed"); setArrivedSignal((n) => n + 1); }}
         selectedTransferId={selectedTransferId}
         onSelectTransfer={setSelectedTransferId}
         transferPoints={tripTransferPoints}
@@ -940,16 +884,7 @@ export default function App() {
 
       <InstallPrompt />
 
-      {showArrivedToast && (
-        <div
-          className="special-dispatch special-dispatch--arrived"
-          role="alert"
-          onClick={() => setShowArrivedToast(false)}
-        >
-          <span className="special-dispatch__kicker">{t("map_arrived_kicker")}</span>
-          <p className="special-dispatch__body">{t("map_arrived_body")}</p>
-        </div>
-      )}
+      <ArrivedToast arrivedSignal={arrivedSignal} tripActive={tripActive} />
     </div>
   );
 }

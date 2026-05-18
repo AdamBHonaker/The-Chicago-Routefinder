@@ -9,6 +9,7 @@
  * Pure presentational: state lives in SchedulesTool.
  */
 
+import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 
 const CATEGORY_ORDER = [
@@ -38,12 +39,18 @@ function pillColor(route) {
 }
 
 function RouteList({ routes, highlightRouteIds, onPick, t }) {
-  const grouped = new Map();
-  for (const r of routes) {
-    const list = grouped.get(r.category) || [];
-    list.push(r);
-    grouped.set(r.category, list);
-  }
+  // Memoize the category grouping (OPT-FE-211). The manifest is stable for the
+  // lifetime of the Schedules tool, so re-grouping ~150 routes on every render
+  // (e.g. step back-navigation, unrelated parent state) is pure waste.
+  const grouped = useMemo(() => {
+    const g = new Map();
+    for (const r of routes) {
+      const list = g.get(r.category) || [];
+      list.push(r);
+      g.set(r.category, list);
+    }
+    return g;
+  }, [routes]);
   return (
     <div className="sched-picker">
       {CATEGORY_ORDER.map(({ id, i18nKey }) => {

@@ -9,7 +9,7 @@ The app is feature-complete through Phase 6 (editorial redesign + map markers, d
 Two unusually strong differentiators most transit apps lack:
 
 1. **Routing accuracy** — a real NetworkX graph over unified train+bus GTFS with live CTA Train/Bus Tracker feeds and walking legs. Google Maps and Transit App both make routing mistakes on the CTA (wrong transfers, ghost buses, stale shapes). This one doesn't.
-2. **22+ languages** — Chicago has the third-most linguistically diverse transit ridership in the U.S. No mainstream transit app does this seriously.
+2. **27 languages** — Chicago has the third-most linguistically diverse transit ridership in the U.S. No mainstream transit app does this seriously.
 
 Constraints shaping every recommendation below: **full-time job, solo maintainer, based at Argyle/Uptown, no marketing budget assumed.** This plan optimizes for **asynchronous, high-leverage moves** — things you can do in a 90-minute evening block — and explicitly avoids tactics that require sustained daytime hustle.
 
@@ -38,12 +38,12 @@ The PWA model is the single biggest acquisition headwind. Be clear-eyed about wh
 
 1. **Chi Hack Night** — Tuesday evenings, free, civic-tech meetup at Merchandise Mart. Their entire audience is the exact intersection of "cares about Chicago" + "appreciates a custom routing engine" + "has a megaphone." A 5-minute lightning talk or demo gets you in front of 80–150 people who all post on Twitter/Bluesky. **One Tuesday evening. Highest single-event ROI in Chicago.**
 2. **Reddit launches, sequenced not simultaneous** —
-   - `r/chicago` (700k members): lead with the multilingual angle, *not* the technical one. Title: "I built a free CTA app that works in 22 languages — looking for feedback from Spanish/Vietnamese/Chinese/Polish speakers." Pin a comment with the technical story for the engineers.
+   - `r/chicago` (700k members): lead with the multilingual angle, *not* the technical one. Title: "I built a free CTA app that works in 27 languages — looking for feedback from Spanish/Vietnamese/Chinese/Polish speakers." Pin a comment with the technical story for the engineers.
    - `r/uptownchicago`, `r/RogersPark`, `r/AndersonvilleChicago` (home turf, smaller but more receptive): localize the pitch.
    - `r/CTA`: lead with accuracy. Show a side-by-side where Google Maps gets a transfer wrong and this app doesn't.
    - `r/programming` / Hacker News "Show HN": lead with the graph engine, GTFS pipeline, the Railway free-tier OSMnx trick.
    - **Space these out by 2–3 weeks.** Each is one evening of polish + a day of comment-replying.
-3. **Block Club Chicago tip line** (`tips@blockclubchi.org`) — they cover hyperlocal Chicago stories and love "neighbor builds civic tool" angles. The Argyle/Uptown angle (Vietnamese/Chinese/Lao/Ethiopian residents, transit-dependent, 22 languages) is *exactly* their beat. One good email = potentially 50k+ readers. Streetsblog Chicago (`tips@streetsblog.org`) is the transit-nerd parallel.
+3. **Block Club Chicago tip line** (`tips@blockclubchi.org`) — they cover hyperlocal Chicago stories and love "neighbor builds civic tool" angles. The Argyle/Uptown angle (Vietnamese/Chinese/Lao/Ethiopian residents, transit-dependent, 27 languages) is *exactly* their beat. One good email = potentially 50k+ readers. Streetsblog Chicago (`tips@streetsblog.org`) is the transit-nerd parallel.
 4. **iOS install onboarding fix** — see PWA mitigations above. Engineering, not marketing, but doubles the conversion of every other tactic on this list. Do it before the Reddit posts.
 
 ### Tier 2 — async, immigrant-community focused (structural advantage)

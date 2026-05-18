@@ -12,6 +12,18 @@ import europeSvg from "../../assets/continents/europe.svg?raw";
 import middleEastSvg from "../../assets/continents/middle-east.svg?raw";
 import oceaniaSvg from "../../assets/continents/oceania.svg?raw";
 
+// SEC-002: parse the bundled SVG into a React-controlled `{viewBox, d}` shape
+// at module load instead of feeding the raw string to `dangerouslySetInnerHTML`.
+// Each continent silhouette is a single `<path>` (Natural Earth → manually
+// optimized); extracting viewBox and `d` lets us render with JSX so any
+// hostile attribute (`onclick=...`, `<script>` smuggled in via a future asset
+// swap or supply-chain compromise) is stripped by React's element model.
+function parseContinentSvg(raw) {
+  const viewBox = raw.match(/viewBox="([^"]+)"/)?.[1] ?? "0 0 100 100";
+  const d       = raw.match(/<path[^>]*\bd="([^"]+)"/)?.[1] ?? "";
+  return { viewBox, d };
+}
+
 // ---------------------------------------------------------------------------
 // LanguagePicker — Feature LocaleExpansion, Chunk 15.
 //
@@ -33,12 +45,12 @@ import oceaniaSvg from "../../assets/continents/oceania.svg?raw";
 // via the existing LanguageDetector config — no schema change here.
 // ---------------------------------------------------------------------------
 const CONTINENT_SVG = {
-  africa: africaSvg,
-  americas: americasSvg,
-  asia: asiaSvg,
-  europe: europeSvg,
-  middle_east: middleEastSvg,
-  oceania: oceaniaSvg,
+  africa:      parseContinentSvg(africaSvg),
+  americas:    parseContinentSvg(americasSvg),
+  asia:        parseContinentSvg(asiaSvg),
+  europe:      parseContinentSvg(europeSvg),
+  middle_east: parseContinentSvg(middleEastSvg),
+  oceania:     parseContinentSvg(oceaniaSvg),
 };
 
 export default function LanguagePicker() {
@@ -124,11 +136,15 @@ export default function LanguagePicker() {
                 title={t(labelKey)}
                 onClick={() => setContinent(id)}
               >
-                <span
-                  className="continent-tile-svg"
-                  aria-hidden="true"
-                  dangerouslySetInnerHTML={{ __html: CONTINENT_SVG[id] }}
-                />
+                <span className="continent-tile-svg" aria-hidden="true">
+                  <svg
+                    viewBox={CONTINENT_SVG[id].viewBox}
+                    fill="currentColor"
+                    stroke="none"
+                  >
+                    <path d={CONTINENT_SVG[id].d} />
+                  </svg>
+                </span>
                 <span className="continent-tile-label">{t(labelKey)}</span>
                 {langs.length === 0 && (
                   <span className="continent-tile-count" aria-hidden="true">·</span>

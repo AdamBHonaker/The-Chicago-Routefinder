@@ -2,8 +2,10 @@
  * Bottom-sheet styles (folded in from the former mobile-sheet-kit).
  *
  * All theming reads --bsk-* CSS custom properties supplied by the host
- * via styles/bottom-sheet-host.css. The original kit's tokens.example.css
- * lives under Implementation Plans/mobile-sheet-kit/ for reference. Required vars are
+ * via styles/bottom-sheet-host.css. The original mobile-sheet-kit
+ * reference directory was inlined into the repo and removed (see commit
+ * 5def68c "Repo cleanup: inline mobile-sheet-kit"); this file plus
+ * bottom-sheet-host.css are the authoritative copy. Required vars are
  * --bsk-paper, --bsk-ink, --bsk-mute-fog, --bsk-rule, --bsk-ease,
  * --bsk-dur, --bsk-safe-bottom. Optional: --bsk-safe-top, --bsk-shadow,
  * --bsk-handle-focus.

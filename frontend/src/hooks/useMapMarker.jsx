@@ -43,16 +43,19 @@ export function removeMarker(ref) {
   ref.current = null;
 }
 
+// Shallow-equal without allocating Object.keys arrays for either side — hot
+// path during trips when MapView re-renders at GPS rate (OPT-FE-214).
 function shallowEqualProps(a, b) {
   if (a === b) return true;
   if (!a || !b) return false;
-  const aKeys = Object.keys(a);
-  const bKeys = Object.keys(b);
-  if (aKeys.length !== bKeys.length) return false;
-  for (const k of aKeys) {
+  let aCount = 0;
+  for (const k in a) {
+    aCount++;
     if (a[k] !== b[k]) return false;
   }
-  return true;
+  let bCount = 0;
+  for (const _k in b) bCount++; // eslint-disable-line no-unused-vars
+  return aCount === bCount;
 }
 
 export function useMapMarker(map, Component, props, lngLat, options = {}) {

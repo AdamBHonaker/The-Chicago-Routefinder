@@ -5,6 +5,11 @@ to publish coarse, aggregate usage numbers. It uses **no third-party
 analytics scripts**, no fingerprinting, and no persistent cross-day user
 identifiers.
 
+The only third-party processor in the request path is **LocationIQ**, used
+as a narrow Tier-5 fallback when the local-first geocoder cascade can't
+resolve an address. See **Geocoding & autocomplete (LocationIQ)** below
+for what is sent, when, and how to opt out as a self-hoster.
+
 ## What is collected
 
 ### Daily unique visitors (DAU)
@@ -140,9 +145,12 @@ Implemented in [backend/events.py](../backend/events.py).
   volumes (`recommend_submitted`, `recommend_returned`,
   `route_selected`, `trip_completed`). Internal/operational events
   (`app_loaded`, `map_opened`, `start_route_tapped`,
-  `house_ad_clicked`) stay admin-only because they are navigation
-  signals an outside viewer could ratio against DAU to infer per-user
-  behaviour.
+  `house_ad_clicked`, the off-route diagnostics `trip_off_route` /
+  `trip_rerouted` / `off_route_dismissed`, and the PWA install-prompt
+  events `install_prompt_shown` / `install_prompt_accepted` /
+  `install_prompt_dismissed` / `install_completed`) stay admin-only
+  because they are navigation signals an outside viewer could ratio
+  against DAU to infer per-user behaviour.
 
 ### Funnel completion (FEAT-007)
 
@@ -182,6 +190,102 @@ The whitelist is enforced by
 which fails the build if any field outside the whitelist appears in a
 public response.
 
+### Geocoding & autocomplete (LocationIQ)
+
+Implemented in [backend/geocoding.py](../backend/geocoding.py) and
+[backend/local_search.py](../backend/local_search.py).
+
+Free-text location resolution runs a five-tier cascade. The first four
+tiers are local-only:
+
+1. Coord-pair regex (`"41.88, -87.63"`) — no network.
+2. Curated `NEIGHBORHOOD_COORDS` exact match — no network.
+3. Fuzzy match against the same dict (≥0.95 similarity) — no network.
+4. Local SQLite/FTS5 search over a Chicago-only OSM address +
+   intersection corpus — no network.
+5. **LocationIQ `/search`** (forward) or **`/reverse`** (reverse) —
+   the only network call, used only when tiers 1–4 miss.
+
+#### When LocationIQ is called
+
+- **Forward (typed query):** when none of tiers 1–4 returns a match for
+  the typed text. In practice this is queries that aren't a Chicago
+  landmark / neighborhood and either fall outside the local OSM corpus
+  or use a phrasing the corpus normalization didn't match. The
+  `/autocomplete` endpoint **never** calls LocationIQ on its own (per
+  the chunked plan's Decision 5) — only submit-time forward resolution
+  does, and even then only after the four cheaper tiers have all missed.
+- **Reverse (geolocate button):** when the geolocate button's
+  reverse-resolve cascade falls through `cached_reverse` → KDTree
+  neighborhood (≤200 m) → local nearest-address (≤50 m) without a
+  match. In normal Chicago use this fallthrough is rare — the
+  neighborhood tier catches most positions.
+
+#### What is sent
+
+- The typed text (forward) or the lat/lon (reverse), biased to a
+  Chicago viewbox via LocationIQ's `viewbox` + `bounded=1` parameters.
+- The deployment's outbound IP (Railway egress). **No rider
+  identifier**, **no session cookie**, **no `Referer`**, **no
+  User-Agent beyond the default `requests` library string** is sent.
+
+#### What is logged
+
+- The query text is hashed to a 10-character SHA-256 tag (`q#abcd1234ef`)
+  before any log line is written. Logs never contain the verbatim typed
+  text.
+- Resolved coordinates are quantized to ~1 km precision before logging
+  (two decimal places). A log line never pins a user to an address.
+
+#### What is cached locally and for how long
+
+- Positive responses are cached in `cached_forward` (queries) and
+  `cached_reverse` (lat/lon pairs) inside
+  `backend/static_data/chicago_geocode.db`, alongside the address +
+  intersection corpus.
+- Definitive "no match" responses are cached as `NEG_HIT` rows so a
+  repeated bad query never re-leaks the typed text to LocationIQ.
+- Each row stores `fetched_at` (Unix epoch). A startup-time sweep
+  deletes rows older than `LOCATIONIQ_CACHE_TTL_DAYS` (default 90 days)
+  on every FastAPI lifespan startup — one DELETE per table, scaling with
+  rows-evicted not query rate. Operators can opt out by setting the
+  env var to `0`. The choice of startup-time rather than a background
+  timer is deliberate: write rate is bounded by `LOCATIONIQ_DAILY_CAP`
+  (4 900 / UTC-day), so anything that ages out between deploys ages out
+  at the next deploy's sweep.
+
+#### Rate ceiling
+
+- A UTC-day call counter (`LOCATIONIQ_DAILY_CAP`, default 4 900 — set
+  100 below the free-tier ceiling of 5 000) bounds maximum LocationIQ
+  traffic per deploy. When the cap is hit, the cascade silently
+  degrades to **local-only** for the rest of that UTC day — typed
+  queries that would have needed LocationIQ simply don't resolve, with
+  no automatic retry. One warning is logged the first time the cap is
+  hit on a given day.
+- A separate 60→120→240→300 s circuit breaker trips on HTTP 429
+  responses from LocationIQ and keeps Tier 5 closed until the cool-off
+  elapses. The first call after cool-off is a probe; success closes
+  the breaker.
+
+#### Opt-out
+
+Self-hosters with stricter privacy postures can disable Tier 5
+entirely by setting **`LOCATIONIQ_ENABLED=false`** in the Railway
+environment. With Tier 5 disabled, the cascade is local-only end-to-end
+and any query that misses tiers 1–4 returns "not found" rather than
+escaping to a third party. Missing API key (`LOCATIONIQ_API_KEY`
+unset) has the same effect — Tier 5 is silently skipped.
+
+#### Third-party retention
+
+LocationIQ's own retention of requests it receives is governed by
+LocationIQ's privacy policy (see <https://locationiq.com/privacy>),
+not by this app. The Tier-5 cascade keeps LocationIQ's surface as
+narrow as possible: a typed query only reaches LocationIQ when none
+of the four cheaper local tiers — coord regex, curated dict, fuzzy
+dict, local OSM corpus — could resolve it.
+
 ## What is **not** collected
 
 - No fingerprinting (canvas, fonts, audio, WebGL, screen size, etc.).
@@ -193,9 +297,12 @@ public response.
 
 ## Where the data lives
 
-All data is stored on the same Railway-hosted backend as the application
-itself. No data is sent to a third-party processor. The persisted artifacts
-are:
+All analytics data is stored on the same Railway-hosted backend as the
+application itself. The only outbound user-derived data leaving Railway
+goes to **LocationIQ** for the geocoder's Tier-5 fallback (see the
+dedicated section above for scope and frequency). No data leaves Railway
+for analytics purposes — the analytics surface is fully self-hosted. The
+persisted analytics artifacts are:
 
 - `backend/data/dau.json` — per-day visitor counts.
 - `backend/data/geography.json` — per-day per-city counts.

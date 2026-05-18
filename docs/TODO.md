@@ -19,7 +19,7 @@ Claude cannot do these. Check them off as you go.
 - [x] **CTA Train Tracker API key** ✅ — registered under `wayfarer.atlas@gmail.com`
 - [x] **CTA Bus Tracker API key** ✅ — registered under `wayfarer.atlas@gmail.com`
 - [x] **Anthropic API key** ✅ — console account: `wayfarer.atlas@gmail.com`
-- [x] **Google Maps API key** ✅ — Google Cloud project owner: `wayfarer.atlas@gmail.com`
+- [x] **LocationIQ API key** ✅ — account owner: `wayfarer.atlas@gmail.com` (replaced the original Google Maps Geocoding key in Chunk 5 of the Geocoding & Autocomplete plan, 2026-05-14)
 - [x] Also add to Railway dashboard env vars (Settings → Variables) before deploying
 
 ---
@@ -31,7 +31,7 @@ Claude cannot do these. Check them off as you go.
   - `CTA_TRAIN_API_KEY`
   - `CTA_BUS_API_KEY`
   - `ANTHROPIC_API_KEY`
-  - `GOOGLE_MAPS_API_KEY` ← required for address/landmark geocoding
+  - `LOCATIONIQ_API_KEY` ← Tier-5 geocoding fallback (Chunk 5 of the Geocoding & Autocomplete plan, 2026-05-14). Missing key silently disables Tier 5 (local-only behavior). Replaced `GOOGLE_MAPS_API_KEY`.
   - `ALLOWED_ORIGINS` ← fill in after Vercel URL is known
 - [x] Deploy frontend to Vercel (see step-by-step in [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md))
 - [x] Set `VITE_BACKEND_URL` in Vercel dashboard → your Railway URL
@@ -55,7 +55,8 @@ Claude cannot do these. Check them off as you go.
 ## Post-Deployment Cleanup
 
 - [x] **Restore street-network walking graph (Feature K)** ✅ — Completed. `street_graph.graphml` uploaded as a GitHub Release asset; Dockerfile curl block re-enabled and pointed at the GitHub API asset endpoint. Street-routed walking is live in production.
-- [ ] **Remove geocoding rate limit** — **Superseded by the Geocoding & Autocomplete chunked plan (see [FEATURE_PLANS.md](FEATURE_PLANS.md)).** Chunk 5 of that plan removes the entire Google submit-path code, including `_GEOCODE_CALL_LIMIT`, `_GEOCODE_COUNTER_PATH`, `_geocode_call_counter`, `_load_geocode_counter`, `_save_geocode_counter`, `_geocode_call_count`, `_increment_geocode_call_count`, the guard block inside `geocode_google`, and `geocode_cache.json` / `.journal` / `geocode_counter.json` (the latter three removed in Chunk 10 after the cache migrator runs). The replacement cost guard is the new `LOCATIONIQ_DAILY_CAP=4900` UTC-day counter — bug/abuse circuit against the 5k/day free tier — paired with the 60→120→240→300s 429 breaker and the `cached_forward`/`cached_reverse` negative cache. Delete this TODO item when Chunk 10 ships.
+- [x] **Remove geocoding rate limit** ✅ — Completed 2026-05-15 via the Geocoding & Autocomplete chunked plan (see [docs/archive/FEATURE_HISTORY.md](archive/FEATURE_HISTORY.md)). All Google submit-path code deleted in Chunk 5; replacement cost guard is `LOCATIONIQ_DAILY_CAP=4900` UTC-day counter + 60→120→240→300 s 429 breaker + `cached_forward`/`cached_reverse` negative cache. Legacy on-disk files migrated via `scripts/migrate_geocode_cache.py` in Chunk 10.
+- [ ] **Manual browser smoke test of the Chunk 7 frontend autocomplete** — **Geocoding & Autocomplete plan, Chunk 7 (built 2026-05-14)** shipped code-complete with 21 new automated tests, 423 total frontend tests green, and a clean Vite production build, but the in-browser checkpoint signal was never performed (no interactive browser available to the assistant during the chunked-plan work). Required verifications, all against `npm run dev` + `uvicorn main:app --reload` once **FEAT-019** has shipped the DB to a local environment that mirrors production (otherwise address + intersection paths won't return rows): (1) typing "1060 W Addison" surfaces an `Address` badge row; (2) typing "Clark and Belmont" surfaces a `Cross-street` badge row; (3) train stations still appear with the `Train` badge; (4) saved-locations dropdown still opens on focus with empty value and is mutually exclusive with the autocomplete listbox; (5) geo button still reverse-geocodes; (6) the mobile bottom-sheet (`?force=mobile` or narrow viewport) does NOT clip the dropdown — portal rendering should let it overflow the sheet; (7) keyboard nav (↑/↓/Enter/Esc/Home/End) behaves correctly; (8) screen-reader announcements via the `aria-live` "Searching…" / result-count region are correct on at least one assistive-tech check. Spot-check at least one RTL locale (`ar`) and one CJK locale (`zh`) for layout breakage on the new badges. Delete this TODO item once verified.
 
 ---
 
@@ -65,7 +66,7 @@ After deploying the FEAT-003 + FEAT-009 v1 changes, the following need human ver
 
 - [x] **Sign up for a MaxMind account and generate a license key** ✅ (2026-05-04) — key added to local `backend/.env` for dev. Account registered under `wayfarer.atlas@gmail.com`. Form answers used at signup: platform = "Custom backend (Python, FastAPI on Railway)"; usage = "Aggregate, privacy-preserving city-level traffic stats for a public-transit web app. IPs are resolved to city names in memory only; only per-day per-city visit counters are persisted. No IP-to-city mapping is stored."
 
-- [X] **Add `MAXMIND_LICENSE_KEY` to Railway Build Arguments and redeploy** — the Dockerfile reads it as a *build* argument (not a runtime env var), so it must be set under **Railway → Service → Settings → Build Arguments**, NOT under Variables. After adding it, trigger a redeploy and confirm the build log shows `[geoip] /app/GeoLite2-City.mmdb: NN bytes` (a number in the tens of millions). Without this step the production GeoLite2-City database is never downloaded and the Chicago-metro share panel on `/stats` reads `—` forever, even though the local dev environment will work fine.
+- [X] **Add `MAXMIND_LICENSE_KEY` to Railway Build Arguments and redeploy** — done historically; the key was set under **Railway → Service → Settings → Build Arguments** (NOT under Variables, since the Dockerfile reads it as a *build* argument) and a successful build logged `[geoip] /app/GeoLite2-City.mmdb: NN bytes`. **Currently unset again** to save ~60–80 MB of Railway memory while traffic is low — the Chicago-metro share panel on `/stats` therefore reads `—`. Re-add the key (same place) and redeploy when traffic warrants restoring city-level analytics. See [docs/PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) deployment-env table and [docs/PRIVACY.md](PRIVACY.md) FEAT-003 status block for the canonical state.
 
 - [ ] **Test the `/stats` page in a browser (desktop + mobile)** — once deployed and MAXMIND key is in place, open `https://the-chicago-routefinder.up.railway.app/stats`. Confirm: the DAU number renders, the 30-day trend bars draw under it, the Chicago-metro share reads sensibly, the page is mobile-responsive, and the cream/charcoal palette matches the rest of the app. The dashboard is intentionally not linked from anywhere — it's a quiet URL meant to be sent directly to advertisers. (Decision 2026-05-04: keep it quiet until the data is more impressive; revisit linking it once Phase 2/3 panels are live.) Implementation: [backend/public_stats.py](../backend/public_stats.py).
 

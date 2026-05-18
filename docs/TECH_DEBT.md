@@ -6,6 +6,7 @@ Known technical debt catalogued for future resolution. Priority: 🔴 High · �
 
 ---
 
+
 > **Audit date:** 2026-04-28 · Files scanned: entire project (`backend/`, `frontend/`, config files)
 >
 > **Resolved:** 2026-04-30 · All 2026-04-28 scan items resolved previously.
@@ -55,20 +56,5 @@ Known technical debt catalogued for future resolution. Priority: 🔴 High · �
 - **Priority**: Low
 - **Description**: Transit routing uses NetworkX while the walking engine uses igraph. Both are large graph-algorithm libraries (~30–50 MB combined install). igraph is typically 5–10× faster and could handle transit routing too.
 - **Deferred reason**: Migration would be a significant rewrite. Profile `warm_up()` build phase first to confirm NetworkX is a real bottleneck before committing.
-
----
-
-_All items from the 2026-04-30 scans have been resolved. See RESOLVED_HISTORY.md for details._
-
----
-
-### TD-FE-019 · Content-Security-Policy still in report-only mode
-
-- **File**: [frontend/index.html](frontend/index.html#L22)
-- **Line(s)**: 22–34
-- **Category**: TODO-FIXME / Pending Hardening
-- **Priority**: 🟡 Medium
-- **Status**: **Awaiting human walkthrough.** The CSP meta tag is `Content-Security-Policy-Report-Only`. The inline comment explicitly states the next step: *"Once a clean run through the main flows shows zero violations, swap `Content-Security-Policy-Report-Only` for `Content-Security-Policy` to enforce."* That validation has been deferred — until enforcement is on, the policy provides no actual protection. A wrong flip risks breaking production for users on networks where a tile/font CDN serves content from an origin we missed.
-- **How to resolve**: Walk the main flows (search → results → trip → map tab → settings → language switch → saved routes → pinned stops) in production with DevTools open, capture any `[Report Only] Refused to…` console messages, fix or allowlist the offending sources, then change the meta-tag header to `Content-Security-Policy`. If any violations come from third-party tile/font CDNs that genuinely need to be allowlisted, update the policy directives in lockstep.
 
 ---

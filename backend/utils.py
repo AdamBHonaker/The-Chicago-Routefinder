@@ -21,6 +21,11 @@ _MILES_PER_DEG_LAT: float = 69.0
 # Derived as 69.0 × cos(41.9°) ≈ 51.35.
 _MILES_PER_DEG_LON: float = 51.35
 
+# Exact conversion for callers that mix metric inputs with the haversine_miles
+# output (notably the geocoder cascade — radius_m thresholds, reverse-tier
+# cutoffs). Single source of truth so /usr threshold tweaks land in one place.
+METERS_PER_MILE: float = 1609.344
+
 
 def haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Return the great-circle distance in miles between two lat/lon points."""
@@ -129,12 +134,19 @@ CHICAGO_WEST:  float = -87.94
 CHICAGO_EAST:  float = -87.52
 
 # Format-specific derived constants — import whichever matches the target API.
-# Google Maps Geocoding API bounds parameter: "SW_lat,SW_lon|NE_lat,NE_lon"
-CHICAGO_BBOX_GOOGLE: str   = f"{CHICAGO_SOUTH},{CHICAGO_WEST}|{CHICAGO_NORTH},{CHICAGO_EAST}"
 # Overpass QL bbox: south,west,north,east (all as a comma-joined string)
 CHICAGO_BBOX_OVERPASS: str = f"{CHICAGO_SOUTH},{CHICAGO_WEST},{CHICAGO_NORTH},{CHICAGO_EAST}"
 # OSMnx / ox.graph_from_bbox format: (left/west, bottom/south, right/east, top/north)
 CHICAGO_BBOX_OSMNX: tuple  = (CHICAGO_WEST, CHICAGO_SOUTH, CHICAGO_EAST, CHICAGO_NORTH)
+
+
+def chicago_bbox_contains(lat: float, lon: float) -> bool:
+    """True if (lat, lon) is inside the canonical Chicago bbox.
+
+    Used by the geocoder cascade to reject out-of-bbox results from the
+    hosted fallback, and by local_search for in-bbox scoring.
+    """
+    return CHICAGO_SOUTH <= lat <= CHICAGO_NORTH and CHICAGO_WEST <= lon <= CHICAGO_EAST
 
 # ---------------------------------------------------------------------------
 # Street-graph coverage — Chicago city limits + narrow Purple Line corridor.

@@ -46,34 +46,31 @@ Acceptance: ≥10 unskipped golden fixtures; each fails loudly if route topology
 
 ---
 
-# BUG-058 · 🟢 Low — Autocomplete suggestion list uses array index as React key
+## Bug Scan — 2026-05-13 (Whole project — coverage gaps)
 
-**Files:** `frontend/src/components/LocationInput.jsx` (line 219 — `acSuggestions.map((s, i) => <li key={i}>`)
+> Scope: entire project, with focus on files not yet thoroughly covered by today's earlier scans. Previously spot-checked backend files were re-read end-to-end (`transit_graph.py` 2828 lines, `gtfs_loader.py` 893, `cta_client.py` 447, `prompt_builder.py` 453). Previously unscanned backend modules: `hourly.py`, `public_stats.py`, `referrers.py`, `devices.py`, `routes/stats.py`, `fetch_gtfs.py`, `fetch_station_exits.py`, `fetch_street_graph.py`. Scripts: `backend/scripts/` (`_geocode_db.py`, `build_address_points.py`, `build_intersections.py`, `calibrate_detour_factor.py`, `probe_route.py`, `fetch_geolite.py`) and root `scripts/build_schedule_index.py`. Frontend re-scan deferred — the same-day Frontend scan above remains authoritative and no frontend file has changed since.
+> ✅ No new bugs found.
 
-**Will be incidentally fixed by Chunk 7 of the Geocoding & Autocomplete chunked plan** (see [FEATURE_PLANS.md](FEATURE_PLANS.md)). That chunk replaces `LocationInput`'s combobox guts with the ported generic `AddressAutocomplete.jsx` (WAI-ARIA combobox 1.1, portal-rendered, stable keys), so don't fix this independently — the whole call site goes away. Delete this entry when Chunk 7 ships.
+Notes on items reviewed and dismissed:
+- `transit_graph.clip_shape()` uses squared-degree distance (not haversine miles) for nearest-shape-point lookup at [`backend/transit_graph.py:1626-1627`](../backend/transit_graph.py#L1626-L1627). Lat/lon degrees are not isotropic at Chicago's latitude, but the function's job is shape-snapping along a single CTA route (small lateral extent), and the docstring acknowledges the squared-Euclidean choice. No rider-visible bug.
+- `transit_graph._dedup_stations_by_line()` keys off the station's outbound (`G.adj`) transit edges only, and is applied to both origin and destination station lists. A pure dead-end destination terminal could in principle have no outbound edges for its line — but in the CTA graph each direction_id contributes its own edges, so terminals always retain at least one outbound edge from the opposite-direction first stop. No real-world miss.
+- `cta_client.init_session()` leaks a previous session if called twice — flagged explicitly in the docstring as "don't call this twice in normal operation"; the FastAPI lifespan path calls it once. Not a latent bug.
+- `scripts/build_schedule_index.py` `_normalise_hhmm()` is robust to GTFS 24+ hours via `h % 24`; minute-overflow isn't a real GTFS shape.
 
-## What is happening
+---
 
-The autocomplete dropdown keys list items by their index in `acSuggestions`. When the suggestion list updates (each keystroke replaces the list), React reuses the same `<li>` for slot 0, slot 1, … even though the underlying suggestion data is entirely different. The `aria-selected`, `className`, and child text update fine, but any per-item state (e.g. CSS transitions, future React state inside a more complex item component) carries over from the previous query's slot 0 to the new query's slot 0, which is wrong.
+## Bug Scan — 2026-05-14 (Entire project — modified + untracked since yesterday)
 
-Index-as-key is also brittle if the rendering ever switches from "replace whole list" to "filter in place" — items would silently swap identity.
+> Scope: entire project, with emphasis on the 23 modified + 4 untracked files that have changed since the four 2026-05-13 scans above. Backend re-read: `active_routes.py`, `config.py`, `crowdedness.py`, `cta_client.py`, `fetch_gtfs.py`, `gtfs_loader.py`, `main.py` (1900 lines), `rate_limit.py`, `route_scoring.py`, `schedule.py`, `walking.py` (811 lines), `weather_service.py`, `public_stats.py`, `routes/stats.py`, `templates/stats.html`, and the `transit_graph.py` diff (OPT-014 transfer-edge cache, OPT-015 numpy shape cache, OPT-005 name fallback rework, OPT-002 midday rep reuse, OPT-004 progressive-ring single query, dedup-stations adj rework). Frontend re-read: `App.jsx` (891 lines), `MapView.jsx` diff (mute-watermark + line-suffix), `useFavorites.js`, `useTripTracker.js`, `useMapMarker.jsx`, `BottomSheet.jsx` (shared settle path), `AlertsFilterBar.jsx` (`FilterPopover` extraction), `RouteCard.jsx`, `LinePill.jsx`, `LanguagePicker.jsx` (SEC-002 SVG parse), `lineColors.js`, `SchedulesPicker.jsx`, `SchedulesView.jsx` (per-minute now-tick fix). Untracked: `AdSlot.jsx`, `ArrivedToast.jsx`, `useAlertsTabFilter.js`, `useCardsColumnWidth.js`.
+> ✅ No new bugs found.
 
-**Reproduction:** Add a CSS `transition: background-color 200ms` on `.saved-dropdown-item`. Type a query, observe a suggestion become highlighted. Type the next character; the new top suggestion inherits the highlight's transition state from the old slot 0 rather than starting clean.
-
-## Fix approach (single chunk)
-
-Key by suggestion value, which is stable across renders for the same underlying place:
-
-```jsx
-{acSuggestions.map((s, i) => (
-  <li key={`${s.type}:${s.value}`} … >
-    …
-  </li>
-))}
-```
-
-If duplicates by `value` are possible, append the index as a tie-breaker.
-
-Acceptance: typing through queries reuses DOM nodes only when the same suggestion appears in two consecutive lists.
+Notes on items reviewed and dismissed:
+- `App.jsx:514` calls `performSearch(originGeoCoords ?? origin.trim(), ...)`. The geo-coords ref can lag the visible text, but `LocationInput.jsx:167` nulls `originGeoCoords` inside the input's `onChange` handler, so any typed change clears the stale ref before submission. The swap-row at `App.jsx:660` likewise clears it. Stale GPS coords cannot survive into a search.
+- `MapView.jsx` mute-watermark effects: two `useEffect`s both depend on `route`. React runs effects in declaration order, so the watermark reset (`mutedWatermarkRef.current = -1`) lands before the muter reads it on the same render. No race.
+- `useMapMarker.jsx` `shallowEqualProps` was rewritten to use `for…in` and key-count comparison. `for…in` walks the prototype chain, but for plain prop objects the count parity + value parity still hold (any prototype-pollution-injected key appears in both `a` and `b` with the same value). Behaviourally equivalent to the previous `Object.keys` form.
+- `LanguagePicker.jsx` SEC-002 SVG parser extracts only the first `<path>`'s `d`. The bundled continent silhouettes are each authored as a single path, and the comment documents that invariant. Not a latent bug given the current asset shape.
+- `SchedulesView.jsx` now ticks `now` once a minute only while `activeBucket === todayBucket`. After midnight, `todayBucket` recomputes but `activeBucket` lags; the past-time greyout is gated on `activeBucket === todayBucket`, so yesterday's bucket viewed after midnight never gets greyed-out incorrectly.
+- `transit_graph._shape_np_cache` keyed by `id(list)`: the lists are owned by `_shape_lookup` for the process lifetime, and both caches are rebuilt together inside `_build_shape_lookup()`. No id-recycle risk under the current call graph.
+- `walking.py` `_walk_directions_impl` / `_walk_path_impl` now `@lru_cache(maxsize=512)`. Both return tuples and `_walk_directions` / `_walk_path` wrap with `list(...)` before exposing to callers, so the immutable cache invariant is preserved.
 
 ---
