@@ -37,10 +37,14 @@ backend/.geocode_cache_migrated
 
 # Local-first geocoder SQLite store + WAL/SHM sidecars — built quarterly by
 # scripts/build_address_points.py + build_intersections.py. Large derived
-# artifact; never committed.
+# artifact; never committed. The .sha256 sidecar is computed locally before
+# each upload to the `geocode-db` GitHub Release; it's not the trusted hash
+# (that role belongs to the asset on the release) so it has no business in
+# git either.
 backend/static_data/chicago_geocode.db
 backend/static_data/chicago_geocode.db-wal
 backend/static_data/chicago_geocode.db-shm
+backend/static_data/chicago_geocode.db.sha256
 
 # Runtime analytics counter outputs — the analytics modules write per-day
 # aggregates to backend/data/ in dev (sibling to the modules) and to /app/data

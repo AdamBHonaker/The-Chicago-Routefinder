@@ -24,7 +24,7 @@ This file holds three kinds of forward-looking planning entries: **Chunked Imple
 - FEAT-013 — Curated Chicago Public Library tier in autocomplete — **Bolt-On**. Scoped; unblocked 2026-05-14 (Chunk 4 of the Geocoding & Autocomplete plan shipped, full plan completed 2026-05-15). Ready to implement.
 - FEAT-015 — Bus-stop platform-level disambiguation in autocomplete — **Bolt-On**. Scoping stub; eligible to revisit (Geocoding & Autocomplete plan fully shipped 2026-05-15).
 - FEAT-016 — Translate the new alerts-flow strings across all 27 locales — **Bolt-On**. Scoping stub; parent alerts-flow FEAT shipped English-only on 2026-05-07, so non-English locales currently fall back to English in the new banner + filter surfaces. Pure data work — 14 keys × 27 locales, no code changes.
-- **FEAT-019 — Ship `chicago_geocode.db` to production (GitHub Release + Dockerfile curl)** — **Bolt-On** but **🔴 production-blocking for the user-visible part of the Geocoding & Autocomplete plan**. Scoping stub filed 2026-05-15. The chunked plan shipped code-complete but `backend/static_data/chicago_geocode.db` is gitignored and not delivered to the Railway container — so in production `local_search._connect()` returns None, Tier 4 of the cascade silently no-ops, `/autocomplete` returns only train stations + neighborhoods + bus stops (no addresses, no intersections), and every submit-time forward resolution that misses Tiers 1–3 goes straight to LocationIQ. Maintainer's chosen approach: Option A — upload the built DB as a GitHub Release asset and add a Dockerfile `curl` step mirroring the existing `street_graph.graphml` pattern.
+- **FEAT-019 — Ship `chicago_geocode.db` to production** — ✅ **Shipped 2026-05-18.** Built the DB locally (409,490 addresses + 24,573 intersections, 55 MB), created a rolling `geocode-db` GitHub Release with `chicago_geocode.db` + `chicago_geocode.db.sha256` sibling assets, and added a Dockerfile block that downloads both, asserts the SHA-256 match, and runs a row-count sanity check before the image is sealed. Tier 4 of the autocomplete cascade and the `cached_forward` / `cached_reverse` LocationIQ-hit cache are now live in production.
 
 **Considerations** (design directions evaluated and deferred, with explicit revisit triggers):
 
@@ -773,50 +773,42 @@ Hours, phone, branch type, and other CPL metadata are explicitly **out of scope*
 
 ---
 
-### FEAT-019 --- Ship `chicago_geocode.db` to production (GitHub Release + Dockerfile curl)
+### FEAT-019 --- Ship `chicago_geocode.db` to production ✅ Shipped 2026-05-18
 
-**Type:** Bolt-On (operational / deployment plumbing). **🔴 Production-blocking for the user-visible part of the Geocoding & Autocomplete plan.**
+The Geocoding & Autocomplete plan shipped code-complete on 2026-05-15 but `backend/static_data/chicago_geocode.db` (55 MB, 409,490 addresses + 24,573 intersections + `cached_forward` / `cached_reverse` LocationIQ-hit cache) is gitignored — Tier 4 of the autocomplete cascade and the LocationIQ response cache silently no-op'd in production. FEAT-019 fixes that by mirroring the established `street_graph.graphml` shipping pattern.
 
-**Status:** Scoping stub filed 2026-05-15. Maintainer plans to use **Option A** (GitHub Release + Dockerfile curl), mirroring the existing pattern used for `street_graph.graphml`. Implementation deferred — maintainer will pick this up.
+**Implementation summary:**
 
-**Why this exists:** The Geocoding & Autocomplete chunked plan (fully shipped 2026-05-15, see [docs/archive/FEATURE_HISTORY.md](archive/FEATURE_HISTORY.md)) introduced `backend/static_data/chicago_geocode.db` — a 55 MB SQLite/FTS5 store containing 409 k addresses + 24.5 k intersections plus the `cached_forward` / `cached_reverse` LocationIQ cache. The DB is **gitignored** (too large, derived artifact) and the Dockerfile does not pull it in. Net effect in production right now:
+- Rolling `geocode-db` GitHub Release hosts `chicago_geocode.db` plus a `chicago_geocode.db.sha256` sibling asset; both are replaced in place on each quarterly rebuild.
+- Dockerfile downloads both via the existing `GITHUB_TOKEN` build-arg (same fine-grained PAT used for `street-graph`), recomputes SHA-256 against the sidecar, then runs a row-count sanity check (`addresses >= 100,000`, `intersections >= 20,000`) before the image is sealed. A corrupt download or asset substitution fails the build.
+- `CACHEBUST_GEOCODE_DB` build-arg lets a rebuild force re-download of just the DB without re-downloading the street graph.
 
-- `local_search._connect()` returns `None` because the DB file isn't present → **Tier 4 (local SQLite address + intersection search) silently no-ops**.
-- `geocoding._cache_connect()` returns `None` for the same reason → **`cached_forward` / `cached_reverse` writes silently no-op**, so every LocationIQ hit re-hits LocationIQ on the next encounter (cache is effectively disabled).
-- `/autocomplete` returns only train stations + neighborhoods + bus stops; the new `address` and `intersection` types are wired in the response schema but never have rows to populate them. The headline new capability of the plan (typing "1234 N Damen" → inline address suggestion) **does not work in production** even though the code is complete.
-- Submit-time forward resolution for any query that misses Tiers 1–3 goes straight to LocationIQ. `LOCATIONIQ_DAILY_CAP=4900` budget burns faster than designed at growth.
+**Decisions made at implementation time (2026-05-18):**
 
-**Acceptance criteria:**
+1. **Release tag strategy: rolling `geocode-db` tag** (over dated tags or bundling into the `street-graph` tag). Reasoning: rollback-to-prior-corpus has low value (any rebuild is from current OSM), so the simplicity of mirroring the `street-graph` pattern won out.
+2. **Integrity check: row-count + SHA-256 sibling asset** (over row-count only). Reasoning: SHA-256 catches partial uploads and asset substitution between releases. Marginal cost is one extra `gh release upload` per rebuild.
+3. **DB build date at runtime: skipped for v1** (deferred `DB_BUILD_DATE` build-arg + `/health` field). Reasoning: Dockerfile commit history + Railway deploy timestamps already answer the "which corpus is live?" question.
 
-- `chicago_geocode.db` is fetched into `backend/static_data/` during the Docker image build, with **build-arg-driven asset resolution** so a stale Release URL never silently ships an empty image.
-- The first `/autocomplete` request after a fresh deploy returns address-type and intersection-type suggestions (verifies Tier 4 is live).
-- `geocoding.geocode_external` writes to `cached_forward` on a Tier-5 hit, and a follow-up identical query short-circuits via the cache (verifies the writer connection works).
-- The Dockerfile build still completes in under 5 minutes (the existing budget); the 55 MB download adds < 30 s on Railway's network.
+**Rebuild + upload procedure (quarterly):**
 
-**Fix approach (single chunk):**
+```bash
+# 1. Rebuild the DB
+python backend/scripts/build_address_points.py
+python backend/scripts/build_intersections.py
 
-1. **Local:** rebuild the DB if stale (`python backend/scripts/build_address_points.py` + `build_intersections.py`), then sanity-check row counts (`addresses` ~ 409 k, `intersections` ~ 24.5 k).
-2. **GitHub Release:** create a `chicago-geocode-db-YYYY-MM-DD` release (or attach to the existing release that ships `street_graph.graphml`) and upload `chicago_geocode.db` as an asset. Capture the asset ID.
-3. **Dockerfile:** add a `curl` step modeled on the existing `street_graph.graphml` block (lines ~22–60). Use a build-arg `GEOCODE_DB_ASSET_ID` so the asset reference can be rotated without code churn. Reuse the same `GITHUB_TOKEN` build-arg pattern + the same security mitigations (fine-grained PAT, contents:read only, rotated after public push). Cache-invalidation via a `CACHEBUST_GEOCODE_DB` build-arg.
-4. **Image-layer placement:** copy the DB into `/app/backend/static_data/chicago_geocode.db` so it lands at the path `_cache_connect()` and `local_search._connect()` already look for.
-5. **Verification step in the Dockerfile:** after the curl, run a small Python one-liner (`python -c "import sqlite3; conn = sqlite3.connect('backend/static_data/chicago_geocode.db'); n = conn.execute('SELECT COUNT(*) FROM addresses').fetchone()[0]; assert n > 100_000, n"`) so a corrupt download fails the build instead of silently producing a broken deploy.
-6. **Rebuild cadence:** the corpus is OSM-derived and ages slowly; quarterly is plenty. Document the rebuild + upload pipeline in the script's docstring or a short `docs/OPERATIONS.md` section.
+# 2. Sanity-check row counts (addresses >= 100k, intersections >= 20k)
+python -c "import sqlite3; c = sqlite3.connect('backend/static_data/chicago_geocode.db'); print(c.execute('SELECT COUNT(*) FROM addresses').fetchone(), c.execute('SELECT COUNT(*) FROM intersections').fetchone())"
 
-**Decisions deferred to scoping (when invoked):**
+# 3. Recompute the SHA-256 sidecar
+sha256sum backend/static_data/chicago_geocode.db | awk '{print $1}' > backend/static_data/chicago_geocode.db.sha256
+# (PowerShell: see Get-FileHash equivalent in commit history)
 
-- Whether to bundle the DB with the existing `street_graph.graphml` release tag or give the DB its own tag (separate cadence — street graph rebuilds rarely, DB rebuilds quarterly).
-- Whether to bake an integrity-check (sha256 sum stored as a sibling release asset) into the Dockerfile, beyond the row-count assertion. Probably yes; cheap.
-- Whether to expose a `DB_BUILD_DATE` build-arg that becomes a runtime-readable string surfaced on `/health` or `/stats` so operators can see which corpus build is live.
+# 4. Replace the assets on the rolling release
+gh release upload geocode-db backend/static_data/chicago_geocode.db backend/static_data/chicago_geocode.db.sha256 --clobber
 
-**Files likely touched:**
-
-- `backend/Dockerfile` (new curl + verify block)
-- `backend/scripts/_geocode_db.py` (maybe — add a `verify()` helper used by both the migrator and the Dockerfile)
-- `docs/PROJECT_CONTEXT.md` (Geocoding Strategy section: remove the "DB shipping mechanism is pending" caveat)
-- `docs/PRIVACY.md` — TD-051's TTL eviction shipped 2026-05-15, so when FEAT-019 lands the privacy doc no longer needs the redeploy-wipe caveat (it's already been removed); revisit only if FEAT-019 changes where the DB lives at runtime in a way that affects the cache-rows description.
-- `.github/workflows/` (optional: GitHub Action to rebuild + upload the asset on a quarterly schedule — could defer)
-
-**When to revisit:** Soon. This is the last piece between "code-complete" and "feature-actually-live-for-users." Until it ships, the Geocoding & Autocomplete chunked plan is shipped on paper but invisible to riders.
+# 5. Bump CACHEBUST_GEOCODE_DB in Railway → Service → Build Arguments to force re-download
+# 6. Trigger a Railway redeploy; watch the build log for "FEAT-019: chicago_geocode.db verified".
+```
 
 ---
 

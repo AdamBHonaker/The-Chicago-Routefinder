@@ -101,6 +101,85 @@ with open(fname + ".sha256", "w") as f:
 print(f"{fname}.sha256: {h.hexdigest()}")
 PYEOF
 
+# FEAT-019: download the chicago_geocode.db SQLite/FTS5 store from the rolling
+# `geocode-db` GitHub Release at build time. Without it, Tier 1 (local OSM
+# address corpus), Tier 4 (intersection lookup), and the LocationIQ response
+# cache all silently no-op — see FEATURE_PLANS.md FEAT-019 for the full effect.
+# Reuses the same GITHUB_TOKEN build-arg as the street_graph block above.
+# CACHEBUST_GEOCODE_DB: bump in Railway → Service → Build Arguments after
+# replacing the release asset to force re-download without re-downloading the
+# street graph (which has its own CACHEBUST).
+ARG CACHEBUST_GEOCODE_DB=1
+RUN python3 - <<'PYEOF'
+import hashlib, os, sqlite3, sys, urllib.request, json
+
+token = os.environ.get("GITHUB_TOKEN") or ""
+if not token:
+    print("ERROR: GITHUB_TOKEN build arg is not set.")
+    sys.exit(1)
+
+repo   = "AdamBHonaker/The-Chicago-Routefinder"
+tag    = "geocode-db"
+db     = "chicago_geocode.db"
+sha    = "chicago_geocode.db.sha256"
+target = "backend/static_data/chicago_geocode.db"
+
+os.makedirs(os.path.dirname(target), exist_ok=True)
+
+headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
+req = urllib.request.Request(
+    f"https://api.github.com/repos/{repo}/releases/tags/{tag}", headers=headers)
+with urllib.request.urlopen(req) as r:
+    release = json.load(r)
+
+assets = {a["name"]: a for a in release.get("assets", [])}
+for name in (db, sha):
+    if name not in assets:
+        print(f"ERROR: '{name}' not found in release '{tag}'. Available: {list(assets)}")
+        sys.exit(1)
+
+def fetch(asset_id: int) -> bytes:
+    dl_headers = {"Authorization": f"token {token}", "Accept": "application/octet-stream"}
+    r = urllib.request.Request(
+        f"https://api.github.com/repos/{repo}/releases/assets/{asset_id}", headers=dl_headers)
+    with urllib.request.urlopen(r) as resp:
+        return resp.read()
+
+# Download the sidecar first; it's tiny. Trim whitespace so a trailing newline
+# from a shell-redirected upload doesn't break the comparison.
+expected_hash = fetch(assets[sha]["id"]).decode("ascii").strip().lower()
+if len(expected_hash) != 64 or not all(c in "0123456789abcdef" for c in expected_hash):
+    print(f"ERROR: '{sha}' is not a 64-char hex string: {expected_hash!r}")
+    sys.exit(1)
+
+print(f"Downloading {db} ({assets[db]['size']:,} bytes) ...")
+blob = fetch(assets[db]["id"])
+with open(target, "wb") as f:
+    f.write(blob)
+
+actual_hash = hashlib.sha256(blob).hexdigest()
+print(f"{db}: {len(blob):,} bytes, sha256={actual_hash}")
+if actual_hash != expected_hash:
+    print(f"ERROR: sha256 mismatch — expected {expected_hash}, got {actual_hash}")
+    sys.exit(1)
+
+# Row-count sanity check: a corrupt download that survived sha256 (e.g. the
+# release was uploaded broken) would still fail here. Thresholds match the
+# FEAT-019 acceptance criteria.
+conn = sqlite3.connect(target)
+addr = conn.execute("SELECT COUNT(*) FROM addresses").fetchone()[0]
+ints = conn.execute("SELECT COUNT(*) FROM intersections").fetchone()[0]
+conn.close()
+print(f"DB rowcounts — addresses: {addr:,}, intersections: {ints:,}")
+if addr < 100_000:
+    print(f"ERROR: addresses table has only {addr:,} rows (expected >= 100,000)")
+    sys.exit(1)
+if ints < 20_000:
+    print(f"ERROR: intersections table has only {ints:,} rows (expected >= 20,000)")
+    sys.exit(1)
+print("FEAT-019: chicago_geocode.db verified and placed at", target)
+PYEOF
+
 # FEAT-003: download MaxMind GeoLite2-City DB at build time. Free tier requires
 # a license key (https://www.maxmind.com/en/geolite2/signup). Pass via Railway
 # Build Argument: MAXMIND_LICENSE_KEY=<key>. If unset, the build proceeds
