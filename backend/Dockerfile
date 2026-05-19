@@ -122,7 +122,14 @@ repo   = "AdamBHonaker/The-Chicago-Routefinder"
 tag    = "geocode-db"
 db     = "chicago_geocode.db"
 sha    = "chicago_geocode.db.sha256"
-target = "backend/static_data/chicago_geocode.db"
+# Railway's Docker build context for this service is the `backend/` directory,
+# so `COPY . .` places repo paths like `backend/static_data/foo.json` at
+# `/app/static_data/foo.json` — no `backend/` prefix inside the container.
+# Runtime path resolution in geocoding.py / local_search.py is:
+#   Path(__file__).resolve().parent / "static_data" / "chicago_geocode.db"
+# which evaluates to `/app/static_data/chicago_geocode.db`. Place the asset
+# there directly.
+target = "static_data/chicago_geocode.db"
 
 os.makedirs(os.path.dirname(target), exist_ok=True)
 
